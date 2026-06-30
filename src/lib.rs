@@ -14,6 +14,8 @@ pub mod bits;
 #[cfg(feature = "decoder")]
 pub mod decoder;
 pub mod dsp;
+#[cfg(feature = "encoder")]
+pub mod encoder;
 pub mod error;
 
 #[cfg(feature = "decoder")]
