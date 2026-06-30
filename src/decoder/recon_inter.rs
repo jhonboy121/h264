@@ -65,26 +65,34 @@ fn base_mc(pic: &mut Picture, ref_pic: &Picture, mb_x: usize, mb_y: usize, pos: 
     mc_chroma(&mut pic.v[dst_c..], cs, &ref_pic.v, src_c, cs, cmv, cdim);
 }
 
-/// Motion-compensate one `dim` luma block (+ chroma) from `ref_pic` at
-/// MB-relative offset `(dx, dy)` into the destination buffers (`dst_*`), which
-/// may be the current picture or a temporary bi-prediction scratch buffer.
-/// Mirrors `BaseMC` (the MV clip + source addressing are identical to
-/// [`base_mc`]).
-#[allow(clippy::too_many_arguments)]
-fn mc_to(
-    ref_pic: &Picture,
+/// MB-relative position of a motion-compensated partition: macroblock
+/// `(mb_x, mb_y)` plus the in-MB offset `(dx, dy)` of the partition.
+#[derive(Clone, Copy)]
+struct McPos {
     mb_x: usize,
     mb_y: usize,
     dx: usize,
     dy: usize,
-    mv: [i16; 2],
-    dim: Dim,
-    dst_y: &mut [u8],
-    dys: usize,
-    dst_u: &mut [u8],
-    dst_v: &mut [u8],
-    dcs: usize,
-) {
+}
+
+/// Destination planes for [`mc_to`]: luma + chroma slices with their strides.
+/// May reference the current picture or a bi-prediction scratch buffer.
+struct DstPlanes<'a> {
+    y: &'a mut [u8],
+    ys: usize,
+    u: &'a mut [u8],
+    v: &'a mut [u8],
+    cs: usize,
+}
+
+/// Motion-compensate one `dim` luma block (+ chroma) from `ref_pic` at
+/// MB-relative offset `(dx, dy)` into the destination buffers (`dst`), which
+/// may be the current picture or a temporary bi-prediction scratch buffer.
+/// Mirrors `BaseMC` (the MV clip + source addressing are identical to
+/// [`base_mc`]).
+fn mc_to(ref_pic: &Picture, pos: McPos, mv: [i16; 2], dim: Dim, dst: DstPlanes<'_>) {
+    let McPos { mb_x, mb_y, dx, dy } = pos;
+    let DstPlanes { y: dst_y, ys: dys, u: dst_u, v: dst_v, cs: dcs } = dst;
     let (w, h) = (dim.w, dim.h);
     let pic_w = ref_pic.width as i32;
     let pic_h = ref_pic.height as i32;
@@ -455,11 +463,11 @@ pub fn recon_b_mb(
             let mut t0y = [0u8; 256];
             let mut t0u = [0u8; 64];
             let mut t0v = [0u8; 64];
-            mc_to(ref0, mb_x, mb_y, p.dx, p.dy, mv0, dim, &mut t0y, 16, &mut t0u, &mut t0v, 8);
+            mc_to(ref0, McPos { mb_x, mb_y, dx: p.dx, dy: p.dy }, mv0, dim, DstPlanes { y: &mut t0y, ys: 16, u: &mut t0u, v: &mut t0v, cs: 8 });
             let mut ty = [0u8; 256];
             let mut tu = [0u8; 64];
             let mut tv = [0u8; 64];
-            mc_to(ref1, mb_x, mb_y, p.dx, p.dy, mv1, dim, &mut ty, 16, &mut tu, &mut tv, 8);
+            mc_to(ref1, McPos { mb_x, mb_y, dx: p.dx, dy: p.dy }, mv1, dim, DstPlanes { y: &mut ty, ys: 16, u: &mut tu, v: &mut tv, cs: 8 });
             let pic = &mut ctx.picture;
             let cdim = Dim { w: p.w / 2, h: p.h / 2 };
             if bi_w.active {
@@ -496,7 +504,7 @@ pub fn recon_b_mb(
         } else {
             let (rp, mv) = if l0 { (ref_pics[0][r0 as usize], mv0) } else { (ref_pics[1][r1 as usize], mv1) };
             let pic = &mut ctx.picture;
-            mc_to(rp, mb_x, mb_y, p.dx, p.dy, mv, dim, &mut pic.y[y_off..], ls, &mut pic.u[c_off..], &mut pic.v[c_off..], cs);
+            mc_to(rp, McPos { mb_x, mb_y, dx: p.dx, dy: p.dy }, mv, dim, DstPlanes { y: &mut pic.y[y_off..], ys: ls, u: &mut pic.u[c_off..], v: &mut pic.v[c_off..], cs });
         }
     }
 
