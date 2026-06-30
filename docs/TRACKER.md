@@ -97,6 +97,11 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
 - [x] C `h264dec` oracle built; conformance harness `examples/conformance.rs`
 - [x] **Corpus run: 28/54 streams BIT-EXACT** (3875 frames); 11 unsupported
       (8x8-transform/B/PCM), 11 mismatch (mostly crop/interlace len), 4 corrupted. d5011f7
+- [x] **Output cropping fix → 38/54 BIT-EXACT.** `Picture` now carries its visible
+      (post-crop) region (`visible_x/y/width/height`), stamped at emit time from the
+      SPS `frame_cropping` rectangle; the conformance harness emits the cropped I420
+      (4:2:0 chroma crop = luma/2). Moved jm_1080p_allslice (1920x1088→1080),
+      Static, CVFC1_Sony_C (was not field-coded after all) to BITEXACT.
 - [x] **Perf report v1** `docs/PERF_REPORT.md` — Rust scalar 1.07-1.65× of C NEON, byte-identical
 - [x] `src/api.rs` Rusty `Decoder` facade (incremental `decode`/`flush`/`decode_all`,
       `nal_units`) + `src/formats/` (`YUVSource`, `DecodedYuv`/`Frame`, BT.601

@@ -33,15 +33,18 @@ use h264::DecodeError;
 const DEFAULT_CORPUS_DIR: &str = "/private/tmp/claude-501/-Users-alfredmathew-code-experiments-h264/204f99a2-1e9c-4cb7-9281-a5cdb434a08d/scratchpad/openh264/res";
 const DEFAULT_ORACLE: &str = "/private/tmp/claude-501/-Users-alfredmathew-code-experiments-h264/204f99a2-1e9c-4cb7-9281-a5cdb434a08d/scratchpad/openh264/h264dec";
 
-/// Extract the visible (coded-size) I420 of one picture into `out`.
+/// Extract the visible (post-crop) I420 of one picture into `out`. Honors SPS
+/// `frame_cropping` via the picture's visible region (4:2:0: chroma crop is
+/// half the luma crop, per ChromaArrayType 1).
 fn append_visible(out: &mut Vec<u8>, pic: &Picture) {
-    let yo = pic.luma_origin();
-    for row in 0..pic.height {
+    let yo = pic.luma_origin() + pic.visible_y * pic.luma_stride + pic.visible_x;
+    for row in 0..pic.visible_height {
         let start = yo + row * pic.luma_stride;
-        out.extend_from_slice(&pic.y[start..start + pic.width]);
+        out.extend_from_slice(&pic.y[start..start + pic.visible_width]);
     }
-    let co = pic.chroma_origin();
-    let (cw, ch) = (pic.width / 2, pic.height / 2);
+    let (cx, cy) = (pic.visible_x / 2, pic.visible_y / 2);
+    let (cw, ch) = (pic.visible_width / 2, pic.visible_height / 2);
+    let co = pic.chroma_origin() + cy * pic.chroma_stride + cx;
     for row in 0..ch {
         let start = co + row * pic.chroma_stride;
         out.extend_from_slice(&pic.u[start..start + cw]);
@@ -184,7 +187,7 @@ fn classify(ours: &[u8], reference: &[u8], frames: &[Picture]) -> Outcome {
     // frame dimensions, which holds for the streams we currently decode.
     let frame_size = frames
         .first()
-        .map(|p| p.width * p.height * 3 / 2)
+        .map(|p| p.visible_width * p.visible_height * 3 / 2)
         .unwrap_or(0);
 
     // Byte-for-byte (and, equivalently, MD5) identity check.

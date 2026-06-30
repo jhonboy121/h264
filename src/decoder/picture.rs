@@ -31,6 +31,15 @@ pub struct Picture {
     pub height: usize,
     pub mb_width: usize,
     pub mb_height: usize,
+    /// Luma column offset of the visible (post-crop) top-left, from the coded
+    /// origin. Defaults to 0 (no crop) until set from the SPS at emit time.
+    pub visible_x: usize,
+    /// Luma row offset of the visible (post-crop) top-left, from the coded origin.
+    pub visible_y: usize,
+    /// Visible (post-crop) luma width in pixels. Defaults to the coded width.
+    pub visible_width: usize,
+    /// Visible (post-crop) luma height in pixels. Defaults to the coded height.
+    pub visible_height: usize,
 }
 
 impl Picture {
@@ -56,6 +65,10 @@ impl Picture {
             height,
             mb_width,
             mb_height,
+            visible_x: 0,
+            visible_y: 0,
+            visible_width: width,
+            visible_height: height,
         }
     }
 

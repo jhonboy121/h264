@@ -108,8 +108,14 @@ impl Frame {
         DecodedYuv::new(&self.pic, self.region)
     }
 
-    /// Consume the frame, returning the underlying coded [`Picture`].
-    pub(crate) fn into_picture(self) -> Picture {
+    /// Consume the frame, returning the underlying [`Picture`] with its visible
+    /// (post-crop) region stamped onto it so consumers of the bare `Picture`
+    /// (e.g. [`crate::decoder::decode_stream`]) can emit the cropped rectangle.
+    pub(crate) fn into_picture(mut self) -> Picture {
+        self.pic.visible_x = self.region.luma_x;
+        self.pic.visible_y = self.region.luma_y;
+        self.pic.visible_width = self.region.width;
+        self.pic.visible_height = self.region.height;
         self.pic
     }
 }
