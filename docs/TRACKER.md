@@ -74,10 +74,15 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
       V then H edges, luma+chroma, qp avg). Golden `tests/fixtures/banm_frame0.yuv` +
       `tests/deblock_conformance.rs`. 386e9d1. **Baseline INTRA decode is conformant.**
       Inter bS (mv/ref) extends in P3c.
-- [ ] **P3c P-slice** — `mv_pred.rs` (anchor `DecUT_PredMv.cpp`), inter mb parse
-      (mb_type/sub_mb/ref_idx/mvd), MC reconstruct (dsp::mc), skip.
-- [ ] **P3d DPB/POC/ref-list** — `dpb.rs`,`ref_pic.rs` (POC types, ref list init, MMCO).
+- [x] **P3c P-slice** ✅ — mv_pred (bit-exact vs DecUT_PredMv), inter MB CAVLC parse
+      (P_16x16/16x8/8x16/8x8/8x8ref0, sub_mb, ref_idx/mvd, P_Skip, intra-in-P), recon_inter
+      (MC+residual), inter deblock bS. ca3c2a3.
+- [x] **P3d DPB/ref-list** ✅ — dpb.rs sliding-window short-term, default P list-0,
+      dsp/expand.rs border replication. (POC/MMCO/long-term deferred — not needed for IPPP.)
+- [x] **★ BASELINE CAVLC DECODER CONFORMANT ★** — ALL 100 BANM frames (I+P) decode
+      BIT-EXACT vs C oracle (0/3,801,600 bytes). 90 tests, 0 warnings, wasm ok.
 - [ ] **P3e CABAC MB syntax** — the deferred mb_type/mvd/cbp/intra-mode/skip CABAC decoders.
+      Validate on a CABAC stream (CVPCMNL1_SVA_C.264, profile 77) vs C oracle.
 - [ ] **P3f FMO** (`fmo.rs`), **error concealment** (`error_conceal.rs`) — lower priority.
 - [ ] `dsp/expand.rs` border padding (deferred from P1) — needed by MC ref reads.
 
