@@ -6,7 +6,10 @@ Legend: ✅ done & tested · 🚧 in progress · ⬜ not started · ⏸ deferred
 The C source for it is in `reference/` (see `REFERENCE_MAP.md` for the exact file).
 Port it, add tests, run `cargo test`, then check it off here with a one-line note.
 
-Last updated: P1 — bits done; DSP transform next.
+Last updated: P1 ~80%. bits/transform/intra-kernels/copy/sad/nal committed (27 tests).
+mc + deblock + intra(8x8/16x16/chroma) tests running in background agent (commits per step).
+NEXT after P1: P2 parsing — delegate SPS/PPS/slice-header parser (reference/codec/decoder/core/src/au_parser.cpp),
+then CAVLC (parse_mb_syn_cavlc.cpp + vlc tables), then CABAC (cabac_decoder.cpp).
 
 ---
 
