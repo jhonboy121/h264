@@ -93,6 +93,35 @@ struct BlockPlace {
     h: usize,
 }
 
+/// Motion of one prediction list to store (CABAC B): list index, vector,
+/// motion-vector difference, reference index (slice-local) and reference
+/// picture's decode id.
+#[derive(Clone, Copy)]
+struct MotionB {
+    list: usize,
+    mv: [i16; 2],
+    mvd: [i16; 2],
+    iref: i8,
+    ref_pic: i32,
+}
+
+/// Identifies one B-partition reference query: prediction list, the block's
+/// 4x4 scan index, and the active reference count for that list.
+#[derive(Clone, Copy)]
+struct RefQuery {
+    list: usize,
+    z_index: usize,
+    active_ref: usize,
+}
+
+/// Mutable per-MB working state for CABAC B-partition parsing: the decoder
+/// context, the neighbour MV/ref cache, and the macroblock index.
+struct BMbWork<'a> {
+    ctx: &'a mut DecoderContext,
+    cache: &'a mut BInterCacheC,
+    mb_xy: usize,
+}
+
 // --- CABAC context base offsets (`NEW_CTX_OFFSET_*`,
 // reference/codec/decoder/core/inc/decoder_context.h). ---
 const NEW_CTX_OFFSET_MB_TYPE_I: usize = 3;
@@ -862,17 +891,15 @@ fn parse_transform_size_8x8(
 /// `parse_inter_t8_flag` presence condition (16x16/16x8/8x16, or an 8x8 MB whose
 /// every sub-partition is 8x8) gated on `cbp_l != 0` and the PPS 8x8 mode, but
 /// reads the flag through `ParseTransformSize8x8FlagCabac`.
-#[allow(clippy::too_many_arguments)]
 fn parse_inter_t8_flag_cabac(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
-    ctx: &DecoderContext,
+    mb: MbCtx<'_>,
     n: &Neigh,
-    mb_xy: usize,
     mb_type: MbType,
     cbp_l: u8,
-    pps: &Pps,
 ) -> bool {
+    let MbCtx { ctx, mb_xy, pps } = mb;
     if !pps.transform_8x8_mode_flag || cbp_l == 0 {
         return false;
     }
@@ -1403,7 +1430,7 @@ fn parse_inter_mb_cabac(
     let cbp_l = cbp & 0x0f;
     let cbp_c = cbp >> 4;
 
-    let transform_8x8 = parse_inter_t8_flag_cabac(dec, ctxs, ctx, n, mb_xy, mb_type, cbp_l, pps);
+    let transform_8x8 = parse_inter_t8_flag_cabac(dec, ctxs, MbCtx { ctx: &mut *ctx, mb_xy, pps }, n, mb_type, cbp_l);
 
     let luma_qp: i32;
     let mut cur_nzc_luma = [0i8; 16];
@@ -1882,21 +1909,9 @@ impl BInterCacheC {
         BInterCacheC { mv, mvd, ref_idx, direct }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn store(
-        &mut self,
-        ctx: &mut DecoderContext,
-        mb_xy: usize,
-        list: usize,
-        scan4: usize,
-        cache_idx: usize,
-        w: usize,
-        h: usize,
-        mv: [i16; 2],
-        mvd: [i16; 2],
-        iref: i8,
-        ref_pic: i32,
-    ) {
+    fn store(&mut self, ctx: &mut DecoderContext, mb_xy: usize, place: BlockPlace, m: MotionB) {
+        let BlockPlace { scan4, cache_idx, w, h } = place;
+        let MotionB { list, mv, mvd, iref, ref_pic } = m;
         for by in 0..h {
             for bx in 0..w {
                 let raster = scan4 + by * 4 + bx;
@@ -1959,19 +1974,17 @@ fn parse_mvd_b(
 /// `active_ref == 1` no bin is coded. The context increment is derived from the
 /// neighbour reference indices *and* their direct-prediction flags: a neighbour
 /// contributes only if its reference is > 0 and it was not direct-coded.
-#[allow(clippy::too_many_arguments)]
 fn parse_ref_idx_b(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
     ctx: &DecoderContext,
     mb_xy: usize,
     cache: &BInterCacheC,
-    list: usize,
-    z_index: usize,
-    active_ref: usize,
-    top_avail: bool,
-    left_avail: bool,
+    n: &Neigh,
+    q: RefQuery,
 ) -> i8 {
+    let RefQuery { list, z_index, active_ref } = q;
+    let (top_avail, left_avail) = (n.top_avail, n.left_avail);
     if active_ref == 1 {
         return 0;
     }
@@ -2076,7 +2089,7 @@ pub fn decode_mb_cabac_bslice(
         apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true, bref.direct_spatial);
     } else {
         let mut cache = BInterCacheC::build(ctx, mb_xy);
-        parse_b_motion_cabac(dec, ctxs, ctx, &mut cache, mb_xy, ui_mb_type, bref, &n)?;
+        parse_b_motion_cabac(dec, ctxs, BMbWork { ctx: &mut *ctx, cache: &mut cache, mb_xy }, ui_mb_type, bref, &n)?;
     }
 
     let QpState { last_mb_qp, last_delta_qp } = qp;
@@ -2084,7 +2097,7 @@ pub fn decode_mb_cabac_bslice(
     let cbp_l = cbp & 0x0f;
     let cbp_c = cbp >> 4;
 
-    let transform_8x8 = parse_inter_t8_flag_cabac(dec, ctxs, ctx, &n, mb_xy, mb_type, cbp_l, pps);
+    let transform_8x8 = parse_inter_t8_flag_cabac(dec, ctxs, MbCtx { ctx: &mut *ctx, mb_xy, pps }, &n, mb_type, cbp_l);
 
     let luma_qp: i32;
     let mut cur_nzc_luma = [0i8; 16];
@@ -2132,60 +2145,59 @@ pub fn decode_mb_cabac_bslice(
 }
 
 /// Parse `ref_idx` + `mvd` (CABAC) for the non-direct B partition kinds.
-#[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 fn parse_b_motion_cabac(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
-    ctx: &mut DecoderContext,
-    cache: &mut BInterCacheC,
-    mb_xy: usize,
+    work: BMbWork<'_>,
     ui_mb_type: u32,
     bref: &BRefsCabac,
     n: &Neigh,
 ) -> Result<()> {
+    let BMbWork { ctx, cache, mb_xy } = work;
     let info = &B_MB_INFO[ui_mb_type as usize];
     match info.shape {
         BShape::P16x16 => {
             let mut iref = [0i8; 2];
-            for list in 0..2 {
+            for (list, slot) in iref.iter_mut().enumerate() {
                 if dir_uses(info.dir[0], list) {
-                    iref[list] = parse_ref_idx_b(
-                        dec, ctxs, ctx, mb_xy, cache, list, 0, bref.ref_count[list],
-                        n.top_avail, n.left_avail,
+                    *slot = parse_ref_idx_b(
+                        dec, ctxs, ctx, mb_xy, cache, n,
+                        RefQuery { list, z_index: 0, active_ref: bref.ref_count[list] },
                     );
                 }
             }
-            for list in 0..2 {
+            for (list, &iref_l) in iref.iter().enumerate() {
                 if dir_uses(info.dir[0], list) {
-                    let mvp = pred_mv(&cache.mv[list], &cache.ref_idx[list], 0, 4, iref[list]);
+                    let mvp = pred_mv(&cache.mv[list], &cache.ref_idx[list], 0, 4, iref_l);
                     let dx = parse_mvd_b(dec, ctxs, &cache.ref_idx[list], &cache.mvd[list], 0, 0);
                     let dy = parse_mvd_b(dec, ctxs, &cache.ref_idx[list], &cache.mvd[list], 0, 1);
                     let mv = [mvp[0] + dx, mvp[1] + dy];
-                    cache.store(ctx, mb_xy, list, 0, CACHE30_SCAN_IDX[0], 4, 4, mv, [dx, dy], iref[list], bref.ref_pic_ids[list][iref[list] as usize]);
+                    cache.store(ctx, mb_xy, BlockPlace { scan4: 0, cache_idx: CACHE30_SCAN_IDX[0], w: 4, h: 4 }, MotionB { list, mv, mvd: [dx, dy], iref: iref_l, ref_pic: bref.ref_pic_ids[list][iref_l as usize] });
                 } else {
-                    cache.store(ctx, mb_xy, list, 0, CACHE30_SCAN_IDX[0], 4, 4, [0, 0], [0, 0], REF_NOT_IN_LIST_C, -1);
+                    cache.store(ctx, mb_xy, BlockPlace { scan4: 0, cache_idx: CACHE30_SCAN_IDX[0], w: 4, h: 4 }, MotionB { list, mv: [0, 0], mvd: [0, 0], iref: REF_NOT_IN_LIST_C, ref_pic: -1 });
                 }
             }
         }
         BShape::P16x8 | BShape::P8x16 => {
             let is16x8 = info.shape == BShape::P16x8;
             let (pw, ph) = if is16x8 { (4, 2) } else { (2, 4) };
+            // `iref[list][p]` (list-major to match the bitstream read order).
             let mut iref = [[REF_NOT_IN_LIST_C; 2]; 2];
             // Parse both partitions' ref_idx, storing each into the per-MB ref
             // array (`UpdateP16x8/8x16RefIdxCabac`) so the second partition's
             // ctx derivation sees the first's reference.
-            for list in 0..2 {
-                for p in 0..2 {
+            for (list, row) in iref.iter_mut().enumerate() {
+                for (p, slot) in row.iter_mut().enumerate() {
                     let part_idx = if is16x8 { p << 3 } else { p << 2 };
                     let r = if dir_uses(info.dir[p], list) {
                         parse_ref_idx_b(
-                            dec, ctxs, ctx, mb_xy, cache, list, part_idx, bref.ref_count[list],
-                            n.top_avail, n.left_avail,
+                            dec, ctxs, ctx, mb_xy, cache, n,
+                            RefQuery { list, z_index: part_idx, active_ref: bref.ref_count[list] },
                         )
                     } else {
                         REF_NOT_IN_LIST_C
                     };
-                    iref[p][list] = r;
+                    *slot = r;
                     let scan4 = SCAN4[part_idx];
                     for by in 0..ph {
                         for bx in 0..pw {
@@ -2199,13 +2211,12 @@ fn parse_b_motion_cabac(
                     }
                 }
             }
-            for list in 0..2 {
-                for p in 0..2 {
+            for (list, row) in iref.iter().enumerate() {
+                for (p, &r) in row.iter().enumerate() {
                     let part_idx = if is16x8 { p << 3 } else { p << 2 };
                     let scan4 = SCAN4[part_idx];
                     let cidx = CACHE30_SCAN_IDX[part_idx];
                     if dir_uses(info.dir[p], list) {
-                        let r = iref[p][list];
                         let mvp = if is16x8 {
                             pred_inter16x8(&cache.mv[list], &cache.ref_idx[list], part_idx, r)
                         } else {
@@ -2214,15 +2225,15 @@ fn parse_b_motion_cabac(
                         let dx = parse_mvd_b(dec, ctxs, &cache.ref_idx[list], &cache.mvd[list], part_idx, 0);
                         let dy = parse_mvd_b(dec, ctxs, &cache.ref_idx[list], &cache.mvd[list], part_idx, 1);
                         let mv = [mvp[0] + dx, mvp[1] + dy];
-                        cache.store(ctx, mb_xy, list, scan4, cidx, pw, ph, mv, [dx, dy], r, bref.ref_pic_ids[list][r as usize]);
+                        cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx: cidx, w: pw, h: ph }, MotionB { list, mv, mvd: [dx, dy], iref: r, ref_pic: bref.ref_pic_ids[list][r as usize] });
                     } else {
-                        cache.store(ctx, mb_xy, list, scan4, cidx, pw, ph, [0, 0], [0, 0], REF_NOT_IN_LIST_C, -1);
+                        cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx: cidx, w: pw, h: ph }, MotionB { list, mv: [0, 0], mvd: [0, 0], iref: REF_NOT_IN_LIST_C, ref_pic: -1 });
                     }
                 }
             }
         }
         BShape::P8x8 => {
-            parse_b_8x8_cabac(dec, ctxs, ctx, cache, mb_xy, bref, n)?;
+            parse_b_8x8_cabac(dec, ctxs, BMbWork { ctx: &mut *ctx, cache: &mut *cache, mb_xy }, bref, n)?;
         }
         BShape::Direct => unreachable!(),
     }
@@ -2230,16 +2241,14 @@ fn parse_b_motion_cabac(
 }
 
 /// Parse the four 8x8 sub-partitions of a B_8x8 macroblock (CABAC).
-#[allow(clippy::needless_range_loop)]
 fn parse_b_8x8_cabac(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
-    ctx: &mut DecoderContext,
-    cache: &mut BInterCacheC,
-    mb_xy: usize,
+    work: BMbWork<'_>,
     bref: &BRefsCabac,
     n: &Neigh,
 ) -> Result<()> {
+    let BMbWork { ctx, cache, mb_xy } = work;
     let mut subs = [0usize; 4];
     for s in subs.iter_mut() {
         *s = parse_sub_mb_type_b(dec, ctxs) as usize;
@@ -2310,8 +2319,8 @@ fn parse_b_8x8_cabac(
                 }
             } else if dir_uses(sinfo.dir, list) {
                 let r = parse_ref_idx_b(
-                    dec, ctxs, ctx, mb_xy, cache, list, i << 2, bref.ref_count[list],
-                    n.top_avail, n.left_avail,
+                    dec, ctxs, ctx, mb_xy, cache, n,
+                    RefQuery { list, z_index: i << 2, active_ref: bref.ref_count[list] },
                 );
                 irefs[i] = r;
                 set_8x8_ref_ctx(ctx, mb_xy, i, list, r, bref.ref_pic_ids[list][r as usize]);
@@ -2322,17 +2331,17 @@ fn parse_b_8x8_cabac(
     }
 
     // mvd for non-direct sub-partitions.
-    for list in 0..2 {
+    for (list, irefs) in iref.iter().enumerate() {
         for (i, &s) in subs.iter().enumerate() {
             let cache8 = CACHE30_SCAN_IDX[i << 2];
             for &c in &[cache8, cache8 + 1, cache8 + 6, cache8 + 7] {
-                cache.ref_idx[list][c] = iref[list][i];
+                cache.ref_idx[list][c] = irefs[i];
             }
             let sinfo = &B_SUB_INFO[s];
             if sinfo.direct {
                 continue;
             }
-            let r = iref[list][i];
+            let r = irefs[i];
             let uses = dir_uses(sinfo.dir, list);
             for j in 0..sinfo.part_count {
                 let part_idx = (i << 2) + j * sinfo.part_w;
@@ -2349,9 +2358,9 @@ fn parse_b_8x8_cabac(
                     let dx = parse_mvd_b(dec, ctxs, &cache.ref_idx[list], &cache.mvd[list], part_idx, 0);
                     let dy = parse_mvd_b(dec, ctxs, &cache.ref_idx[list], &cache.mvd[list], part_idx, 1);
                     let mv = [mvp[0] + dx, mvp[1] + dy];
-                    cache.store(ctx, mb_xy, list, scan4, cidx, w, h, mv, [dx, dy], r, if r >= 0 { bref.ref_pic_ids[list][r as usize] } else { -1 });
+                    cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx: cidx, w, h }, MotionB { list, mv, mvd: [dx, dy], iref: r, ref_pic: if r >= 0 { bref.ref_pic_ids[list][r as usize] } else { -1 } });
                 } else {
-                    cache.store(ctx, mb_xy, list, scan4, cidx, w, h, [0, 0], [0, 0], REF_NOT_IN_LIST_C, -1);
+                    cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx: cidx, w, h }, MotionB { list, mv: [0, 0], mvd: [0, 0], iref: REF_NOT_IN_LIST_C, ref_pic: -1 });
                 }
             }
         }
