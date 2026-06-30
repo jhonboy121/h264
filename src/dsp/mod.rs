@@ -21,6 +21,6 @@ pub mod deblock;
 pub mod intra_pred;
 pub mod mc;
 pub mod sad;
-// pub mod deblock;
-// pub mod expand;
-// pub mod tables;
+// Added in later phases:
+// pub mod expand;   // P3 (coupled to padded Plane buffer)
+// pub mod tables;   // P2 (dequant/scan tables)

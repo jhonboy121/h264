@@ -6,10 +6,10 @@ Legend: ✅ done & tested · 🚧 in progress · ⬜ not started · ⏸ deferred
 The C source for it is in `reference/` (see `REFERENCE_MAP.md` for the exact file).
 Port it, add tests, run `cargo test`, then check it off here with a one-line note.
 
-Last updated: P1 ~80%. bits/transform/intra-kernels/copy/sad/nal committed (27 tests).
-mc + deblock + intra(8x8/16x16/chroma) tests running in background agent (commits per step).
-NEXT after P1: P2 parsing — delegate SPS/PPS/slice-header parser (reference/codec/decoder/core/src/au_parser.cpp),
-then CAVLC (parse_mb_syn_cavlc.cpp + vlc tables), then CABAC (cabac_decoder.cpp).
+Last updated: **P1 COMPLETE** (40 tests, 0 warnings, all 7 targets + no_std green).
+NEXT: P2 parsing — SPS/PPS/slice-header (au_parser.cpp), then CAVLC + vlc tables
+(parse_mb_syn_cavlc.cpp), then CABAC (cabac_decoder.cpp). Also pull dequant/scan
+tables → dsp/tables.rs, and the luma/chroma DC dequant-IDCT (decode_slice.cpp:246,359).
 
 ---
 
@@ -30,11 +30,11 @@ then CAVLC (parse_mb_syn_cavlc.cpp + vlc tables), then CABAC (cabac_decoder.cpp)
 - [ ] `dsp/transform.rs` — IDCT 4x4/8x8, dequant, DC transforms (port `decode_mb_aux.cpp`)
       · anchor test: `DecUT_IdctResAddPred.cpp`
 - [x] `dsp/transform.rs` — idct4x4_add, idct8x8_add (5 tests, faithful i16 trunc)
-- [🚧] `dsp/intra_pred.rs` — DELEGATED to subagent (running); port get_intra_predictor.cpp
-- [ ] `dsp/mc.rs` — luma 6-tap + chroma bilinear MC (port `mc.cpp`) — NEXT delegate
-      · anchor: `EncUT_MotionCompensation.cpp`
-- [ ] `dsp/deblock.rs` — edge filters (port `deblocking_common.cpp`) — delegate
-      · anchor: `DecUT_Deblock.cpp`, `DecUT_DeblockCommon.cpp`
+- [x] `dsp/intra_pred.rs` — 44 kernels (4x4/8x8/16x16/chroma) + tests vs ref (4 test groups)
+- [x] `dsp/mc.rs` — luma 6-tap + 16 quarter-pel + chroma bilinear (4 tests, bit-exact)
+      · anchor: `EncUT_MotionCompensation.cpp` ✓
+- [x] `dsp/deblock.rs` — luma/chroma Lt4 & Eq4 edge filters H&V (6 tests, bit-exact)
+      · anchor: `DecUT_DeblockCommon.cpp` ✓
 - [x] `dsp/copy.rs` — copy_block + named sizes (2 tests) [STAGED, unwired]
 - [x] `dsp/sad.rs` — sad + named sizes (3 tests) [STAGED, unwired]
 - [⏸] `dsp/expand.rs` — DEFERRED to P3 (coupled to padded Plane buffer)
