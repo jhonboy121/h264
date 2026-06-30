@@ -87,6 +87,102 @@ fn roundtrip_psnr_and_monotonicity() {
     }
 }
 
+/// Synthesize a smooth, textured panning sequence: `n` frames of an `W`x`H`
+/// window sliding `pan` luma pixels/frame over a larger analytic pattern. Smooth
+/// content + pure translation is exactly what inter prediction should exploit.
+fn panning_sequence(n: usize, pan: usize) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let cw = W / 2;
+    let ch = H / 2;
+    let lum = |x: f64, y: f64| -> u8 {
+        let v = 128.0 + 50.0 * (0.10 * x).sin() * (0.07 * y).cos() + 22.0 * (0.31 * (x + y)).sin();
+        v.clamp(0.0, 255.0) as u8
+    };
+    let chr = |x: f64, y: f64, o: f64| -> u8 {
+        let v = 128.0 + 28.0 * (0.18 * x + o).sin() * (0.12 * y).cos();
+        v.clamp(0.0, 255.0) as u8
+    };
+    (0..n)
+        .map(|k| {
+            let dx = (k * pan) as f64;
+            let cdx = (k * pan / 2) as f64;
+            let mut y = vec![0u8; W * H];
+            for j in 0..H {
+                for i in 0..W {
+                    y[j * W + i] = lum(i as f64 + dx, j as f64);
+                }
+            }
+            let mut u = vec![0u8; cw * ch];
+            let mut v = vec![0u8; cw * ch];
+            for j in 0..ch {
+                for i in 0..cw {
+                    u[j * cw + i] = chr(i as f64 + cdx, j as f64, 0.0);
+                    v[j * cw + i] = chr(i as f64 + cdx, j as f64, 1.7);
+                }
+            }
+            (y, u, v)
+        })
+        .collect()
+}
+
+/// Decode a multi-frame Annex-B stream into packed visible Y/U/V planes per frame.
+fn decode_all_planes(stream: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let mut dec = Decoder::new();
+    let frames = dec.decode_all(stream).expect("decode");
+    frames
+        .iter()
+        .map(|f| {
+            let (w, h) = f.dimensions();
+            let (ys, us, vs) = f.strides();
+            let pack = |plane: &[u8], stride: usize, pw: usize, ph: usize| {
+                let mut out = vec![0u8; pw * ph];
+                for j in 0..ph {
+                    out[j * pw..j * pw + pw].copy_from_slice(&plane[j * stride..j * stride + pw]);
+                }
+                out
+            };
+            (pack(f.y(), ys, w, h), pack(f.u(), us, w / 2, h / 2), pack(f.v(), vs, w / 2, h / 2))
+        })
+        .collect()
+}
+
+#[test]
+fn ippp_roundtrip_psnr_and_inter_savings() {
+    let frames = panning_sequence(5, 2);
+
+    for &(qp, bar) in &[(26u8, 36.0f64), (32u8, 33.0f64)] {
+        let mut enc = h264::encoder::Encoder::new(W as u32, H as u32, qp).unwrap();
+        let mut stream = Vec::new();
+        let mut au_sizes = Vec::new();
+        for (y, u, v) in &frames {
+            let au = enc.encode_frame(y, W, u, v, W / 2);
+            au_sizes.push(au.len());
+            stream.extend_from_slice(&au);
+        }
+
+        let decoded = decode_all_planes(&stream);
+        assert_eq!(decoded.len(), frames.len(), "frame count round-trips at qp={qp}");
+
+        for (k, ((sy, su, sv), (ry, ru, rv))) in frames.iter().zip(decoded.iter()).enumerate() {
+            let py = psnr(sy, ry);
+            let pu = psnr(su, ru);
+            let pv = psnr(sv, rv);
+            eprintln!(
+                "qp={qp} frame {k} ({}): PSNR Y={py:.2} U={pu:.2} V={pv:.2} dB, AU={} bytes",
+                if k == 0 { "I" } else { "P" },
+                au_sizes[k]
+            );
+            assert!(py >= bar, "frame {k} luma PSNR {py:.2} below {bar} at qp={qp}");
+            assert!(pu >= bar && pv >= bar, "frame {k} chroma PSNR low at qp={qp}: U={pu:.2} V={pv:.2}");
+        }
+
+        // Inter coding must pay off: every P access unit is smaller than the IDR.
+        let i_size = au_sizes[0];
+        for (k, &p) in au_sizes.iter().enumerate().skip(1) {
+            assert!(p < i_size, "qp={qp}: P frame {k} ({p} B) not smaller than I ({i_size} B)");
+        }
+    }
+}
+
 #[test]
 fn roundtrip_dimensions_and_decodes() {
     // Also exercise a non-MB-aligned size (frame cropping path) end to end.
