@@ -271,7 +271,7 @@ pub(super) fn parse_intra_mb_core(
         return Err(DecodeError::InvalidSyntax("intra mb_type"));
     }
     if ui_mb_type == 25 {
-        return Err(DecodeError::Unsupported("I_PCM"));
+        return parse_pcm_mb_cavlc(bs, ctx, mb_xy);
     }
 
     if ui_mb_type == 0 {
@@ -363,6 +363,50 @@ pub(super) fn parse_intra_mb_core(
         ctx.mv[(mb_xy * 16 + b) * 2 + 1] = 0;
     }
 
+    Ok(())
+}
+
+/// Commit per-MB state for an I_PCM macroblock (spec 8.5 / Rec. 9.2.1): QP = 0,
+/// nnz = 16 per block, no motion. Shared by the CAVLC and CABAC parse paths.
+pub(super) fn commit_pcm_state(ctx: &mut DecoderContext, mb_xy: usize) {
+    ctx.mb_type[mb_xy] = MbType::IPcm;
+    ctx.i16_mode[mb_xy] = 0;
+    ctx.chroma_mode[mb_xy] = 0;
+    ctx.cbp[mb_xy] = 0;
+    ctx.luma_qp[mb_xy] = 0;
+    ctx.chroma_qp[mb_xy * 2] = 0;
+    ctx.chroma_qp[mb_xy * 2 + 1] = 0;
+    ctx.nzc_luma[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(&[16i8; 16]);
+    ctx.nzc_chroma[mb_xy * 8..mb_xy * 8 + 8].copy_from_slice(&[16i8; 8]);
+    ctx.i4_best_mode[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(&[-1i8; 16]);
+    ctx.i4_final_mode[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(&[2i8; 16]);
+    for b in 0..16 {
+        ctx.ref_idx[mb_xy * 16 + b] = -1;
+        ctx.ref_pic_id[mb_xy * 16 + b] = -1;
+        ctx.mv[(mb_xy * 16 + b) * 2] = 0;
+        ctx.mv[(mb_xy * 16 + b) * 2 + 1] = 0;
+    }
+}
+
+/// Parse an I_PCM macroblock (CAVLC, spec 7.3.5): byte-align past
+/// `pcm_alignment_zero_bit`, then read 256 luma + 64 Cb + 64 Cr raw samples and
+/// copy them straight into the reconstructed picture.
+fn parse_pcm_mb_cavlc(bs: &mut BitReader<'_>, ctx: &mut DecoderContext, mb_xy: usize) -> Result<()> {
+    bs.align_to_byte();
+    let mut luma = [0u8; 256];
+    for s in luma.iter_mut() {
+        *s = bs.read_u8()?;
+    }
+    let mut cb = [0u8; 64];
+    for s in cb.iter_mut() {
+        *s = bs.read_u8()?;
+    }
+    let mut cr = [0u8; 64];
+    for s in cr.iter_mut() {
+        *s = bs.read_u8()?;
+    }
+    super::recon_intra::recon_pcm_mb(ctx, mb_xy, &luma, &cb, &cr);
+    commit_pcm_state(ctx, mb_xy);
     Ok(())
 }
 

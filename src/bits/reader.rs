@@ -57,6 +57,21 @@ impl<'a> BitReader<'a> {
         self.pos.is_multiple_of(8)
     }
 
+    /// Consume `pcm_alignment_zero_bit`s (spec 7.3.5): advance to the next byte
+    /// boundary. The skipped bits are required to be zero but are not validated
+    /// here (the reference decoder does not validate them either).
+    #[inline]
+    pub fn align_to_byte(&mut self) {
+        self.pos = ((self.pos + 7) & !7).min(self.total);
+    }
+
+    /// Read a single raw byte. The reader must be byte-aligned; used for I_PCM
+    /// `pcm_sample_*` data after [`align_to_byte`](Self::align_to_byte).
+    #[inline]
+    pub fn read_u8(&mut self) -> Result<u8> {
+        Ok(self.read_bits(8)? as u8)
+    }
+
     /// Read a single bit without bounds-checking helpers (internal).
     #[inline]
     fn read_bit_raw(&mut self) -> Result<u32> {

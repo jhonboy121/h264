@@ -23,6 +23,9 @@ pub enum MbType {
     Intra4x4,
     /// `MB_TYPE_INTRA16x16`.
     Intra16x16,
+    /// `MB_TYPE_INTRA_PCM` (I_PCM): raw uncompressed samples, no prediction or
+    /// residual. Counts as intra (deblock uses the intra rules, QP = 0).
+    IPcm,
     /// `MB_TYPE_16x16` (P_L0_16x16).
     Inter16x16,
     /// `MB_TYPE_16x8` (P_L0_L0_16x8).
@@ -47,7 +50,7 @@ impl MbType {
     /// `IS_INTRA`.
     #[inline]
     pub fn is_intra(self) -> bool {
-        matches!(self, MbType::Intra4x4 | MbType::Intra16x16)
+        matches!(self, MbType::Intra4x4 | MbType::Intra16x16 | MbType::IPcm)
     }
 
     /// `IS_INTER` (skip counts as inter).

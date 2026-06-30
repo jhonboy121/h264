@@ -79,6 +79,11 @@ pub fn recon_intra_mb(ctx: &mut DecoderContext, mb_xy: usize, coeffs: &[i16; 384
     let mb_y = mb_xy / mb_width;
 
     let mb_type = ctx.mb_type[mb_xy];
+    if mb_type == MbType::IPcm {
+        // I_PCM samples are copied straight into the picture during parse; there
+        // is no prediction or residual to reconstruct here.
+        return;
+    }
     let i16_mode = ctx.i16_mode[mb_xy];
     let chroma_mode = ctx.chroma_mode[mb_xy];
     let cbp_c = ctx.cbp[mb_xy] >> 4;
@@ -137,6 +142,32 @@ pub fn recon_intra_mb(ctx: &mut DecoderContext, mb_xy: usize, coeffs: &[i16; 384
                 }
             }
         }
+    }
+}
+
+/// Copy raw I_PCM samples straight into the reconstructed picture (spec 8.5):
+/// 256 luma samples (16x16, raster order), then 64 Cb and 64 Cr (8x8, raster
+/// order) for 4:2:0. No prediction, transform, or deblock-residual is involved;
+/// the caller has already tagged the MB as [`MbType::IPcm`] with QP = 0 and
+/// nnz = 16 per block so deblocking applies the intra rules.
+pub fn recon_pcm_mb(ctx: &mut DecoderContext, mb_xy: usize, luma: &[u8; 256], cb: &[u8; 64], cr: &[u8; 64]) {
+    let mb_width = ctx.mb_width;
+    let mb_x = mb_xy % mb_width;
+    let mb_y = mb_xy / mb_width;
+    let ystride = ctx.picture.luma_stride;
+    let cstride = ctx.picture.chroma_stride;
+    let y_off = ctx.picture.luma_mb_offset(mb_x, mb_y);
+    let c_off = ctx.picture.chroma_mb_offset(mb_x, mb_y);
+    let pic = &mut ctx.picture;
+
+    for row in 0..16 {
+        let dst = y_off + row * ystride;
+        pic.y[dst..dst + 16].copy_from_slice(&luma[row * 16..row * 16 + 16]);
+    }
+    for row in 0..8 {
+        let dst = c_off + row * cstride;
+        pic.u[dst..dst + 8].copy_from_slice(&cb[row * 8..row * 8 + 8]);
+        pic.v[dst..dst + 8].copy_from_slice(&cr[row * 8..row * 8 + 8]);
     }
 }
 

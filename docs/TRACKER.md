@@ -102,6 +102,9 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
       SPS `frame_cropping` rectangle; the conformance harness emits the cropped I420
       (4:2:0 chroma crop = luma/2). Moved jm_1080p_allslice (1920x1088→1080),
       Static, CVFC1_Sony_C (was not field-coded after all) to BITEXACT.
+- [x] **I_PCM (CAVLC) → 39/54.** `MbType::IPcm` (intra for deblock; QP=0, nnz=16),
+      `parse_pcm_mb_cavlc` byte-aligns past `pcm_alignment_zero_bit` then reads
+      256+64+64 raw samples into the picture (`recon_pcm_mb`). CVPCMNL1_SVA_C BITEXACT.
 - [x] **Perf report v1** `docs/PERF_REPORT.md` — Rust scalar 1.07-1.65× of C NEON, byte-identical
 - [x] `src/api.rs` Rusty `Decoder` facade (incremental `decode`/`flush`/`decode_all`,
       `nal_units`) + `src/formats/` (`YUVSource`, `DecodedYuv`/`Frame`, BT.601
