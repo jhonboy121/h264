@@ -1,0 +1,29 @@
+[package]
+name = "h264"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.74"
+description = "Pure-Rust port of Cisco OpenH264 (internal use)"
+license = "BSD-2-Clause"
+publish = false
+
+[features]
+default = ["std", "decoder", "encoder"]
+std = []
+decoder = []
+encoder = []
+simd = []
+threads = ["std"]
+
+[dependencies]
+
+[dev-dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.bench]
+opt-level = 3
+lto = "thin"

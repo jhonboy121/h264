@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+Cargo.lock
+# large conformance corpus / oracle artifacts
+/tests/conformance-corpus
+*.yuv
