@@ -16,10 +16,10 @@ pub fn clip3(x: i32, lo: i32, hi: i32) -> i32 {
 }
 
 // Submodules are added per P1 item:
-// pub mod intra_pred;
+pub mod copy;
+pub mod intra_pred;
+pub mod sad;
 // pub mod mc;
 // pub mod deblock;
-// pub mod sad;
-// pub mod copy;
 // pub mod expand;
 // pub mod tables;

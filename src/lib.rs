@@ -11,6 +11,8 @@
 extern crate alloc;
 
 pub mod bits;
+#[cfg(feature = "decoder")]
+pub mod decoder;
 pub mod dsp;
 pub mod error;
 

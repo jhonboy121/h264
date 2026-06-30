@@ -26,13 +26,19 @@ Last updated: P1 — bits done; DSP transform next.
 - [ ] `dsp/tables.rs` + core consts/types (`wels_const.h`, `codec_def.h`)
 - [ ] `dsp/transform.rs` — IDCT 4x4/8x8, dequant, DC transforms (port `decode_mb_aux.cpp`)
       · anchor test: `DecUT_IdctResAddPred.cpp`
-- [ ] `dsp/intra_pred.rs` — intra 4x4/8x8/16x16 + chroma (port `get_intra_predictor.cpp`,
-      `intra_pred_common.cpp`) · anchor: `DecUT_IntraPrediction.cpp`
-- [ ] `dsp/mc.rs` — luma 6-tap + chroma bilinear MC (port `mc.cpp`)
+- [x] `dsp/transform.rs` — idct4x4_add, idct8x8_add (5 tests, faithful i16 trunc)
+- [🚧] `dsp/intra_pred.rs` — DELEGATED to subagent (running); port get_intra_predictor.cpp
+- [ ] `dsp/mc.rs` — luma 6-tap + chroma bilinear MC (port `mc.cpp`) — NEXT delegate
       · anchor: `EncUT_MotionCompensation.cpp`
-- [ ] `dsp/deblock.rs` — edge filters (port `deblocking_common.cpp`)
+- [ ] `dsp/deblock.rs` — edge filters (port `deblocking_common.cpp`) — delegate
       · anchor: `DecUT_Deblock.cpp`, `DecUT_DeblockCommon.cpp`
-- [ ] `dsp/copy.rs`, `dsp/expand.rs`, `dsp/sad.rs` · anchors: `EncUT_MBCopy`, `EncUT_DecodeMbAux`
+- [x] `dsp/copy.rs` — copy_block + named sizes (2 tests) [STAGED, unwired]
+- [x] `dsp/sad.rs` — sad + named sizes (3 tests) [STAGED, unwired]
+- [⏸] `dsp/expand.rs` — DEFERRED to P3 (coupled to padded Plane buffer)
+
+### Staged-but-unwired files (wire into mod.rs after intra agent returns, then test):
+- src/dsp/copy.rs, src/dsp/sad.rs  → add `pub mod copy; pub mod sad;` to src/dsp/mod.rs
+- src/decoder/nal.rs (Annex-B framing, EBSP→RBSP, NAL types; 4 tests) → needs src/decoder/mod.rs + `pub mod decoder;` in lib.rs
 
 ## P2 — Decoder parsing ⬜
 - [ ] `decoder/nal.rs` — Annex-B framing, NAL header, EPB strip
