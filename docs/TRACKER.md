@@ -11,10 +11,37 @@ multi-ref, deblock, DPB — 28/54 BIT-EXACT vs C, 3875 frames) + encoder (baseli
 IPPP CAVLC, round-trip PSNR, no drift) + **SIMD (P10: NEON + wasm simd128, bit-exact)** +
 **refreshed perf report (P11)**. 139 tests, 0 warnings, 8 targets + no_std + wasm + simd.
 See `STATUS.md` for the final summary. Decoder now also does frame_cropping output +
-I_PCM (CAVLC+CABAC) → 40/54 BIT-EXACT. Deferred (explicit, not gaps): decoder B-slices,
+I_PCM (CAVLC+CABAC) → 40/54 BIT-EXACT, then **B-slice (bi-predictive) decode → 43/54
+BIT-EXACT**. Deferred (explicit, not gaps):
 transform8x8/High, FMO, error-conceal, SVC scalable-extension (NAL type 20); encoder
 sub-16x16, multi-ref, B, CABAC-encode, rate control; P8 processing; P9 threading;
 SIMD for deblock/mc_hor_ver22/x86.
+
+## P12 — Decoder B-slices (bi-predictive) ✅ → 43/54 BIT-EXACT
+- [x] **POC derivation** (`PocState`, spec 8.2.1 type 0 + type 2; type 1 monotonic
+      fallback) + display-order output reordering (POC-sorted within each CVS;
+      a no-op for monotonic-POC I/P streams).
+- [x] **B reference lists** (`Dpb::b_ref_lists`, 8.2.4.2.3 list-0/list-1 by POC,
+      reorder for both) + colocated motion retained per ref picture (`ColMotion`).
+- [x] **B CAVLC parse** (`mb_parse_cavlc`: `g_ksInterBMbTypeInfo`/`g_ksInterBSubMbTypeInfo`
+      tables, ref_idx/mvd both lists, B_Skip/B_Direct, B_8x8 sub_mb_type).
+- [x] **B CABAC parse** (`mb_parse_cabac`: B skip/mb_type/sub_mb_type context models
+      at offsets 27/36/+13, both-list ref/mvd, B_Skip/B_Direct).
+- [x] **Spatial direct** (`bdirect.rs`: neighbour ref/MV derivation + colZeroFlag).
+- [x] **Bi-predictive reconstruction** (`recon_inter::recon_b_mb`: uni L0/L1 +
+      default `(p0+p1+1)>>1` bi-average) — **incl. the OpenH264 16x8/8x16 bi quirk**
+      (destination-pointer over-advance discards the bi-average: part0→L1, part1→L0).
+- [x] **B deblock bS** (cross-list reference/MV comparison, `IN_SMB_EDGE_MV`/`ON_MB_BS`).
+- [x] Bit-exact on all three corpus B streams (CAVLC Adobe 1024x768, CAVLC + CABAC
+      Men_whisper 640x320).
+- [~] **Temporal direct**: implemented (POC MV scaling, 16x16 + 8x8) but **unvalidated** —
+      the only corpus temporal-direct streams (`VID_*_temporal_direct`) require
+      transform_8x8 (out of scope), and `MapColToList0` for multi-ref needs the
+      colocated picture's own reference-list POCs which the DPB does not retain
+      (single-reference case is exact). B_8x8 mixed-direct-sub temporal still uses the
+      spatial computation (dead code remainder).
+- [⏸] Explicit weighted bipred (`weighted_bipred_idc != 0`): not needed (corpus B
+      streams use idc 0 / default averaging).
 
 ---
 
