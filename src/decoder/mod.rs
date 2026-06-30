@@ -13,6 +13,7 @@ pub mod mb_parse_cavlc;
 pub mod nal;
 pub mod params;
 pub mod picture;
+pub mod recon_intra;
 pub mod slice_header;
 
 // Added per phase:
