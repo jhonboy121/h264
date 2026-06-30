@@ -31,9 +31,17 @@ pub struct ColRef<'a> {
     pub col: &'a ColMotion,
     pub is_long: bool,
     pub inference: bool,
-    /// Per-ref list-0 MV scale factors for temporal direct (`iMvScale`).
+    /// Per-ref list-0 MV scale factors for temporal direct (`iMvScale`),
+    /// indexed by the current B-slice list-0 reference index.
     pub mv_scale: &'a [i32],
     pub ref0_count: usize,
+    /// Current B-slice list-0 reference picture decode-ids, used by
+    /// `MapColToList0` to translate a colocated block's L0 reference into the
+    /// current list-0 index by matching identity (== matching POC).
+    pub cur_ref0_ids: &'a [i32],
+    /// Decode-id of the colocated picture (`list1[0]`), the list-1 reference of
+    /// every temporal-direct block.
+    pub col_id: i32,
 }
 
 impl ColRef<'_> {
@@ -61,6 +69,38 @@ impl ColRef<'_> {
             (REF_NOT_IN_LIST, [0, 0])
         };
         (intra, r0, r1, mv0, mv1)
+    }
+
+    /// `MapColToList0` (spec 8-193): map a colocated block's list-0 reference
+    /// into the current B-slice list-0 index. `r` is the (inference-corrected)
+    /// current-MB 4x4 raster block whose colocated L0 reference is looked up by
+    /// identity (decode-id == POC match). Returns 0 when not found.
+    /// Whether a B direct MB at `mb` resolves to the 8x8 (`MB_TYPE_8x8`)
+    /// partition path rather than 16x16 (`GetColocatedMb`). Used to record the
+    /// resolved colocated type for future temporal-direct lookups.
+    pub fn resolved_8x8(&self, mb: usize, cur_is_8x8: bool) -> bool {
+        let coloc_8x8 = self.col.inter8x8.get(mb).copied().unwrap_or(false);
+        let coloc_16x16 = self.col.inter16x16.get(mb).copied().unwrap_or(false);
+        let coloc_intra = self.col.intra.get(mb).copied().unwrap_or(true);
+        if coloc_8x8 && !self.inference {
+            true
+        } else {
+            !(!cur_is_8x8 && (coloc_16x16 || coloc_intra))
+        }
+    }
+
+    fn map_col_to_list0(&self, mb: usize, r: usize) -> usize {
+        let cr = if self.inference { COL_CORNER[r] } else { r };
+        let base = mb * 16 + cr;
+        let col_id = self.col.ref0_id.get(base).copied().unwrap_or(-1);
+        if col_id < 0 {
+            return 0;
+        }
+        self.cur_ref0_ids
+            .iter()
+            .take(self.ref0_count)
+            .position(|&id| id == col_id)
+            .unwrap_or(0)
     }
 }
 
@@ -93,54 +133,97 @@ fn nb(ctx: &DecoderContext, list: usize, xy: usize, blk: usize) -> ([i16; 2], i8
 }
 
 /// Temporal direct prediction (`PredBDirectTemporal` / `FillTemporalDirect8x8Mv`,
-/// spec 8.4.1.2.3). Scales the colocated list-0 MV by the POC-distance ratio in
-/// `cr.mv_scale` and derives the backward MV as `mvL0 - mvCol`. Fills `ctx`.
-///
-/// NOTE: `cr.mv_scale[0]` is used for the reference index (this is exact for the
-/// single-reference case `num_ref_idx_l0_active == 1`); the general
-/// `MapColToList0` mapping requires the colocated picture's own reference list,
-/// which the DPB does not retain. No corpus stream exercises this path (the
-/// temporal-direct streams require transform_8x8, out of scope), so it is
-/// unvalidated.
+/// spec 8.4.1.2.3). For each direct partition the colocated list-0 reference is
+/// re-mapped into the current list-0 (`MapColToList0`), its MV scaled by that
+/// reference's POC-distance factor (`cr.mv_scale[ref0]`), and the backward MV
+/// derived as `mvL0 - mvCol`. Fills `ctx` (both lists) with `ref_pic_id` so the
+/// deblocker sees the right reference identity.
+/// Temporal direct for a whole direct MB (B_Skip / B_Direct_16x16).
 pub fn b_direct_temporal(ctx: &mut DecoderContext, mb_xy: usize, cur_is_8x8: bool, cr: &ColRef) {
-    let scale0 = cr.mv_scale.first().copied().unwrap_or(256);
-    let mb16x16 = !cur_is_8x8;
-    let scale_mv = |mv: [i16; 2]| -> [i16; 2] {
-        [
-            ((scale0 * mv[0] as i32 + 128) >> 8) as i16,
-            ((scale0 * mv[1] as i32 + 128) >> 8) as i16,
-        ]
-    };
-    let parts: &[usize] = if mb16x16 { &[0] } else { &[0, 4, 8, 12] };
-    for &part_idx in parts {
-        let scan4 = SCAN4[part_idx];
-        let blocks: &[usize] = if mb16x16 {
-            &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-        } else {
-            &[scan4, scan4 + 1, scan4 + 4, scan4 + 5]
-        };
-        let (intra, cref0, _cref1, cmv0, cmv1) = cr.at(mb_xy, scan4);
-        let (mv0, mv1) = if intra {
-            ([0, 0], [0, 0])
-        } else {
-            let mvcol = if cref0 >= 0 { cmv0 } else { cmv1 };
-            let l0 = scale_mv(mvcol);
-            ([l0[0], l0[1]], [l0[0] - mvcol[0], l0[1] - mvcol[1]])
-        };
-        for &r in blocks {
-            let b = (mb_xy * 16 + r) * 2;
-            ctx.mv[b] = mv0[0];
-            ctx.mv[b + 1] = mv0[1];
-            ctx.mv_l1[b] = mv1[0];
-            ctx.mv_l1[b + 1] = mv1[1];
-            ctx.ref_idx[mb_xy * 16 + r] = 0;
-            ctx.ref_idx_l1[mb_xy * 16 + r] = 0;
-            ctx.direct[mb_xy * 16 + r] = 1;
-        }
-        if !mb16x16 {
-            ctx.sub_mb_type[mb_xy * 4 + (part_idx >> 2)] = super::context::SubMbType::P8x8;
-        }
+    ctx.direct_8x8[mb_xy] = cr.resolved_8x8(mb_xy, cur_is_8x8);
+    b_direct_temporal_blocks(ctx, mb_xy, cur_is_8x8, cr, &ALL16);
+    for i in 0..4 {
+        ctx.sub_mb_type[mb_xy * 4 + i] = super::context::SubMbType::P8x8;
     }
+}
+
+/// Temporal direct for one 8x8 sub-partition (`idx8`) of a B_8x8 MB.
+pub fn b_direct_temporal_sub(ctx: &mut DecoderContext, mb_xy: usize, idx8: usize, cr: &ColRef) {
+    let s = SCAN4[idx8 << 2];
+    let blocks = [s, s + 1, s + 4, s + 5];
+    b_direct_temporal_blocks(ctx, mb_xy, true, cr, &blocks);
+}
+
+const ALL16: [usize; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+fn b_direct_temporal_blocks(
+    ctx: &mut DecoderContext,
+    mb_xy: usize,
+    cur_is_8x8: bool,
+    cr: &ColRef,
+    fill: &[usize],
+) {
+    // Partition granularity follows the colocated MB structure (`GetColocatedMb`):
+    //   colocated 8x8 + no inference -> per-4x4 colocated MVs;
+    //   else current-not-8x8 and colocated 16x16/intra -> one 16x16 MV (block 0);
+    //   else -> per-8x8 colocated representative MVs.
+    let coloc_8x8 = cr.col.inter8x8.get(mb_xy).copied().unwrap_or(false);
+    let coloc_16x16 = cr.col.inter16x16.get(mb_xy).copied().unwrap_or(false);
+    let coloc_intra = cr.col.intra.get(mb_xy).copied().unwrap_or(true);
+    let mode = if coloc_8x8 && !cr.inference {
+        Mode::B4x4
+    } else if !cur_is_8x8 && (coloc_16x16 || coloc_intra) {
+        Mode::B16x16
+    } else {
+        Mode::B8x8
+    };
+
+    for &r in fill {
+        // Representative colocated block for this 4x4, per the partition mode.
+        let rep = match mode {
+            Mode::B16x16 => 0,
+            Mode::B8x8 => {
+                let idx8 = ((r / 4) / 2) * 2 + (r % 4) / 2;
+                SCAN4[idx8 << 2]
+            }
+            Mode::B4x4 => r,
+        };
+        let (intra, cref0, _cref1, cmv0, cmv1) = cr.at(mb_xy, rep);
+        let (ref0, mv0, mv1) = if intra {
+            (0usize, [0i16, 0], [0i16, 0])
+        } else {
+            let (ref0, mvcol) = if cref0 >= 0 {
+                (cr.map_col_to_list0(mb_xy, rep), cmv0)
+            } else {
+                (0, cmv1)
+            };
+            let scale = cr.mv_scale.get(ref0).copied().unwrap_or(256);
+            let l0 = [
+                ((scale * mvcol[0] as i32 + 128) >> 8) as i16,
+                ((scale * mvcol[1] as i32 + 128) >> 8) as i16,
+            ];
+            (ref0, l0, [l0[0] - mvcol[0], l0[1] - mvcol[1]])
+        };
+        let ref0_id = cr.cur_ref0_ids.get(ref0).copied().unwrap_or(-1);
+        let b = (mb_xy * 16 + r) * 2;
+        ctx.mv[b] = mv0[0];
+        ctx.mv[b + 1] = mv0[1];
+        ctx.mv_l1[b] = mv1[0];
+        ctx.mv_l1[b + 1] = mv1[1];
+        ctx.ref_idx[mb_xy * 16 + r] = ref0 as i8;
+        ctx.ref_idx_l1[mb_xy * 16 + r] = 0;
+        ctx.ref_pic_id[mb_xy * 16 + r] = ref0_id;
+        ctx.ref_pic_id_l1[mb_xy * 16 + r] = cr.col_id;
+        ctx.direct[mb_xy * 16 + r] = 1;
+    }
+}
+
+/// Temporal-direct partition granularity.
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    B16x16,
+    B8x8,
+    B4x4,
 }
 
 /// `PredMvBDirectSpatial` neighbour derivation: compute the per-list reference

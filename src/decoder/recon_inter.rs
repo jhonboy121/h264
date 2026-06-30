@@ -7,7 +7,7 @@
 //! intra path. P_Skip is MC-only.
 
 use crate::dsp::mc::{mc_chroma, mc_luma};
-use crate::dsp::transform::idct4x4_add;
+use crate::dsp::transform::{idct4x4_add, idct8x8_add};
 use crate::dsp::{Dim, Mv};
 
 use super::context::{DecoderContext, MbType, SubMbType};
@@ -113,13 +113,84 @@ fn block16(coeffs: &[i16; 384], base: usize) -> [i16; 16] {
     b
 }
 
+#[inline]
+fn block64(coeffs: &[i16; 384], base: usize) -> [i16; 64] {
+    let mut b = [0i16; 64];
+    b.copy_from_slice(&coeffs[base..base + 64]);
+    b
+}
+
+/// Explicit weighted-prediction table for a P slice (`weighted_pred_flag`,
+/// spec 8.4.2.3.1). Per list-0 reference index: luma + chroma (Cb,Cr)
+/// `(weight, offset)` with `log2_weight_denom`.
+pub struct PWeight {
+    pub active: bool,
+    pub luma_denom: u32,
+    pub chroma_denom: u32,
+    /// `[ref] -> (luma_weight, luma_offset)`.
+    pub lw: alloc::vec::Vec<(i32, i32)>,
+    /// `[ref] -> [(cb_w, cb_off), (cr_w, cr_off)]`.
+    pub cw: alloc::vec::Vec<[(i32, i32); 2]>,
+}
+
+#[inline]
+fn weight_px(p: u8, w: i32, off: i32, denom: u32) -> u8 {
+    let v = if denom >= 1 {
+        ((p as i32 * w + (1 << (denom - 1))) >> denom) + off
+    } else {
+        p as i32 * w + off
+    };
+    v.clamp(0, 255) as u8
+}
+
+/// Apply explicit P weighted prediction to a freshly motion-compensated MB
+/// (before the residual add), per the 8x8 region's list-0 reference index.
+fn apply_p_weight(ctx: &mut DecoderContext, mb_xy: usize, pw: &PWeight) {
+    let mb_width = ctx.mb_width;
+    let mb_x = mb_xy % mb_width;
+    let mb_y = mb_xy / mb_width;
+    let ls = ctx.picture.luma_stride;
+    let cs = ctx.picture.chroma_stride;
+    let y_off = ctx.picture.luma_mb_offset(mb_x, mb_y);
+    let c_off = ctx.picture.chroma_mb_offset(mb_x, mb_y);
+    let pic = &mut ctx.picture;
+    for region in 0..4 {
+        let bx8 = region & 1;
+        let by8 = region >> 1;
+        let raster = (by8 * 2) * 4 + bx8 * 2; // top-left 4x4 of the 8x8
+        let r = ctx.ref_idx[mb_xy * 16 + raster];
+        if r < 0 {
+            continue;
+        }
+        let (lw, lo) = pw.lw.get(r as usize).copied().unwrap_or((1 << pw.luma_denom, 0));
+        let cw = pw.cw.get(r as usize).copied().unwrap_or([(1 << pw.chroma_denom, 0); 2]);
+        let lbase = y_off + by8 * 8 * ls + bx8 * 8;
+        for i in 0..8 {
+            for j in 0..8 {
+                let idx = lbase + i * ls + j;
+                pic.y[idx] = weight_px(pic.y[idx], lw, lo, pw.luma_denom);
+            }
+        }
+        let cbase = c_off + by8 * 4 * cs + bx8 * 4;
+        for i in 0..4 {
+            for j in 0..4 {
+                let idx = cbase + i * cs + j;
+                pic.u[idx] = weight_px(pic.u[idx], cw[0].0, cw[0].1, pw.chroma_denom);
+                pic.v[idx] = weight_px(pic.v[idx], cw[1].0, cw[1].1, pw.chroma_denom);
+            }
+        }
+    }
+}
+
 /// Reconstruct inter macroblock `mb_xy`: motion-compensate every partition from
-/// `ref_pics` (indexed by list-0 ref index) then add the residual.
+/// `ref_pics` (indexed by list-0 ref index), apply explicit P weighting, then
+/// add the residual.
 pub fn recon_inter_mb(
     ctx: &mut DecoderContext,
     mb_xy: usize,
     coeffs: &[i16; 384],
     ref_pics: &[&Picture],
+    pweight: &PWeight,
 ) {
     let mb_width = ctx.mb_width;
     let mb_x = mb_xy % mb_width;
@@ -187,6 +258,9 @@ pub fn recon_inter_mb(
         _ => unreachable!("recon_inter_mb called on an intra macroblock"),
     }
 
+    if pweight.active {
+        apply_p_weight(ctx, mb_xy, pweight);
+    }
     add_inter_residual(ctx, mb_xy, coeffs);
 }
 
@@ -205,17 +279,30 @@ pub(super) fn add_inter_residual(ctx: &mut DecoderContext, mb_xy: usize, coeffs:
     let mut nzc_chroma = [0i8; 8];
     nzc_chroma.copy_from_slice(ctx.nzc_chroma_mb(mb_xy));
 
+    let transform_8x8 = ctx.transform_8x8[mb_xy];
     let ystride = ctx.picture.luma_stride;
     let cstride = ctx.picture.chroma_stride;
     let y_off = ctx.picture.luma_mb_offset(mb_x, mb_y);
     let c_off = ctx.picture.chroma_mb_offset(mb_x, mb_y);
     let pic = &mut ctx.picture;
 
-    for i in 0..16 {
-        let raster = BLOCK_RASTER[i];
-        if nzc_luma[raster] != 0 {
-            let off = y_off + BLOCK_BY[i] * 4 * ystride + BLOCK_BX[i] * 4;
-            idct4x4_add(&mut pic.y[off..], ystride, &block16(coeffs, i * 16));
+    if transform_8x8 {
+        for i8 in 0..4 {
+            let bx8 = i8 & 1;
+            let by8 = i8 >> 1;
+            let any_nz = (0..4).any(|j| nzc_luma[BLOCK_RASTER[i8 * 4 + j]] != 0);
+            if any_nz {
+                let off = y_off + by8 * 8 * ystride + bx8 * 8;
+                idct8x8_add(&mut pic.y[off..], ystride, &block64(coeffs, i8 * 64));
+            }
+        }
+    } else {
+        for i in 0..16 {
+            let raster = BLOCK_RASTER[i];
+            if nzc_luma[raster] != 0 {
+                let off = y_off + BLOCK_BY[i] * 4 * ystride + BLOCK_BX[i] * 4;
+                idct4x4_add(&mut pic.y[off..], ystride, &block16(coeffs, i * 16));
+            }
         }
     }
 
@@ -254,8 +341,15 @@ fn b_partitions(ctx: &DecoderContext, mb_xy: usize) -> alloc::vec::Vec<BPart> {
     use alloc::vec::Vec;
     let mut parts: Vec<BPart> = Vec::new();
     match ctx.mb_type[mb_xy] {
-        MbType::BSkip | MbType::BDirect16x16 | MbType::B16x16 => {
+        MbType::B16x16 => {
             parts.push(BPart { dx: 0, dy: 0, w: 16, h: 16, quirk: -1 });
+        }
+        MbType::BSkip | MbType::BDirect16x16 => {
+            // Direct MBs carry per-8x8 (or per-4x4) motion; MC each 8x8 from its
+            // own block MV (uniform-MV direct reduces to the same result).
+            for i in 0..4 {
+                parts.push(BPart { dx: (i & 1) * 8, dy: (i >> 1) * 8, w: 8, h: 8, quirk: -1 });
+            }
         }
         MbType::B16x8 => {
             parts.push(BPart { dx: 0, dy: 0, w: 16, h: 8, quirk: 0 });
@@ -298,14 +392,32 @@ fn b_partitions(ctx: &DecoderContext, mb_xy: usize) -> alloc::vec::Vec<BPart> {
     parts
 }
 
+/// Per-slice implicit weighted bi-prediction weights (`weighted_bipred_idc==2`,
+/// spec 8.4.2.3.2). `w0[ref0 * nref1 + ref1]` is the LIST_0 weight (0..=64);
+/// the LIST_1 weight is `64 - w0`. When `active` is false, bi-prediction is the
+/// default `(p0 + p1 + 1) >> 1` average.
+pub struct BiWeights {
+    pub active: bool,
+    pub nref1: usize,
+    pub w0: alloc::vec::Vec<i32>,
+}
+
+impl BiWeights {
+    #[inline]
+    fn w0(&self, r0: usize, r1: usize) -> i32 {
+        self.w0.get(r0 * self.nref1 + r1).copied().unwrap_or(32)
+    }
+}
+
 /// Reconstruct a B-slice inter macroblock: bi/uni motion-compensation from the
-/// list-0 and list-1 reference pictures (default `(p0+p1+1)>>1` bi-averaging),
-/// then add the residual (`GetInterBPred` + `BiPrediction`).
+/// list-0 and list-1 reference pictures (default `(p0+p1+1)>>1` bi-averaging or
+/// implicit-weighted bi-prediction), then add the residual (`GetInterBPred`).
 pub fn recon_b_mb(
     ctx: &mut DecoderContext,
     mb_xy: usize,
     coeffs: &[i16; 384],
     ref_pics: [&[&Picture]; 2],
+    bi_w: &BiWeights,
 ) {
     let mb_width = ctx.mb_width;
     let mb_x = mb_xy % mb_width;
@@ -350,15 +462,35 @@ pub fn recon_b_mb(
             mc_to(ref1, mb_x, mb_y, p.dx, p.dy, mv1, dim, &mut ty, 16, &mut tu, &mut tv, 8);
             let pic = &mut ctx.picture;
             let cdim = Dim { w: p.w / 2, h: p.h / 2 };
-            for i in 0..dim.h {
-                for j in 0..dim.w {
-                    pic.y[y_off + i * ls + j] = ((t0y[i * 16 + j] as i32 + ty[i * 16 + j] as i32 + 1) >> 1) as u8;
+            if bi_w.active {
+                // Implicit weighted bi-prediction: (p0*w0 + p1*w1 + 32) >> 6.
+                let w0 = bi_w.w0(r0 as usize, r1 as usize);
+                let w1 = 64 - w0;
+                let blend = |a: u8, b: u8| -> u8 {
+                    ((a as i32 * w0 + b as i32 * w1 + 32) >> 6).clamp(0, 255) as u8
+                };
+                for i in 0..dim.h {
+                    for j in 0..dim.w {
+                        pic.y[y_off + i * ls + j] = blend(t0y[i * 16 + j], ty[i * 16 + j]);
+                    }
                 }
-            }
-            for i in 0..cdim.h {
-                for j in 0..cdim.w {
-                    pic.u[c_off + i * cs + j] = ((t0u[i * 8 + j] as i32 + tu[i * 8 + j] as i32 + 1) >> 1) as u8;
-                    pic.v[c_off + i * cs + j] = ((t0v[i * 8 + j] as i32 + tv[i * 8 + j] as i32 + 1) >> 1) as u8;
+                for i in 0..cdim.h {
+                    for j in 0..cdim.w {
+                        pic.u[c_off + i * cs + j] = blend(t0u[i * 8 + j], tu[i * 8 + j]);
+                        pic.v[c_off + i * cs + j] = blend(t0v[i * 8 + j], tv[i * 8 + j]);
+                    }
+                }
+            } else {
+                for i in 0..dim.h {
+                    for j in 0..dim.w {
+                        pic.y[y_off + i * ls + j] = ((t0y[i * 16 + j] as i32 + ty[i * 16 + j] as i32 + 1) >> 1) as u8;
+                    }
+                }
+                for i in 0..cdim.h {
+                    for j in 0..cdim.w {
+                        pic.u[c_off + i * cs + j] = ((t0u[i * 8 + j] as i32 + tu[i * 8 + j] as i32 + 1) >> 1) as u8;
+                        pic.v[c_off + i * cs + j] = ((t0v[i * 8 + j] as i32 + tv[i * 8 + j] as i32 + 1) >> 1) as u8;
+                    }
                 }
             }
         } else {

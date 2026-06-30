@@ -197,6 +197,11 @@ pub struct DecoderContext {
     /// Per-MB I_8x8 neighbour-availability flag (`pIntraNxNAvailFlag`):
     /// `(TopRight<<3)|(Left<<2)|(TopLeft<<1)|Top`, read by 8x8 luma recon.
     pub i8_avail: Vec<u8>,
+    /// Per-MB: a B direct (skip / Direct_16x16) macroblock resolved to the 8x8
+    /// (or 4x4) partition path (`GetColocatedMb`), i.e. its stored colocated
+    /// type is `MB_TYPE_8x8`. Read when this picture is itself a colocated
+    /// reference for temporal direct.
+    pub direct_8x8: Vec<bool>,
     /// Per-block luma non-zero-coefficient count, 16/MB raster order.
     pub nzc_luma: Vec<i8>,
     /// Per-block chroma non-zero-coefficient count, 8/MB: Cb 0..3 then Cr 0..3,
@@ -266,6 +271,7 @@ impl DecoderContext {
             i4_final_mode: vec![2; total_mb * 16],
             transform_8x8: vec![false; total_mb],
             i8_avail: vec![0; total_mb],
+            direct_8x8: vec![false; total_mb],
             nzc_luma: vec![0; total_mb * 16],
             nzc_chroma: vec![0; total_mb * 8],
             mv: vec![0; total_mb * 16 * 2],

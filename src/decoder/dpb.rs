@@ -33,10 +33,20 @@ pub struct ColMotion {
     pub intra: Vec<bool>,
     /// Per-MB: the colocated macroblock uses list-1 (bi/backward prediction).
     pub uses_l1: Vec<bool>,
+    /// Per-MB: `IS_INTER_16x16` (single-partition / skip) — selects the
+    /// temporal-direct 16x16 path (`GetColocatedMb`).
+    pub inter16x16: Vec<bool>,
+    /// Per-MB: `IS_Inter_8x8` (8x8-partitioned) — selects the 8x8 / 4x4
+    /// temporal-direct path.
+    pub inter8x8: Vec<bool>,
     /// Per-4x4-block list-0 / list-1 motion, 16 per MB raster order, `[x,y]`.
     pub mv: [Vec<i16>; 2],
     /// Per-4x4-block list-0 / list-1 reference index (slice-local), -1 = unused.
     pub ref_idx: [Vec<i8>; 2],
+    /// Per-4x4-block decode-id of the list-0 reference picture this block
+    /// pointed at (`pRefPic[LIST_0][refIdx]`), used by temporal-direct
+    /// `MapColToList0` (8.4.1.2.3) to re-map into the current B-slice list-0.
+    pub ref0_id: Vec<i32>,
 }
 
 /// One decoded reference frame held in the DPB.

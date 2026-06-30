@@ -14,7 +14,7 @@ use crate::bits::BitReader;
 use crate::error::DecodeError;
 use crate::formats::yuv::{Frame, VisibleRegion};
 
-use super::context::DecoderContext;
+use super::context::{DecoderContext, MbType};
 use super::dpb::Dpb;
 use super::mb_parse_cavlc::{parse_intra_mb_cavlc, parse_p_mb_cavlc};
 use super::nal::{annexb_nal_units, parse_nal, NalUnit, NalUnitType};
@@ -180,15 +180,34 @@ fn build_col_motion(ctx: &DecoderContext) -> super::dpb::ColMotion {
     let n = ctx.total_mb;
     let mut intra = alloc::vec![false; n];
     let mut uses_l1 = alloc::vec![false; n];
+    let mut inter16x16 = alloc::vec![false; n];
+    let mut inter8x8 = alloc::vec![false; n];
     for mb in 0..n {
-        intra[mb] = ctx.mb_type[mb].is_intra();
+        let t = ctx.mb_type[mb];
+        intra[mb] = t.is_intra();
         uses_l1[mb] = (0..16).any(|b| ctx.ref_idx_l1[mb * 16 + b] >= 0);
+        // The colocated type for direct MBs follows the *resolved* partition
+        // mode (`MB_TYPE_8x8` vs `MB_TYPE_16x16`), not the syntax type.
+        let direct = matches!(t, MbType::BSkip | MbType::BDirect16x16);
+        let resolved_8x8 = direct && ctx.direct_8x8[mb];
+        inter8x8[mb] = matches!(t, MbType::Inter8x8 | MbType::Inter8x8Ref0 | MbType::B8x8)
+            || resolved_8x8;
+        inter16x16[mb] = if direct {
+            !ctx.direct_8x8[mb]
+        } else {
+            matches!(t, MbType::Inter16x16 | MbType::PSkip | MbType::B16x16)
+        };
     }
     super::dpb::ColMotion {
         intra,
         uses_l1,
+        inter16x16,
+        inter8x8,
         mv: [ctx.mv.clone(), ctx.mv_l1.clone()],
         ref_idx: [ctx.ref_idx.clone(), ctx.ref_idx_l1.clone()],
+        // `ref_pic_id` already holds, per block, the decode-id of the list-0
+        // reference picture (or -1 for intra / list-1-only blocks).
+        ref0_id: ctx.ref_pic_id.clone(),
     }
 }
 
@@ -387,6 +406,7 @@ fn decode_one_slice(
     }
     let ref_pic_ids: Vec<i32> = (0..ref_count).map(|k| dpb.refs[list[k]].id).collect();
     let ref_pics: Vec<&Picture> = (0..ref_count).map(|k| &dpb.refs[list[k]].pic).collect();
+    let pweight = compute_p_weight(sh, pps.weighted_pred_flag);
 
     let mut skip_run: i32 = -1;
     let mut mb_xy = sh.first_mb_in_slice as usize;
@@ -404,7 +424,7 @@ fn decode_one_slice(
         if ctx.mb_type[mb_xy].is_intra() {
             recon_intra_mb(ctx, mb_xy, &coeffs);
         } else {
-            recon_inter_mb(ctx, mb_xy, &coeffs, &ref_pics);
+            recon_inter_mb(ctx, mb_xy, &coeffs, &ref_pics, &pweight);
         }
         mb_xy += 1;
         // A pending skip run keeps consuming MBs without reading more bits.
@@ -449,6 +469,7 @@ fn decode_b_slice_cavlc(
     let ref_pics0: Vec<&Picture> = blist0.iter().map(|&i| &dpb.refs[i].pic).collect();
     let ref_pics1: Vec<&Picture> = blist1.iter().map(|&i| &dpb.refs[i].pic).collect();
     let mv_scale = temporal_mv_scale(dpb, cur_poc, &blist0, &blist1);
+    let bi_w = compute_bi_weights(dpb, cur_poc, &blist0, &blist1, pps.weighted_bipred_idc);
 
     let col_frame = &dpb.refs[blist1[0]];
     ctx.is_b_slice = true;
@@ -469,6 +490,8 @@ fn decode_b_slice_cavlc(
                 inference: direct_8x8_inference,
                 mv_scale: &mv_scale,
                 ref0_count: blist0.len(),
+                cur_ref0_ids: &ref_pic_ids0,
+                col_id: col_frame.id,
             },
         };
         parse_b_mb_cavlc(
@@ -482,7 +505,7 @@ fn decode_b_slice_cavlc(
         if ctx.mb_type[mb_xy].is_intra() {
             recon_intra_mb(ctx, mb_xy, coeffs);
         } else {
-            recon_b_mb(ctx, mb_xy, coeffs, [&ref_pics0, &ref_pics1]);
+            recon_b_mb(ctx, mb_xy, coeffs, [&ref_pics0, &ref_pics1], &bi_w);
         }
         mb_xy += 1;
         if skip_run <= 0 && !bs.more_rbsp_data() {
@@ -490,6 +513,70 @@ fn decode_b_slice_cavlc(
         }
     }
     Ok(())
+}
+
+/// Build the explicit P weighted-prediction table (`weighted_pred_flag`).
+/// Inactive (identity) when the slice carries no `pred_weight_table`.
+fn compute_p_weight(sh: &SliceHeader, weighted_pred_flag: bool) -> super::recon_inter::PWeight {
+    use super::recon_inter::PWeight;
+    if !weighted_pred_flag || sh.pred_weight_table.is_none() {
+        return PWeight { active: false, luma_denom: 0, chroma_denom: 0, lw: Vec::new(), cw: Vec::new() };
+    }
+    let pwt = sh.pred_weight_table.as_ref().unwrap();
+    let lw: Vec<(i32, i32)> = pwt.list[0].iter().map(|w| (w.luma_weight, w.luma_offset)).collect();
+    let cw: Vec<[(i32, i32); 2]> = pwt.list[0]
+        .iter()
+        .map(|w| {
+            [
+                (w.chroma_weight[0], w.chroma_offset[0]),
+                (w.chroma_weight[1], w.chroma_offset[1]),
+            ]
+        })
+        .collect();
+    PWeight {
+        active: true,
+        luma_denom: pwt.luma_log2_weight_denom,
+        chroma_denom: pwt.chroma_log2_weight_denom,
+        lw,
+        cw,
+    }
+}
+
+/// Implicit weighted bi-prediction weight table (`weighted_bipred_idc==2`,
+/// spec 8.4.2.3.2 / `CreateImplicitWeightTable`): per (list0, list1) reference
+/// pair, the LIST_0 weight `64 - DistScaleFactor` (clamped to default 32).
+fn compute_bi_weights(
+    dpb: &Dpb,
+    cur_poc: i32,
+    blist0: &[usize],
+    blist1: &[usize],
+    weighted_bipred_idc: u8,
+) -> super::recon_inter::BiWeights {
+    let nref1 = blist1.len();
+    if weighted_bipred_idc != 2 {
+        return super::recon_inter::BiWeights { active: false, nref1, w0: Vec::new() };
+    }
+    let mut w0 = Vec::with_capacity(blist0.len() * nref1);
+    for &i0 in blist0 {
+        let poc0 = dpb.refs[i0].poc;
+        let long0 = dpb.refs[i0].is_long_term;
+        for &i1 in blist1 {
+            let poc1 = dpb.refs[i1].poc;
+            let long1 = dpb.refs[i1].is_long_term;
+            let td = (poc1 - poc0).clamp(-128, 127);
+            let mut w = 32;
+            if td != 0 && !long0 && !long1 {
+                let tb = (cur_poc - poc0).clamp(-128, 127);
+                let tx = (16384 + (td.abs() >> 1)) / td;
+                let dsf = (tb * tx + 32) >> 8;
+                if (-64..=128).contains(&dsf) {
+                    w = 64 - dsf;
+                }
+            }
+            w0.push(w);
+        }
+    }
+    super::recon_inter::BiWeights { active: true, nref1, w0 }
 }
 
 /// Per-list-0-reference temporal-direct MV scale factor (`iMvScale`, spec
@@ -566,6 +653,7 @@ fn decode_one_slice_cabac(
     } else {
         (Vec::new(), Vec::new())
     };
+    let pweight = compute_p_weight(sh, pps.weighted_pred_flag);
 
     let mut mb_xy = sh.first_mb_in_slice as usize;
     while mb_xy < total_mb {
@@ -598,7 +686,7 @@ fn decode_one_slice_cabac(
         if ctx.mb_type[mb_xy].is_intra() {
             recon_intra_mb(ctx, mb_xy, &coeffs);
         } else {
-            recon_inter_mb(ctx, mb_xy, &coeffs, &ref_pics);
+            recon_inter_mb(ctx, mb_xy, &coeffs, &ref_pics, &pweight);
         }
         mb_xy += 1;
         if eos {
@@ -641,6 +729,7 @@ fn decode_b_slice_cabac(
     let ref_pics0: Vec<&Picture> = blist0.iter().map(|&i| &dpb.refs[i].pic).collect();
     let ref_pics1: Vec<&Picture> = blist1.iter().map(|&i| &dpb.refs[i].pic).collect();
     let mv_scale = temporal_mv_scale(dpb, cur_poc, &blist0, &blist1);
+    let bi_w = compute_bi_weights(dpb, cur_poc, &blist0, &blist1, pps.weighted_bipred_idc);
     let col_frame = &dpb.refs[blist1[0]];
     ctx.is_b_slice = true;
 
@@ -672,6 +761,8 @@ fn decode_b_slice_cabac(
                 inference: direct_8x8_inference,
                 mv_scale: &mv_scale,
                 ref0_count: blist0.len(),
+                cur_ref0_ids: &ref_pic_ids0,
+                col_id: col_frame.id,
             },
         };
         let eos = decode_mb_cabac_bslice(
@@ -688,7 +779,7 @@ fn decode_b_slice_cabac(
         if ctx.mb_type[mb_xy].is_intra() {
             recon_intra_mb(ctx, mb_xy, &coeffs);
         } else {
-            recon_b_mb(ctx, mb_xy, &coeffs, [&ref_pics0, &ref_pics1]);
+            recon_b_mb(ctx, mb_xy, &coeffs, [&ref_pics0, &ref_pics1], &bi_w);
         }
         mb_xy += 1;
         if eos {

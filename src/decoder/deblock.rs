@@ -411,6 +411,25 @@ fn b_bs_inter(p: BBlk, q: BBlk) -> u8 {
     v as u8
 }
 
+/// Effective per-block luma nonzero count for deblocking bS: for an MB coded
+/// with the 8x8 transform, a 4x4 sub-block's "transform block has coefficients"
+/// test uses the whole 8x8 block (OR of its four 4x4 sub-block counts), per
+/// `DeblockingBSInsideMB` / `DeblockingBsMarginalMB` (`i8x8NnzTab`).
+#[inline]
+fn eff_nzc(ctx: &DecoderContext, xy: usize, r: usize) -> i32 {
+    if ctx.transform_8x8[xy] {
+        let bx8 = (r % 4) / 2;
+        let by8 = (r / 4) / 2;
+        let base = by8 * 8 + bx8 * 2;
+        ctx.nzc_luma[xy * 16 + base] as i32
+            | ctx.nzc_luma[xy * 16 + base + 1] as i32
+            | ctx.nzc_luma[xy * 16 + base + 4] as i32
+            | ctx.nzc_luma[xy * 16 + base + 5] as i32
+    } else {
+        ctx.nzc_luma[xy * 16 + r] as i32
+    }
+}
+
 /// Compute the boundary-strength array for a B-slice inter MB, using both
 /// reference lists (`DeblockingBSliceBsMarginalMBAvcbase` +
 /// `DeblockingBSliceBSInsideMBNormal`).
@@ -422,7 +441,7 @@ fn inter_bs_b(
     top: bool,
 ) -> [[[u8; 4]; 4]; 2] {
     let mut nbs = [[[0u8; 4]; 4]; 2];
-    let nzc = |xy: usize, r: usize| ctx.nzc_luma[xy * 16 + r] as i32;
+    let nzc = |xy: usize, r: usize| eff_nzc(ctx, xy, r);
     let blk = |xy: usize, r: usize| BBlk {
         r0: ctx.ref_pic_id[xy * 16 + r],
         r1: ctx.ref_pic_id_l1[xy * 16 + r],
@@ -488,7 +507,7 @@ fn inter_bs(
     top: bool,
 ) -> [[[u8; 4]; 4]; 2] {
     let mut nbs = [[[0u8; 4]; 4]; 2];
-    let nzc = |xy: usize, r: usize| ctx.nzc_luma[xy * 16 + r] as i32;
+    let nzc = |xy: usize, r: usize| eff_nzc(ctx, xy, r);
     let refp = |r: usize| ctx.ref_pic_id[mb_xy * 16 + r];
     let mv = |r: usize| {
         let b = (mb_xy * 16 + r) * 2;
@@ -613,6 +632,7 @@ fn deblock_inter_mb(
         AvailEdges { left, top },
         EdgeOffsets { aoff, boff },
         LumaQp { cur: cur_lqp, left: left_lqp, top: top_lqp },
+        ctx.transform_8x8[mb_xy],
     );
     inter_chroma(
         ChromaPlanes { cb: &mut ctx.picture.u, cr: &mut ctx.picture.v, off: c_off, stride: cstride },
@@ -623,11 +643,21 @@ fn deblock_inter_mb(
     );
 }
 
-fn inter_luma(plane: LumaPlane, nbs: &[[[u8; 4]; 4]; 2], avail: AvailEdges, edge: EdgeOffsets, qp: LumaQp) {
+fn inter_luma(
+    plane: LumaPlane,
+    nbs: &[[[u8; 4]; 4]; 2],
+    avail: AvailEdges,
+    edge: EdgeOffsets,
+    qp: LumaQp,
+    transform_8x8: bool,
+) {
     let LumaPlane { y, y_off, stride } = plane;
     let AvailEdges { left, top } = avail;
     let EdgeOffsets { aoff, boff } = edge;
     let LumaQp { cur: cur_qp, left: left_qp, top: top_qp } = qp;
+    // For an 8x8-transform MB only the central internal edge (e == 2) is a
+    // transform-block boundary; the e == 1 / e == 3 edges are not filtered.
+    let skip_internal = |e: usize| transform_8x8 && e != 2;
     // Vertical edges (H kernels).
     if left {
         if nbs[0][0][0] == 4 {
@@ -648,7 +678,7 @@ fn inter_luma(plane: LumaPlane, nbs: &[[[u8; 4]; 4]; 2], avail: AvailEdges, edge
     let (a, b) = alpha_beta(cur_qp, aoff, boff);
     if (a | b) != 0 {
         for (e, edge) in nbs[0].iter().enumerate().skip(1) {
-            if edge.iter().any(|&v| v != 0) {
+            if !skip_internal(e) && edge.iter().any(|&v| v != 0) {
                 let tc = tc_from_bs(cur_qp, aoff, edge, 0);
                 deblock_luma_lt4_h(y, y_off + e * 4, stride, a, b, &tc);
             }
@@ -674,7 +704,7 @@ fn inter_luma(plane: LumaPlane, nbs: &[[[u8; 4]; 4]; 2], avail: AvailEdges, edge
     }
     if (a | b) != 0 {
         for (e, edge) in nbs[1].iter().enumerate().skip(1) {
-            if edge.iter().any(|&v| v != 0) {
+            if !skip_internal(e) && edge.iter().any(|&v| v != 0) {
                 let tc = tc_from_bs(cur_qp, aoff, edge, 0);
                 deblock_luma_lt4_v(y, y_off + e * 4 * stride, stride, a, b, &tc);
             }

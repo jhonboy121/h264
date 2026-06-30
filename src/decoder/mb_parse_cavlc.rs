@@ -1207,6 +1207,10 @@ fn parse_inter_mb(
     let cbp_l = cbp & 0x0f;
     let cbp_c = cbp >> 4;
 
+    // transform_size_8x8_flag (High profile): present for 16x16/16x8/8x16, or an
+    // 8x8 MB whose sub-partitions are all 8x8, when cbp luma != 0.
+    let transform_8x8 = parse_inter_t8_flag(bs, ctx, mb_xy, mb_type, cbp_l, pps)?;
+
     // QP / residual.
     let luma_qp: i32;
     let mut cur_nzc_luma = [0i8; 16];
@@ -1229,7 +1233,7 @@ fn parse_inter_mb(
         ];
         parse_residuals(
             bs,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8: false },
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 },
             Neighbours { left: &left, top: &top },
             ResidualOut { cur_nzc_luma: &mut cur_nzc_luma, cur_nzc_chroma: &mut cur_nzc_chroma },
             coeffs,
@@ -1237,6 +1241,7 @@ fn parse_inter_mb(
     } else {
         luma_qp = *last_mb_qp;
     }
+    ctx.transform_8x8[mb_xy] = transform_8x8;
 
     commit_inter_meta(
         MbCtx { ctx, mb_xy, pps },
@@ -1247,6 +1252,43 @@ fn parse_inter_mb(
         &cur_nzc_chroma,
     );
     Ok(())
+}
+
+/// `transform_size_8x8_flag` for an inter MB (CAVLC). Read when the MB is
+/// 16x16/16x8/8x16 (or 8x8 with every sub-partition 8x8) and `cbp_l != 0` and
+/// the PPS enables the 8x8 transform.
+fn parse_inter_t8_flag(
+    bs: &mut BitReader<'_>,
+    ctx: &DecoderContext,
+    mb_xy: usize,
+    mb_type: MbType,
+    cbp_l: u8,
+    pps: &Pps,
+) -> Result<bool> {
+    if !pps.transform_8x8_mode_flag || cbp_l == 0 {
+        return Ok(false);
+    }
+    let no_sub_lt_8x8 = match mb_type {
+        MbType::Inter8x8 | MbType::Inter8x8Ref0 | MbType::B8x8 => {
+            (0..4).all(|i| ctx.sub_mb_type[mb_xy * 4 + i] == SubMbType::P8x8)
+        }
+        _ => false,
+    };
+    let big_part = matches!(
+        mb_type,
+        MbType::Inter16x16
+            | MbType::Inter16x8
+            | MbType::Inter8x16
+            | MbType::B16x16
+            | MbType::B16x8
+            | MbType::B8x16
+            | MbType::BDirect16x16
+    );
+    if big_part || no_sub_lt_8x8 {
+        bs.read_flag()
+    } else {
+        Ok(false)
+    }
 }
 
 /// Parse `ref_idx_l0` (te) + `mvd_l0` (se×2) for each partition, reconstruct the
@@ -1440,7 +1482,9 @@ fn update_p8x16(
 
 // ===================== B-slice (bi-predictive) macroblock parse =============
 
-use super::bdirect::{b_direct_spatial, fill_direct_16x16, fill_direct_8x8, ColRef, DirectInfo};
+use super::bdirect::{
+    b_direct_spatial, b_direct_temporal_sub, fill_direct_16x16, fill_direct_8x8, ColRef, DirectInfo,
+};
 
 /// B macroblock partition shape (`g_ksInterBMbTypeInfo` geometry).
 #[derive(Clone, Copy, PartialEq)]
@@ -1710,6 +1754,8 @@ pub fn parse_b_mb_cavlc(
     let cbp_l = cbp & 0x0f;
     let cbp_c = cbp >> 4;
 
+    let transform_8x8 = parse_inter_t8_flag(bs, ctx, mb_xy, mb_type, cbp_l, pps)?;
+
     let luma_qp: i32;
     let mut cur_nzc_luma = [0i8; 16];
     let mut cur_nzc_chroma = [0i8; 8];
@@ -1731,7 +1777,7 @@ pub fn parse_b_mb_cavlc(
         ];
         parse_residuals(
             bs,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8: false },
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 },
             Neighbours { left: &left, top: &top },
             ResidualOut { cur_nzc_luma: &mut cur_nzc_luma, cur_nzc_chroma: &mut cur_nzc_chroma },
             coeffs,
@@ -1739,6 +1785,7 @@ pub fn parse_b_mb_cavlc(
     } else {
         luma_qp = *last_mb_qp;
     }
+    ctx.transform_8x8[mb_xy] = transform_8x8;
 
     commit_inter_meta(
         MbCtx { ctx, mb_xy, pps },
@@ -1774,6 +1821,7 @@ pub(super) fn apply_b_direct(
         }
         return;
     }
+    ctx.direct_8x8[mb_xy] = col.resolved_8x8(mb_xy, !whole_mb);
     let info: DirectInfo = b_direct_spatial(ctx, mb_xy, !whole_mb);
     let ref_pic = [
         if info.iref[0] >= 0 && (info.iref[0] as usize) < ref_pic_ids[0].len() {
@@ -1904,9 +1952,14 @@ fn parse_b_8x8(
         *s = st as usize;
     }
 
-    // Direct prediction (computed once, shared by all direct sub-partitions).
+    // Direct prediction for direct sub-partitions. Spatial: a single shared
+    // `DirectInfo`; temporal: per-8x8-sub colocated MV scaling.
     let any_direct = subs.iter().any(|&s| B_SUB_INFO[s].direct);
-    let direct = if any_direct { Some(b_direct_spatial(ctx, mb_xy, true)) } else { None };
+    let direct = if any_direct && bref.direct_spatial {
+        Some(b_direct_spatial(ctx, mb_xy, true))
+    } else {
+        None
+    };
     let direct_refpic = direct.as_ref().map(|d| {
         [
             if d.iref[0] >= 0 && (d.iref[0] as usize) < bref.ref_pic_ids[0].len() { bref.ref_pic_ids[0][d.iref[0] as usize] } else { -1 },
@@ -1919,8 +1972,12 @@ fn parse_b_8x8(
         let sinfo = &B_SUB_INFO[s];
         ctx.sub_mb_type[mb_xy * 4 + i] = sinfo.sub;
         if sinfo.direct {
-            let d = direct.as_ref().unwrap();
-            fill_direct_8x8(ctx, mb_xy, i, 1, 2, d, &bref.col, direct_refpic.unwrap());
+            if bref.direct_spatial {
+                let d = direct.as_ref().unwrap();
+                fill_direct_8x8(ctx, mb_xy, i, 1, 2, d, &bref.col, direct_refpic.unwrap());
+            } else {
+                b_direct_temporal_sub(ctx, mb_xy, i, &bref.col);
+            }
             // sync the cache for this 8x8's blocks.
             sync_cache_8x8(cache, ctx, mb_xy, i);
         }
@@ -1932,9 +1989,16 @@ fn parse_b_8x8(
         for (i, &s) in subs.iter().enumerate() {
             let sinfo = &B_SUB_INFO[s];
             if sinfo.direct {
-                if let Some(d) = &direct {
+                if bref.direct_spatial {
+                    let d = direct.as_ref().unwrap();
                     irefs[i] = d.iref[list];
                     set_8x8_ref(ctx, mb_xy, i, list, d.iref[list], direct_refpic.unwrap()[list]);
+                } else {
+                    // Temporal: the neighbour-prediction cache treats a direct
+                    // sub-partition as not-in-list (the C leaves `ref_idx_list`
+                    // at its -1 init), so later explicit subs exclude its MV from
+                    // prediction. `ctx` keeps the real ref for recon/deblock.
+                    irefs[i] = REF_NOT_IN_LIST;
                 }
             } else if dir_uses(sinfo.dir, list) {
                 let n = bref.ref_count[list];
