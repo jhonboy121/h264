@@ -90,10 +90,12 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
 - [ ] **P3f FMO** (`fmo.rs`), **error concealment** (`error_conceal.rs`) — lower priority.
 - [ ] `dsp/expand.rs` border padding (deferred from P1) — needed by MC ref reads.
 
-## P4 — Decoder API + conformance ⬜
-- [ ] `src/api.rs` Decoder facade, `src/formats/` YUV→RGB
-- [ ] conformance harness: decode `tests/fixtures` + full corpus
-- [ ] C `h264dec` oracle golden md5 compare (needs meson/ninja/nasm)
+## P4 — Decoder API + conformance 🚧
+- [x] C `h264dec` oracle built; conformance harness `examples/conformance.rs`
+- [x] **Corpus run: 28/54 streams BIT-EXACT** (3875 frames); 11 unsupported
+      (8x8-transform/B/PCM), 11 mismatch (mostly crop/interlace len), 4 corrupted. d5011f7
+- [x] **Perf report v1** `docs/PERF_REPORT.md` — Rust scalar 1.07-1.65× of C NEON, byte-identical
+- [ ] `src/api.rs` Rusty Decoder facade + `src/formats/` (YUV + write_rgb8/rgba8) — NEXT
 
 ## P5 — Encoder DSP ⬜
 - [ ] fwd transform/quant (`encode_mb_aux.cpp`) · `EncUT_EncoderMbAux`, `EncUT_DecodeMbAux`
