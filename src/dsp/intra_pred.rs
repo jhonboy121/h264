@@ -1100,7 +1100,6 @@ pub fn i16x16_luma_pred_h_pref(
 mod tests {
     use super::*;
     use alloc::vec;
-    use alloc::vec::Vec;
 
     // Deterministic LCG (same constants as src/dsp/transform.rs tests).
     fn lcg() -> impl FnMut() -> u8 {
@@ -1443,5 +1442,505 @@ mod tests {
         run4x4(i4x4_luma_pred_vl_top, r4_vl_top);
         run4x4(i4x4_luma_pred_hu, r4_hu);
         run4x4(i4x4_luma_pred_hd, r4_hd);
+    }
+
+    // ====================================================================
+    // 8x8 luma references (clause 8.3.2.2 with 8.3.2.2.1 reference-sample
+    // smoothing). Built independently from the spec position equations.
+    // ====================================================================
+
+    // Raw neighbour samples (unfiltered).
+    fn rtop(p: &[u8], o: usize, s: usize, x: isize) -> i32 {
+        g(p, o, x - s as isize) // p[x, -1]
+    }
+    fn rleft(p: &[u8], o: usize, s: usize, y: isize) -> i32 {
+        g(p, o, -1 + y * s as isize) // p[-1, y]
+    }
+    fn rcorner(p: &[u8], o: usize, s: usize) -> i32 {
+        g(p, o, -1 - s as isize) // p[-1, -1]
+    }
+
+    /// Filtered top, 8 samples, left edge per `b_tl`, right edge per `b_tr`.
+    fn ft8(p: &[u8], o: usize, s: usize, b_tl: bool, b_tr: bool) -> [i32; 8] {
+        let mut t = [0i32; 8];
+        t[0] = if b_tl {
+            (rcorner(p, o, s) + 2 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2
+        } else {
+            (3 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2
+        };
+        for i in 1..7 {
+            t[i] = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
+        }
+        t[7] = if b_tr {
+            (rtop(p, o, s, 6) + 2 * rtop(p, o, s, 7) + rtop(p, o, s, 8) + 2) >> 2
+        } else {
+            (rtop(p, o, s, 6) + 3 * rtop(p, o, s, 7) + 2) >> 2
+        };
+        t
+    }
+    /// Filtered top, 16 samples (top-right available). For DDL/VL.
+    fn ft_full(p: &[u8], o: usize, s: usize, b_tl: bool) -> [i32; 16] {
+        let mut t = [0i32; 16];
+        t[0] = if b_tl {
+            (rcorner(p, o, s) + 2 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2
+        } else {
+            (3 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2
+        };
+        for i in 1..15 {
+            t[i] = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
+        }
+        t[15] = (rtop(p, o, s, 14) + 3 * rtop(p, o, s, 15) + 2) >> 2;
+        t
+    }
+    /// Filtered top, 16 samples (top-right unavailable: 8..15 replicate raw T7).
+    fn ft_only(p: &[u8], o: usize, s: usize, b_tl: bool) -> [i32; 16] {
+        let mut t = [0i32; 16];
+        t[0] = if b_tl {
+            (rcorner(p, o, s) + 2 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2
+        } else {
+            (3 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2
+        };
+        for i in 1..7 {
+            t[i] = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
+        }
+        t[7] = (rtop(p, o, s, 6) + 3 * rtop(p, o, s, 7) + 2) >> 2;
+        for i in 8..16 {
+            t[i] = rtop(p, o, s, 7);
+        }
+        t
+    }
+    /// Filtered top, 8 samples, left edge forced to the top-left-available form.
+    fn ft8_tl(p: &[u8], o: usize, s: usize, b_tr: bool) -> [i32; 8] {
+        let mut t = [0i32; 8];
+        t[0] = (rcorner(p, o, s) + 2 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2;
+        for i in 1..7 {
+            t[i] = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
+        }
+        t[7] = if b_tr {
+            (rtop(p, o, s, 6) + 2 * rtop(p, o, s, 7) + rtop(p, o, s, 8) + 2) >> 2
+        } else {
+            (rtop(p, o, s, 6) + 3 * rtop(p, o, s, 7) + 2) >> 2
+        };
+        t
+    }
+    /// Filtered left, 8 samples, top edge per `b_tl`.
+    fn fl8(p: &[u8], o: usize, s: usize, b_tl: bool) -> [i32; 8] {
+        let mut l = [0i32; 8];
+        l[0] = if b_tl {
+            (rcorner(p, o, s) + 2 * rleft(p, o, s, 0) + rleft(p, o, s, 1) + 2) >> 2
+        } else {
+            (3 * rleft(p, o, s, 0) + rleft(p, o, s, 1) + 2) >> 2
+        };
+        for i in 1..7 {
+            l[i] = (rleft(p, o, s, i as isize - 1) + 2 * rleft(p, o, s, i as isize) + rleft(p, o, s, i as isize + 1) + 2) >> 2;
+        }
+        l[7] = (rleft(p, o, s, 6) + 3 * rleft(p, o, s, 7) + 2) >> 2;
+        l
+    }
+    /// Filtered left, 8 samples, top edge forced to top-left-available form.
+    fn fl8_tl(p: &[u8], o: usize, s: usize) -> [i32; 8] {
+        let mut l = [0i32; 8];
+        l[0] = (rcorner(p, o, s) + 2 * rleft(p, o, s, 0) + rleft(p, o, s, 1) + 2) >> 2;
+        for i in 1..7 {
+            l[i] = (rleft(p, o, s, i as isize - 1) + 2 * rleft(p, o, s, i as isize) + rleft(p, o, s, i as isize + 1) + 2) >> 2;
+        }
+        l[7] = (rleft(p, o, s, 6) + 3 * rleft(p, o, s, 7) + 2) >> 2;
+        l
+    }
+    /// Filtered top-left corner.
+    fn ftl(p: &[u8], o: usize, s: usize) -> i32 {
+        (rleft(p, o, s, 0) + 2 * rcorner(p, o, s) + rtop(p, o, s, 0) + 2) >> 2
+    }
+
+    fn fill8(p: &mut [u8], o: usize, s: usize, rows: &[[i32; 8]; 8]) {
+        for y in 0..8 {
+            for x in 0..8 {
+                p[o + y * s + x] = rows[y][x] as u8;
+            }
+        }
+    }
+
+    fn r8_v(p: &mut [u8], o: usize, s: usize, b_tl: bool, b_tr: bool) {
+        let t = ft8(p, o, s, b_tl, b_tr);
+        let rows = core::array::from_fn(|_| t);
+        fill8(p, o, s, &rows);
+    }
+    fn r8_h(p: &mut [u8], o: usize, s: usize, b_tl: bool, _b_tr: bool) {
+        let l = fl8(p, o, s, b_tl);
+        let rows = core::array::from_fn(|y| [l[y]; 8]);
+        fill8(p, o, s, &rows);
+    }
+    fn r8_dc(p: &mut [u8], o: usize, s: usize, b_tl: bool, b_tr: bool) {
+        let t = ft8(p, o, s, b_tl, b_tr);
+        let l = fl8(p, o, s, b_tl);
+        let total: i32 = t.iter().sum::<i32>() + l.iter().sum::<i32>();
+        let m = (total + 8) >> 4;
+        fill8(p, o, s, &[[m; 8]; 8]);
+    }
+    fn r8_dc_left(p: &mut [u8], o: usize, s: usize, b_tl: bool, _b_tr: bool) {
+        let l = fl8(p, o, s, b_tl);
+        let m = (l.iter().sum::<i32>() + 4) >> 3;
+        fill8(p, o, s, &[[m; 8]; 8]);
+    }
+    fn r8_dc_top(p: &mut [u8], o: usize, s: usize, b_tl: bool, b_tr: bool) {
+        let t = ft8(p, o, s, b_tl, b_tr);
+        let m = (t.iter().sum::<i32>() + 4) >> 3;
+        fill8(p, o, s, &[[m; 8]; 8]);
+    }
+    fn r8_dc_na(p: &mut [u8], o: usize, s: usize, _b_tl: bool, _b_tr: bool) {
+        fill8(p, o, s, &[[0x80; 8]; 8]);
+    }
+    fn r8_ddl_inner(p: &mut [u8], o: usize, s: usize, t: &[i32; 16]) {
+        for i in 0..8 {
+            for j in 0..8 {
+                let v = if i == 7 && j == 7 {
+                    (t[14] + 3 * t[15] + 2) >> 2
+                } else {
+                    (t[i + j] + 2 * t[i + j + 1] + t[i + j + 2] + 2) >> 2
+                };
+                p[o + i * s + j] = v as u8;
+            }
+        }
+    }
+    fn r8_ddl(p: &mut [u8], o: usize, s: usize, b_tl: bool, _b_tr: bool) {
+        let t = ft_full(p, o, s, b_tl);
+        r8_ddl_inner(p, o, s, &t);
+    }
+    fn r8_ddl_top(p: &mut [u8], o: usize, s: usize, b_tl: bool, _b_tr: bool) {
+        let t = ft_only(p, o, s, b_tl);
+        r8_ddl_inner(p, o, s, &t);
+    }
+    fn r8_vl_inner(p: &mut [u8], o: usize, s: usize, t: &[i32; 16]) {
+        for i in 0..8 {
+            for j in 0..8 {
+                let k = j + (i >> 1);
+                let v = if i & 1 == 0 {
+                    (t[k] + t[k + 1] + 1) >> 1
+                } else {
+                    (t[k] + 2 * t[k + 1] + t[k + 2] + 2) >> 2
+                };
+                p[o + i * s + j] = v as u8;
+            }
+        }
+    }
+    fn r8_vl(p: &mut [u8], o: usize, s: usize, b_tl: bool, _b_tr: bool) {
+        let t = ft_full(p, o, s, b_tl);
+        r8_vl_inner(p, o, s, &t);
+    }
+    fn r8_vl_top(p: &mut [u8], o: usize, s: usize, b_tl: bool, _b_tr: bool) {
+        let t = ft_only(p, o, s, b_tl);
+        r8_vl_inner(p, o, s, &t);
+    }
+    fn r8_ddr(p: &mut [u8], o: usize, s: usize, _b_tl: bool, b_tr: bool) {
+        let t = ft8_tl(p, o, s, b_tr);
+        let l = fl8_tl(p, o, s);
+        let tl = ftl(p, o, s);
+        for i in 0..8i32 {
+            for j in 0..8i32 {
+                let v = if j < i - 1 {
+                    let k = (i - j) as usize;
+                    (l[k - 2] + 2 * l[k - 1] + l[k] + 2) >> 2
+                } else if j == i - 1 {
+                    (tl + 2 * l[0] + l[1] + 2) >> 2
+                } else if j == i {
+                    (t[0] + 2 * tl + l[0] + 2) >> 2
+                } else if j == i + 1 {
+                    (tl + 2 * t[0] + t[1] + 2) >> 2
+                } else {
+                    let k = (j - i) as usize;
+                    (t[k - 2] + 2 * t[k - 1] + t[k] + 2) >> 2
+                };
+                p[o + i as usize * s + j as usize] = v as u8;
+            }
+        }
+    }
+    fn r8_vr(p: &mut [u8], o: usize, s: usize, _b_tl: bool, b_tr: bool) {
+        let t = ft8_tl(p, o, s, b_tr);
+        let l = fl8_tl(p, o, s);
+        let tl = ftl(p, o, s);
+        for i in 0..8i32 {
+            for j in 0..8i32 {
+                let z = (j << 1) - i;
+                let d = j - (i >> 1);
+                let v = if z >= 0 {
+                    if z & 1 == 0 {
+                        if d > 0 {
+                            (t[(d - 1) as usize] + t[d as usize] + 1) >> 1
+                        } else {
+                            (tl + t[0] + 1) >> 1
+                        }
+                    } else if d > 1 {
+                        (t[(d - 2) as usize] + 2 * t[(d - 1) as usize] + t[d as usize] + 2) >> 2
+                    } else {
+                        (tl + 2 * t[0] + t[1] + 2) >> 2
+                    }
+                } else if z == -1 {
+                    (l[0] + 2 * tl + t[0] + 2) >> 2
+                } else if z < -2 {
+                    (l[(-z - 1) as usize] + 2 * l[(-z - 2) as usize] + l[(-z - 3) as usize] + 2) >> 2
+                } else {
+                    (l[1] + 2 * l[0] + tl + 2) >> 2
+                };
+                p[o + i as usize * s + j as usize] = v as u8;
+            }
+        }
+    }
+    fn r8_hu(p: &mut [u8], o: usize, s: usize, b_tl: bool, _b_tr: bool) {
+        let l = fl8(p, o, s, b_tl);
+        for i in 0..8 {
+            for j in 0..8 {
+                let z = j + (i << 1);
+                let v = if z < 13 {
+                    let k = z >> 1;
+                    if z & 1 == 0 {
+                        (l[k] + l[k + 1] + 1) >> 1
+                    } else {
+                        (l[k] + 2 * l[k + 1] + l[k + 2] + 2) >> 2
+                    }
+                } else if z == 13 {
+                    (l[6] + 3 * l[7] + 2) >> 2
+                } else {
+                    l[7]
+                };
+                p[o + i * s + j] = v as u8;
+            }
+        }
+    }
+    fn r8_hd(p: &mut [u8], o: usize, s: usize, _b_tl: bool, b_tr: bool) {
+        let t = ft8_tl(p, o, s, b_tr);
+        let l = fl8_tl(p, o, s);
+        let tl = ftl(p, o, s);
+        for i in 0..8i32 {
+            for j in 0..8i32 {
+                let z = (i << 1) - j;
+                let d = i - (j >> 1);
+                let v = if z >= 0 {
+                    if z & 1 == 0 {
+                        if d == 0 {
+                            (tl + l[0] + 1) >> 1
+                        } else {
+                            (l[(d - 1) as usize] + l[d as usize] + 1) >> 1
+                        }
+                    } else if d == 1 {
+                        (tl + 2 * l[0] + l[1] + 2) >> 2
+                    } else {
+                        (l[(d - 2) as usize] + 2 * l[(d - 1) as usize] + l[d as usize] + 2) >> 2
+                    }
+                } else if z == -1 {
+                    (l[0] + 2 * tl + t[0] + 2) >> 2
+                } else if z < -2 {
+                    (t[(-z - 1) as usize] + 2 * t[(-z - 2) as usize] + t[(-z - 3) as usize] + 2) >> 2
+                } else {
+                    (t[1] + 2 * t[0] + tl + 2) >> 2
+                };
+                p[o + i as usize * s + j as usize] = v as u8;
+            }
+        }
+    }
+
+    #[test]
+    fn i8x8_all() {
+        run8x8(i8x8_luma_pred_v, r8_v);
+        run8x8(i8x8_luma_pred_h, r8_h);
+        run8x8(i8x8_luma_pred_dc, r8_dc);
+        run8x8(i8x8_luma_pred_dc_left, r8_dc_left);
+        run8x8(i8x8_luma_pred_dc_top, r8_dc_top);
+        run8x8(i8x8_luma_pred_dc_na, r8_dc_na);
+        run8x8(i8x8_luma_pred_ddl, r8_ddl);
+        run8x8(i8x8_luma_pred_ddl_top, r8_ddl_top);
+        run8x8(i8x8_luma_pred_ddr, r8_ddr);
+        run8x8(i8x8_luma_pred_vl, r8_vl);
+        run8x8(i8x8_luma_pred_vl_top, r8_vl_top);
+        run8x8(i8x8_luma_pred_vr, r8_vr);
+        run8x8(i8x8_luma_pred_hu, r8_hu);
+        run8x8(i8x8_luma_pred_hd, r8_hd);
+    }
+
+    // ====================================================================
+    // 16x16 luma references (no reference-sample smoothing).
+    // ====================================================================
+
+    fn r16_v(p: &mut [u8], o: usize, s: usize) {
+        for y in 0..16 {
+            for x in 0..16 {
+                p[o + y * s + x] = rtop(p, o, s, x as isize) as u8;
+            }
+        }
+    }
+    fn r16_h(p: &mut [u8], o: usize, s: usize) {
+        for y in 0..16 {
+            let v = rleft(p, o, s, y as isize) as u8;
+            for x in 0..16 {
+                p[o + y * s + x] = v;
+            }
+        }
+    }
+    fn r16_dc(p: &mut [u8], o: usize, s: usize) {
+        let mut sum = 16i32;
+        for i in 0..16isize {
+            sum += rleft(p, o, s, i) + rtop(p, o, s, i);
+        }
+        let m = (sum >> 5) as u8;
+        for y in 0..16 {
+            for x in 0..16 {
+                p[o + y * s + x] = m;
+            }
+        }
+    }
+    fn r16_dc_top(p: &mut [u8], o: usize, s: usize) {
+        let mut sum = 8i32;
+        for i in 0..16isize {
+            sum += rtop(p, o, s, i);
+        }
+        let m = (sum >> 4) as u8;
+        for y in 0..16 {
+            for x in 0..16 {
+                p[o + y * s + x] = m;
+            }
+        }
+    }
+    fn r16_dc_left(p: &mut [u8], o: usize, s: usize) {
+        let mut sum = 8i32;
+        for i in 0..16isize {
+            sum += rleft(p, o, s, i);
+        }
+        let m = (sum >> 4) as u8;
+        for y in 0..16 {
+            for x in 0..16 {
+                p[o + y * s + x] = m;
+            }
+        }
+    }
+    fn r16_dc_na(p: &mut [u8], o: usize, s: usize) {
+        for y in 0..16 {
+            for x in 0..16 {
+                p[o + y * s + x] = 0x80;
+            }
+        }
+    }
+    fn r16_plane(p: &mut [u8], o: usize, s: usize) {
+        let mut h = 0i32;
+        let mut v = 0i32;
+        for i in 0..8isize {
+            h += (i as i32 + 1) * (rtop(p, o, s, 8 + i) - rtop(p, o, s, 6 - i));
+            v += (i as i32 + 1) * (rleft(p, o, s, 8 + i) - rleft(p, o, s, 6 - i));
+        }
+        let a = (rleft(p, o, s, 15) + rtop(p, o, s, 15)) << 4;
+        let b = (5 * h + 32) >> 6;
+        let c = (5 * v + 32) >> 6;
+        for i in 0..16i32 {
+            for j in 0..16i32 {
+                let val = (a + b * (j - 7) + c * (i - 7) + 16) >> 5;
+                p[o + i as usize * s + j as usize] = clip1(val);
+            }
+        }
+    }
+
+    #[test]
+    fn i16x16_all() {
+        run_big(16, i16x16_luma_pred_v, r16_v);
+        run_big(16, i16x16_luma_pred_h, r16_h);
+        run_big(16, i16x16_luma_pred_dc, r16_dc);
+        run_big(16, i16x16_luma_pred_dc_top, r16_dc_top);
+        run_big(16, i16x16_luma_pred_dc_left, r16_dc_left);
+        run_big(16, i16x16_luma_pred_dc_na, r16_dc_na);
+        run_big(16, i16x16_luma_pred_plane, r16_plane);
+    }
+
+    // ====================================================================
+    // Chroma 8x8 references.
+    // ====================================================================
+
+    fn rc_v(p: &mut [u8], o: usize, s: usize) {
+        for y in 0..8 {
+            for x in 0..8 {
+                p[o + y * s + x] = rtop(p, o, s, x as isize) as u8;
+            }
+        }
+    }
+    fn rc_h(p: &mut [u8], o: usize, s: usize) {
+        for y in 0..8 {
+            let v = rleft(p, o, s, y as isize) as u8;
+            for x in 0..8 {
+                p[o + y * s + x] = v;
+            }
+        }
+    }
+    fn rc_dc(p: &mut [u8], o: usize, s: usize) {
+        let st: [i32; 8] = core::array::from_fn(|x| rtop(p, o, s, x as isize));
+        let sl: [i32; 8] = core::array::from_fn(|y| rleft(p, o, s, y as isize));
+        let st03 = st[0] + st[1] + st[2] + st[3];
+        let st47 = st[4] + st[5] + st[6] + st[7];
+        let sl03 = sl[0] + sl[1] + sl[2] + sl[3];
+        let sl47 = sl[4] + sl[5] + sl[6] + sl[7];
+        let m1 = ((st03 + sl03 + 4) >> 3) as u8;
+        let m2 = ((st47 + 2) >> 2) as u8;
+        let m3 = ((sl47 + 2) >> 2) as u8;
+        let m4 = ((st47 + sl47 + 4) >> 3) as u8;
+        let up = [m1, m1, m1, m1, m2, m2, m2, m2];
+        let down = [m3, m3, m3, m3, m4, m4, m4, m4];
+        for y in 0..8 {
+            let row = if y < 4 { &up } else { &down };
+            for x in 0..8 {
+                p[o + y * s + x] = row[x];
+            }
+        }
+    }
+    fn rc_dc_left(p: &mut [u8], o: usize, s: usize) {
+        let sl: [i32; 8] = core::array::from_fn(|y| rleft(p, o, s, y as isize));
+        let up = ((sl[0] + sl[1] + sl[2] + sl[3] + 2) >> 2) as u8;
+        let down = ((sl[4] + sl[5] + sl[6] + sl[7] + 2) >> 2) as u8;
+        for y in 0..8 {
+            let v = if y < 4 { up } else { down };
+            for x in 0..8 {
+                p[o + y * s + x] = v;
+            }
+        }
+    }
+    fn rc_dc_top(p: &mut [u8], o: usize, s: usize) {
+        let st: [i32; 8] = core::array::from_fn(|x| rtop(p, o, s, x as isize));
+        let m1 = ((st[0] + st[1] + st[2] + st[3] + 2) >> 2) as u8;
+        let m2 = ((st[4] + st[5] + st[6] + st[7] + 2) >> 2) as u8;
+        let row = [m1, m1, m1, m1, m2, m2, m2, m2];
+        for y in 0..8 {
+            for x in 0..8 {
+                p[o + y * s + x] = row[x];
+            }
+        }
+    }
+    fn rc_dc_na(p: &mut [u8], o: usize, s: usize) {
+        for y in 0..8 {
+            for x in 0..8 {
+                p[o + y * s + x] = 0x80;
+            }
+        }
+    }
+    fn rc_plane(p: &mut [u8], o: usize, s: usize) {
+        let mut h = 0i32;
+        let mut v = 0i32;
+        for i in 0..4isize {
+            h += (i as i32 + 1) * (rtop(p, o, s, 4 + i) - rtop(p, o, s, 2 - i));
+            v += (i as i32 + 1) * (rleft(p, o, s, 4 + i) - rleft(p, o, s, 2 - i));
+        }
+        let a = (rleft(p, o, s, 7) + rtop(p, o, s, 7)) << 4;
+        let b = (17 * h + 16) >> 5;
+        let c = (17 * v + 16) >> 5;
+        for i in 0..8i32 {
+            for j in 0..8i32 {
+                let val = (a + b * (j - 3) + c * (i - 3) + 16) >> 5;
+                p[o + i as usize * s + j as usize] = clip1(val);
+            }
+        }
+    }
+
+    #[test]
+    fn chroma_all() {
+        run_big(8, i_chroma_pred_v, rc_v);
+        run_big(8, i_chroma_pred_h, rc_h);
+        run_big(8, i_chroma_pred_dc, rc_dc);
+        run_big(8, i_chroma_pred_dc_left, rc_dc_left);
+        run_big(8, i_chroma_pred_dc_top, rc_dc_top);
+        run_big(8, i_chroma_pred_dc_na, rc_dc_na);
+        run_big(8, i_chroma_pred_plane, rc_plane);
     }
 }
