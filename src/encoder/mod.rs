@@ -5,4 +5,5 @@
 //! pieces (intra prediction for mode decision, and — in later phases — mode
 //! decision, motion estimation, CAVLC/CABAC writing and rate control).
 
+pub mod cavlc_writer;
 pub mod intra_pred;
