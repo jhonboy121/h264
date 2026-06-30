@@ -16,7 +16,8 @@
 
 use crate::bits::BitReader;
 use crate::dsp::tables::{
-    G_KUI_CHROMA_DC_SCAN, G_KUI_DEQUANT_COEFF, G_KUI_LUMA_DC_ZIGZAG_SCAN, G_KUI_ZIGZAG_SCAN,
+    G_KUI_CHROMA_DC_SCAN, G_KUI_DEQUANT_COEFF, G_KUI_DEQUANT_COEFF8X8, G_KUI_LUMA_DC_ZIGZAG_SCAN,
+    G_KUI_ZIGZAG_SCAN, G_KUI_ZIGZAG_SCAN8X8,
 };
 use crate::error::DecodeError;
 
@@ -47,6 +48,8 @@ struct ResidualParams {
     cbp_c: u8,
     luma_qp: i32,
     chroma_qp: [i32; 2],
+    /// Luma residual uses the 8x8 transform (`transform_size_8x8_flag`).
+    transform_8x8: bool,
 }
 
 /// Left/top neighbour snapshots for nC derivation.
@@ -266,6 +269,8 @@ pub(super) fn parse_intra_mb_core(
     let mut i16_mode = 0i8;
     let mut chroma_mode;
     let cbp: u8;
+    let mut transform_8x8 = false;
+    let mut i8_avail = 0u8;
 
     if ui_mb_type > 25 {
         return Err(DecodeError::InvalidSyntax("intra mb_type"));
@@ -275,16 +280,20 @@ pub(super) fn parse_intra_mb_core(
     }
 
     if ui_mb_type == 0 {
-        // I_NxN. transform_size_8x8 (I_8x8) is High-profile only.
+        // I_NxN: transform_size_8x8 (I_8x8) is High-profile only.
         if pps.transform_8x8_mode_flag {
-            let t8 = bs.read_flag()?;
-            if t8 {
-                return Err(DecodeError::Unsupported("transform_size_8x8 / I_8x8"));
-            }
+            transform_8x8 = bs.read_flag()?;
         }
         mb_type = MbType::Intra4x4;
-        chroma_mode =
-            parse_intra4x4(bs, &neigh_c, &left_c, &top_c, &mut best_mode, &mut final_mode)?;
+        if transform_8x8 {
+            let (cm, avail8) =
+                parse_intra8x8(bs, &neigh_c, &left_c, &top_c, &mut best_mode, &mut final_mode)?;
+            chroma_mode = cm;
+            i8_avail = avail8;
+        } else {
+            chroma_mode =
+                parse_intra4x4(bs, &neigh_c, &left_c, &top_c, &mut best_mode, &mut final_mode)?;
+        }
 
         let ui_cbp = bs.read_ue()?;
         if ui_cbp > 47 {
@@ -334,7 +343,7 @@ pub(super) fn parse_intra_mb_core(
     if cbp != 0 || mb_type == MbType::Intra16x16 {
         parse_residuals(
             bs,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp },
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 },
             Neighbours { left: &left, top: &top },
             ResidualOut { cur_nzc_luma: &mut cur_nzc_luma, cur_nzc_chroma: &mut cur_nzc_chroma },
             coeffs,
@@ -343,6 +352,8 @@ pub(super) fn parse_intra_mb_core(
 
     // Commit MB state to the context.
     ctx.mb_type[mb_xy] = mb_type;
+    ctx.transform_8x8[mb_xy] = transform_8x8;
+    ctx.i8_avail[mb_xy] = i8_avail;
     ctx.i16_mode[mb_xy] = i16_mode;
     ctx.chroma_mode[mb_xy] = chroma_mode;
     ctx.cbp[mb_xy] = cbp;
@@ -486,7 +497,7 @@ fn parse_intra4x4(
             rem + if rem >= pred_mode { 1 } else { 0 }
         };
 
-        let cur_final = check_intra_nxn_mode(&sample_avail, cur_best, i)?;
+        let cur_final = check_intra_nxn_mode(&sample_avail, cur_best, i, false)?;
 
         best_mode[raster] = cur_best;
         final_mode[raster] = cur_final;
@@ -503,9 +514,115 @@ fn parse_intra4x4(
     Ok(chroma_mode)
 }
 
+/// `ParseIntra8x8Mode` (CAVLC): four 8x8 luma prediction modes (one per 8x8
+/// block, replicated to its four 4x4 sub-blocks) plus the chroma mode. Returns
+/// `(chroma_mode, i8_avail_flag)`. Mirrors [`parse_intra4x4`] but iterates the
+/// four 8x8 blocks in raster order and uses the 8x8 right-top neighbour rule.
+#[allow(clippy::too_many_arguments)]
+fn parse_intra8x8(
+    bs: &mut BitReader<'_>,
+    neigh: &NeighborAvail,
+    left: &NeighborSnap,
+    top: &NeighborSnap,
+    best_mode: &mut [i8; 16],
+    final_mode: &mut [i8; 16],
+) -> Result<(i8, u8)> {
+    let top_modes: [i8; 4] = if top.avail && top.is_nxn {
+        [top.best_mode[12], top.best_mode[13], top.best_mode[14], top.best_mode[15]]
+    } else if top.avail {
+        [2; 4]
+    } else {
+        [-1; 4]
+    };
+    let left_modes: [i8; 4] = if left.avail && left.is_nxn {
+        [left.best_mode[3], left.best_mode[7], left.best_mode[11], left.best_mode[15]]
+    } else if left.avail {
+        [2; 4]
+    } else {
+        [-1; 4]
+    };
+
+    let mut sample_avail = [0i32; 30];
+    if neigh.left {
+        sample_avail[6] = 1;
+        sample_avail[12] = 1;
+        sample_avail[18] = 1;
+        sample_avail[24] = 1;
+    }
+    if neigh.top_left {
+        sample_avail[0] = 1;
+    }
+    if neigh.top {
+        sample_avail[1] = 1;
+        sample_avail[2] = 1;
+        sample_avail[3] = 1;
+        sample_avail[4] = 1;
+    }
+    if neigh.top_right {
+        sample_avail[5] = 1;
+    }
+
+    // I_8x8 neighbour-availability flag (Top-Right:Left:Top-Left:Top).
+    let avail8 = ((sample_avail[5] as u8) << 3)
+        | ((sample_avail[6] as u8) << 2)
+        | ((sample_avail[0] as u8) << 1)
+        | (sample_avail[1] as u8);
+    let chroma_neigh_avail = (sample_avail[6] << 2) | (sample_avail[0] << 1) | sample_avail[1];
+
+    for i8 in 0..4 {
+        let bx8 = i8 & 1;
+        let by8 = i8 >> 1;
+        let top_mode = if by8 > 0 {
+            best_mode[(by8 * 2 - 1) * 4 + bx8 * 2]
+        } else {
+            top_modes[bx8 * 2]
+        };
+        let left_mode = if bx8 > 0 {
+            best_mode[(by8 * 2) * 4 + bx8 * 2 - 1]
+        } else {
+            left_modes[by8 * 2]
+        };
+        let pred_mode = if left_mode == -1 || top_mode == -1 {
+            2
+        } else {
+            left_mode.min(top_mode)
+        };
+
+        let prev_flag = bs.read_flag()?;
+        let cur_best = if prev_flag {
+            pred_mode
+        } else {
+            let rem = bs.read_bits(3)? as i8;
+            rem + if rem >= pred_mode { 1 } else { 0 }
+        };
+        let cur_final = check_intra_nxn_mode(&sample_avail, cur_best, i8 << 2, true)?;
+
+        for j in 0..4 {
+            let sub = (i8 << 2) + j;
+            let raster = BLOCK_RASTER[sub];
+            best_mode[raster] = cur_best;
+            final_mode[raster] = cur_final;
+            sample_avail[CACHE30_SCAN_IDX[sub]] = 1;
+        }
+    }
+
+    let cm = bs.read_ue()?;
+    if cm > 3 {
+        return Err(DecodeError::InvalidSyntax("intra_chroma_pred_mode"));
+    }
+    let mut chroma_mode = cm as i8;
+    check_intra_chroma_mode(chroma_neigh_avail, &mut chroma_mode)?;
+    Ok((chroma_mode, avail8))
+}
+
 /// `CheckIntraNxNPredMode` (4x4): validate `mode` against availability, return
 /// the final mode (with DC / DDL_TOP / VL_TOP variants resolved).
-pub(super) fn check_intra_nxn_mode(sample_avail: &[i32; 30], mode: i8, i: usize) -> Result<i8> {
+pub(super) fn check_intra_nxn_mode(
+    sample_avail: &[i32; 30],
+    mode: i8,
+    i: usize,
+    b8x8: bool,
+) -> Result<i8> {
     if !(0..=8).contains(&mode) {
         return Err(DecodeError::InvalidSyntax("intra4x4 pred mode"));
     }
@@ -513,7 +630,8 @@ pub(super) fn check_intra_nxn_mode(sample_avail: &[i32; 30], mode: i8, i: usize)
     let left_avail = sample_avail[idx - 1];
     let top_avail = sample_avail[idx - 6];
     let left_top_avail = sample_avail[idx - 7];
-    let right_top_avail = sample_avail[idx - 5];
+    // The right-top sample sits one cell further left in the 8x8 grid.
+    let right_top_avail = sample_avail[idx - if b8x8 { 4 } else { 5 }];
 
     if mode == 2 {
         // DC
@@ -646,13 +764,17 @@ fn parse_residuals(
     out: ResidualOut,
     coeffs: &mut [i16; 384],
 ) -> Result<()> {
-    let ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp } = params;
+    let ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 } = params;
     let Neighbours { left, top } = neigh;
     let ResidualOut { cur_nzc_luma, cur_nzc_chroma } = out;
     let deq_l = &G_KUI_DEQUANT_COEFF[luma_qp as usize];
     let mut out = [0i32; 16];
 
-    if mb_type == MbType::Intra16x16 {
+    if transform_8x8 {
+        // I_8x8 / inter 8x8 luma: four 8x8 blocks, each assembled from four
+        // interleaved 4x4 CAVLC sub-blocks into 64 coeffs (spec 8.5.6).
+        decode_luma_8x8(bs, cbp_l, luma_qp, left, top, cur_nzc_luma, coeffs)?;
+    } else if mb_type == MbType::Intra16x16 {
         // Luma DC (16 coeffs, luma-DC zig-zag, then Hadamard dequant-IDCT).
         let nc0 = nc_luma(cur_nzc_luma, left, top, 0, 0);
         out.fill(0);
@@ -744,6 +866,57 @@ fn parse_residuals(
     }
 
     Ok(())
+}
+
+/// Decode the four 8x8 luma residual blocks (`WelsResidualBlockCavlc8x8`,
+/// spec 8.5.6). Each 8x8 block is the interleave of four 4x4 CAVLC sub-blocks:
+/// sub-block `id4`'s scan coefficient `s` lands at zig-zag-8x8 position
+/// `(s<<2)+id4`. Dequant uses the flat 8x8 table (no scaling list in the corpus
+/// streams) with the High-profile qp-dependent shift.
+fn decode_luma_8x8(
+    bs: &mut BitReader<'_>,
+    cbp_l: u8,
+    luma_qp: i32,
+    left: &NeighborSnap,
+    top: &NeighborSnap,
+    cur_nzc_luma: &mut [i8; 16],
+    coeffs: &mut [i16; 384],
+) -> Result<()> {
+    let deq8 = &G_KUI_DEQUANT_COEFF8X8[luma_qp as usize];
+    let qbits = luma_qp / 6;
+    let mut out = [0i32; 16];
+    for id8 in 0..4 {
+        if cbp_l & (1 << id8) == 0 {
+            continue;
+        }
+        let cbase = id8 * 64;
+        for id4 in 0..4 {
+            let i = id8 * 4 + id4;
+            let raster = BLOCK_RASTER[i];
+            let nc = nc_luma(cur_nzc_luma, left, top, BLOCK_BX[i], BLOCK_BY[i]);
+            out.fill(0);
+            let total = residual_block_cavlc(bs, nc, 16, &mut out)?;
+            for (s, &lvl) in out.iter().enumerate() {
+                if lvl != 0 {
+                    let j = G_KUI_ZIGZAG_SCAN8X8[(s << 2) + id4] as usize;
+                    let d = deq8[j] as i32;
+                    coeffs[cbase + j] = dequant8x8(lvl, d, qbits) as i16;
+                }
+            }
+            cur_nzc_luma[raster] = total as i8;
+        }
+    }
+    Ok(())
+}
+
+/// One 8x8 dequant step (`pTCoeff[j]`): the High-profile qp-dependent scale.
+#[inline]
+pub(super) fn dequant8x8(level: i32, deq: i32, qbits: i32) -> i32 {
+    if qbits >= 6 {
+        level * deq * (1 << (qbits - 6))
+    } else {
+        (level * deq + (1 << (5 - qbits))) >> (6 - qbits)
+    }
 }
 
 /// `WelsLumaDcDequantIdct`: inverse Hadamard + dequant of the 16 luma DC
@@ -1056,7 +1229,7 @@ fn parse_inter_mb(
         ];
         parse_residuals(
             bs,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp },
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8: false },
             Neighbours { left: &left, top: &top },
             ResidualOut { cur_nzc_luma: &mut cur_nzc_luma, cur_nzc_chroma: &mut cur_nzc_chroma },
             coeffs,
@@ -1558,7 +1731,7 @@ pub fn parse_b_mb_cavlc(
         ];
         parse_residuals(
             bs,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp },
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8: false },
             Neighbours { left: &left, top: &top },
             ResidualOut { cur_nzc_luma: &mut cur_nzc_luma, cur_nzc_chroma: &mut cur_nzc_chroma },
             coeffs,

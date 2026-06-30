@@ -12,20 +12,21 @@
 //! (I_8x8), B slices, weighted prediction, monochrome.
 
 use crate::dsp::tables::{
-    G_KUI_CHROMA_DC_SCAN, G_KUI_DEQUANT_COEFF, G_KUI_LUMA_DC_ZIGZAG_SCAN, G_KUI_ZIGZAG_SCAN,
+    G_KUI_CHROMA_DC_SCAN, G_KUI_DEQUANT_COEFF, G_KUI_DEQUANT_COEFF8X8, G_KUI_LUMA_DC_ZIGZAG_SCAN,
+    G_KUI_ZIGZAG_SCAN, G_KUI_ZIGZAG_SCAN8X8,
 };
 use crate::error::DecodeError;
 
 use super::cabac::{CabacContexts, CabacDecoder};
 use super::cabac_mb::{
     coded_block_flag, residual_block_cabac, CHROMA_AC_U, CHROMA_AC_V, CHROMA_DC_U, CHROMA_DC_V,
-    I16_LUMA_AC, I16_LUMA_DC, LUMA_DC_AC,
+    I16_LUMA_AC, I16_LUMA_DC, LUMA_DC_AC, LUMA_DC_AC_8,
 };
 use super::context::{DecoderContext, MbType, SubMbType};
 use super::mb_parse_cavlc::{
     check_intra16x16_mode, check_intra_chroma_mode, check_intra_nxn_mode, chroma_dc_idct, clip3,
-    luma_dc_dequant_idct, BLOCK_BX, BLOCK_BY, BLOCK_RASTER, CACHE30_SCAN_IDX, CHROMA_QP_TABLE,
-    I16_CBP_TABLE,
+    dequant8x8, luma_dc_dequant_idct, BLOCK_BX, BLOCK_BY, BLOCK_RASTER, CACHE30_SCAN_IDX,
+    CHROMA_QP_TABLE, I16_CBP_TABLE,
 };
 use super::mv_pred::{pred_inter16x8, pred_inter8x16, pred_mv, pred_p_skip_mv, SCAN4};
 use super::params::Pps;
@@ -59,6 +60,8 @@ struct ResidualParams {
     cbp_c: u8,
     luma_qp: i32,
     chroma_qp: [i32; 2],
+    /// Luma residual uses the 8x8 transform (`transform_size_8x8_flag`).
+    transform_8x8: bool,
 }
 
 /// Mutable per-MB residual outputs (nzc counts + cbf-dc bitmask).
@@ -152,6 +155,9 @@ struct Neigh {
     /// `pRefIndex[block]` of the left/top neighbours used by skip/ref ctx.
     left_skip: bool,
     top_skip: bool,
+    /// `transform_size_8x8_flag` of the left/top neighbours (ctx for the flag).
+    left_t8: bool,
+    top_t8: bool,
 }
 
 impl Neigh {
@@ -217,6 +223,8 @@ impl Neigh {
             top_chroma_mode: tcm,
             left_skip: lskip,
             top_skip: tskip,
+            left_t8: na.left && ctx.transform_8x8[na.left_xy],
+            top_t8: na.top && ctx.transform_8x8[na.top_xy],
         }
     }
 }
@@ -497,6 +505,43 @@ fn cbf_dc(
 // Residual decode (mirrors WelsDecodeMbCabacISliceBaseMode0 residual section).
 // ---------------------------------------------------------------------------
 
+/// Decode the four 8x8 luma residual blocks (CABAC, `ParseResidualBlockCabac8x8`).
+/// Each coded 8x8 block has no `coded_block_flag` — the 64-position significance
+/// map is decoded directly (`LUMA_DC_AC_8` context maps), then dequantised with
+/// the flat 8x8 table.
+fn decode_luma_8x8_cabac(
+    dec: &mut CabacDecoder,
+    ctxs: &mut CabacContexts,
+    cbp_l: u8,
+    luma_qp: i32,
+    cache: &mut [i16; 48],
+    cur_nzc_luma: &mut [i8; 16],
+    coeffs: &mut [i16; 384],
+) {
+    let deq8 = &G_KUI_DEQUANT_COEFF8X8[luma_qp as usize];
+    let qbits = luma_qp / 6;
+    let mut out64 = [0i32; 64];
+    for id8 in 0..4 {
+        if cbp_l & (1 << id8) == 0 {
+            continue;
+        }
+        let cbase = id8 * 64;
+        out64.fill(0);
+        let total = residual_block_cabac(dec, ctxs, LUMA_DC_AC_8, 64, &mut out64).unwrap();
+        for j in 0..4 {
+            let i = id8 * 4 + j;
+            cache[CACHE_NZC_SCAN_IDX[i]] = total as i16;
+            cur_nzc_luma[BLOCK_RASTER[i]] = total as i8;
+        }
+        for (j, &lvl) in out64.iter().enumerate() {
+            if lvl != 0 {
+                let pos = G_KUI_ZIGZAG_SCAN8X8[j] as usize;
+                coeffs[cbase + pos] = dequant8x8(lvl, deq8[pos] as i32, qbits) as i16;
+            }
+        }
+    }
+}
+
 fn parse_residuals_cabac(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
@@ -505,7 +550,7 @@ fn parse_residuals_cabac(
     out: ResidualOut,
     coeffs: &mut [i16; 384],
 ) {
-    let ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp } = params;
+    let ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 } = params;
     let ResidualOut { cur_nzc_luma, cur_nzc_chroma, cur_cbf_dc } = out;
     let mut cache = [0i16; 48];
     fill_nzc_cache(&mut cache, n);
@@ -513,7 +558,9 @@ fn parse_residuals_cabac(
     let deq_l = &G_KUI_DEQUANT_COEFF[luma_qp as usize];
     let mut out = [0i32; 16];
 
-    if mb_type == MbType::Intra16x16 {
+    if transform_8x8 {
+        decode_luma_8x8_cabac(dec, ctxs, cbp_l, luma_qp, &mut cache, cur_nzc_luma, coeffs);
+    } else if mb_type == MbType::Intra16x16 {
         // Luma DC (always present; cbf may be 0).
         let bit = cbf_dc(dec, ctxs, n, I16_LUMA_DC, cur_intra, cur_cbf_dc);
         out.fill(0);
@@ -705,17 +752,22 @@ fn decode_intra_mb_body(
     let mut i16_mode = 0i8;
     let mut chroma_mode;
     let cbp: u8;
+    let mut transform_8x8 = false;
+    let mut i8_avail = 0u8;
 
     if ui_mb_type == 0 {
-        // I_NxN. transform_size_8x8 (I_8x8) is unsupported.
+        // I_NxN: transform_size_8x8 (I_8x8) is High-profile only.
         if pps.transform_8x8_mode_flag {
-            let t8 = parse_transform_size_8x8(dec, ctxs, ctx, mb_xy, n);
-            if t8 {
-                return Err(DecodeError::Unsupported("transform_size_8x8 / I_8x8 (CABAC)"));
-            }
+            transform_8x8 = parse_transform_size_8x8(dec, ctxs, n);
         }
         mb_type = MbType::Intra4x4;
-        chroma_mode = parse_intra4x4_cabac(dec, ctxs, ctx, mb_xy, n, &mut best_mode, &mut final_mode)?;
+        if transform_8x8 {
+            let (cm, avail8) = parse_intra8x8_cabac(dec, ctxs, n, &mut best_mode, &mut final_mode)?;
+            chroma_mode = cm;
+            i8_avail = avail8;
+        } else {
+            chroma_mode = parse_intra4x4_cabac(dec, ctxs, ctx, mb_xy, n, &mut best_mode, &mut final_mode)?;
+        }
         let cbp_v = parse_cbp(dec, ctxs, n);
         cbp = cbp_v as u8;
     } else {
@@ -758,7 +810,7 @@ fn decode_intra_mb_body(
             dec,
             ctxs,
             n,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp },
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 },
             ResidualOut {
                 cur_nzc_luma: &mut cur_nzc_luma,
                 cur_nzc_chroma: &mut cur_nzc_chroma,
@@ -770,6 +822,8 @@ fn decode_intra_mb_body(
 
     // Commit MB state to the context (same fields the CAVLC parse writes).
     ctx.mb_type[mb_xy] = mb_type;
+    ctx.transform_8x8[mb_xy] = transform_8x8;
+    ctx.i8_avail[mb_xy] = i8_avail;
     ctx.i16_mode[mb_xy] = i16_mode;
     ctx.chroma_mode[mb_xy] = chroma_mode;
     ctx.cbp[mb_xy] = cbp;
@@ -794,15 +848,13 @@ fn decode_intra_mb_body(
 fn parse_transform_size_8x8(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
-    ctx: &DecoderContext,
-    mb_xy: usize,
     n: &Neigh,
 ) -> bool {
-    // Neighbour transform_size_8x8 flags are not tracked (we never produce
-    // I_8x8); treat both as 0 -> ctx_inc 0, matching a stream without 8x8.
-    let _ = (ctx, mb_xy, n);
+    // ctxIdxInc = condTermFlagA + condTermFlagB, each set when the available
+    // left/top neighbour itself used the 8x8 transform.
+    let ctx_inc = n.left_t8 as usize + n.top_t8 as usize;
     let base = NEW_CTX_OFFSET_TS_8X8_FLAG;
-    dec.decode_decision(ctxs.ctx(base)) != 0
+    dec.decode_decision(ctxs.ctx(base + ctx_inc)) != 0
 }
 
 /// CABAC `ParseIntra4x4Mode`: 16 luma modes (each via
@@ -871,7 +923,7 @@ fn parse_intra4x4_cabac(
         } else {
             (code as i8) + if code as i8 >= pred_mode { 1 } else { 0 }
         };
-        let cur_final = check_intra_nxn_mode(&sample_avail, cur_best, i)?;
+        let cur_final = check_intra_nxn_mode(&sample_avail, cur_best, i, false)?;
         best_mode[raster] = cur_best;
         final_mode[raster] = cur_final;
         sample_avail[CACHE30_SCAN_IDX[i]] = 1;
@@ -883,6 +935,98 @@ fn parse_intra4x4_cabac(
         ((sample_avail[6]) << 2) | ((sample_avail[0]) << 1) | sample_avail[1];
     check_intra_chroma_mode(chroma_neigh_avail, &mut chroma_mode)?;
     Ok(chroma_mode)
+}
+
+/// `ParseIntra8x8Mode` (CABAC): four 8x8 luma modes (one per 8x8 block,
+/// replicated to its four 4x4 sub-blocks) plus the chroma mode. Returns
+/// `(chroma_mode, i8_avail_flag)`.
+fn parse_intra8x8_cabac(
+    dec: &mut CabacDecoder,
+    ctxs: &mut CabacContexts,
+    n: &Neigh,
+    best_mode: &mut [i8; 16],
+    final_mode: &mut [i8; 16],
+) -> Result<(i8, u8)> {
+    let top_modes: [i8; 4] = if n.top_avail_intra && n.top_is_nxn {
+        [n.top_best[12], n.top_best[13], n.top_best[14], n.top_best[15]]
+    } else if n.top_avail_intra {
+        [2; 4]
+    } else {
+        [-1; 4]
+    };
+    let left_modes: [i8; 4] = if n.left_avail_intra && n.left_is_nxn {
+        [n.left_best[3], n.left_best[7], n.left_best[11], n.left_best[15]]
+    } else if n.left_avail_intra {
+        [2; 4]
+    } else {
+        [-1; 4]
+    };
+
+    let mut sample_avail = [0i32; 30];
+    if n.left_avail_intra {
+        sample_avail[6] = 1;
+        sample_avail[12] = 1;
+        sample_avail[18] = 1;
+        sample_avail[24] = 1;
+    }
+    if n.left_top_avail_intra {
+        sample_avail[0] = 1;
+    }
+    if n.top_avail_intra {
+        sample_avail[1] = 1;
+        sample_avail[2] = 1;
+        sample_avail[3] = 1;
+        sample_avail[4] = 1;
+    }
+    if n.right_top_avail_intra {
+        sample_avail[5] = 1;
+    }
+
+    let avail8 = ((sample_avail[5] as u8) << 3)
+        | ((sample_avail[6] as u8) << 2)
+        | ((sample_avail[0] as u8) << 1)
+        | (sample_avail[1] as u8);
+
+    for i8 in 0..4 {
+        let bx8 = i8 & 1;
+        let by8 = i8 >> 1;
+        let code = parse_ipr_luma(dec, ctxs);
+        let top_mode = if by8 > 0 {
+            best_mode[(by8 * 2 - 1) * 4 + bx8 * 2]
+        } else {
+            top_modes[bx8 * 2]
+        };
+        let left_mode = if bx8 > 0 {
+            best_mode[(by8 * 2) * 4 + bx8 * 2 - 1]
+        } else {
+            left_modes[by8 * 2]
+        };
+        let pred_mode = if left_mode == -1 || top_mode == -1 {
+            2
+        } else {
+            left_mode.min(top_mode)
+        };
+        let cur_best = if code == -1 {
+            pred_mode
+        } else {
+            (code as i8) + if code as i8 >= pred_mode { 1 } else { 0 }
+        };
+        let cur_final = check_intra_nxn_mode(&sample_avail, cur_best, i8 << 2, true)?;
+        for j in 0..4 {
+            let sub = (i8 << 2) + j;
+            let raster = BLOCK_RASTER[sub];
+            best_mode[raster] = cur_best;
+            final_mode[raster] = cur_final;
+            sample_avail[CACHE30_SCAN_IDX[sub]] = 1;
+        }
+    }
+
+    let cm = parse_ipr_chroma(dec, ctxs, n);
+    let mut chroma_mode = cm as i8;
+    let chroma_neigh_avail =
+        ((sample_avail[6]) << 2) | ((sample_avail[0]) << 1) | sample_avail[1];
+    check_intra_chroma_mode(chroma_neigh_avail, &mut chroma_mode)?;
+    Ok((chroma_mode, avail8))
 }
 
 // ---------------------------------------------------------------------------
@@ -1236,7 +1380,7 @@ fn parse_inter_mb_cabac(
             dec,
             ctxs,
             n,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp },
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8: false },
             ResidualOut {
                 cur_nzc_luma: &mut cur_nzc_luma,
                 cur_nzc_chroma: &mut cur_nzc_chroma,
@@ -1829,7 +1973,7 @@ pub fn decode_mb_cabac_bslice(
             dec,
             ctxs,
             &n,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp },
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8: false },
             ResidualOut {
                 cur_nzc_luma: &mut cur_nzc_luma,
                 cur_nzc_chroma: &mut cur_nzc_chroma,

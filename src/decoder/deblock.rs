@@ -211,6 +211,7 @@ fn deblock_intra_mb(
         AvailEdges { left, top },
         EdgeOffsets { aoff, boff },
         LumaQp { cur: cur_lqp, left: left_lqp, top: top_lqp },
+        ctx.transform_8x8[mb_xy],
     );
     deblock_chroma(
         ChromaPlanes { cb: &mut ctx.picture.u, cr: &mut ctx.picture.v, off: c_off, stride: cstride },
@@ -220,7 +221,13 @@ fn deblock_intra_mb(
     );
 }
 
-fn deblock_luma(plane: LumaPlane, avail: AvailEdges, edge: EdgeOffsets, qp: LumaQp) {
+fn deblock_luma(
+    plane: LumaPlane,
+    avail: AvailEdges,
+    edge: EdgeOffsets,
+    qp: LumaQp,
+    transform_8x8: bool,
+) {
     let LumaPlane { y, y_off, stride } = plane;
     let AvailEdges { left, top } = avail;
     let EdgeOffsets { aoff, boff } = edge;
@@ -236,9 +243,15 @@ fn deblock_luma(plane: LumaPlane, avail: AvailEdges, edge: EdgeOffsets, qp: Luma
     let (a, b) = alpha_beta(cur_qp, aoff, boff);
     let tc = tc_uniform(cur_qp, aoff, BS_INTERNAL, 0);
     if (a | b) != 0 {
-        deblock_luma_lt4_h(y, y_off + 4, stride, a, b, &tc);
+        // 8x8 transform: only the x = 8 internal edge is a transform-block
+        // boundary; the x = 4 / 12 edges are skipped.
+        if !transform_8x8 {
+            deblock_luma_lt4_h(y, y_off + 4, stride, a, b, &tc);
+        }
         deblock_luma_lt4_h(y, y_off + 8, stride, a, b, &tc);
-        deblock_luma_lt4_h(y, y_off + 12, stride, a, b, &tc);
+        if !transform_8x8 {
+            deblock_luma_lt4_h(y, y_off + 12, stride, a, b, &tc);
+        }
     }
 
     // --- Horizontal edges (filtered with the V kernels) ---
@@ -250,9 +263,13 @@ fn deblock_luma(plane: LumaPlane, avail: AvailEdges, edge: EdgeOffsets, qp: Luma
         }
     }
     if (a | b) != 0 {
-        deblock_luma_lt4_v(y, y_off + 4 * stride, stride, a, b, &tc);
+        if !transform_8x8 {
+            deblock_luma_lt4_v(y, y_off + 4 * stride, stride, a, b, &tc);
+        }
         deblock_luma_lt4_v(y, y_off + 8 * stride, stride, a, b, &tc);
-        deblock_luma_lt4_v(y, y_off + 12 * stride, stride, a, b, &tc);
+        if !transform_8x8 {
+            deblock_luma_lt4_v(y, y_off + 12 * stride, stride, a, b, &tc);
+        }
     }
 }
 

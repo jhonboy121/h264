@@ -9,7 +9,7 @@
 //! the next, so later blocks see the correct neighbour samples.
 
 use crate::dsp::intra_pred as ip;
-use crate::dsp::transform::idct4x4_add;
+use crate::dsp::transform::{idct4x4_add, idct8x8_add};
 
 use super::context::{DecoderContext, MbType};
 
@@ -51,6 +51,26 @@ fn luma4_pred(mode: i8, plane: &mut [u8], off: usize, stride: usize) {
     }
 }
 
+/// Dispatch a luma 8x8 prediction (`I8_PRED_*`, same numbering as 4x4).
+fn luma8_pred(mode: i8, plane: &mut [u8], off: usize, stride: usize, b_tl: bool, b_tr: bool) {
+    match mode {
+        0 => ip::i8x8_luma_pred_v(plane, off, stride, b_tl, b_tr),
+        1 => ip::i8x8_luma_pred_h(plane, off, stride, b_tl, b_tr),
+        2 => ip::i8x8_luma_pred_dc(plane, off, stride, b_tl, b_tr),
+        3 => ip::i8x8_luma_pred_ddl(plane, off, stride, b_tl, b_tr),
+        4 => ip::i8x8_luma_pred_ddr(plane, off, stride, b_tl, b_tr),
+        5 => ip::i8x8_luma_pred_vr(plane, off, stride, b_tl, b_tr),
+        6 => ip::i8x8_luma_pred_hd(plane, off, stride, b_tl, b_tr),
+        7 => ip::i8x8_luma_pred_vl(plane, off, stride, b_tl, b_tr),
+        8 => ip::i8x8_luma_pred_hu(plane, off, stride, b_tl, b_tr),
+        9 => ip::i8x8_luma_pred_dc_left(plane, off, stride, b_tl, b_tr),
+        10 => ip::i8x8_luma_pred_dc_top(plane, off, stride, b_tl, b_tr),
+        11 => ip::i8x8_luma_pred_dc_na(plane, off, stride, b_tl, b_tr),
+        12 => ip::i8x8_luma_pred_ddl_top(plane, off, stride, b_tl, b_tr),
+        _ => ip::i8x8_luma_pred_vl_top(plane, off, stride, b_tl, b_tr),
+    }
+}
+
 /// Dispatch a chroma prediction (`C_PRED_*`, 0..=6).
 fn chroma_pred(mode: i8, plane: &mut [u8], off: usize, stride: usize) {
     match mode {
@@ -68,6 +88,13 @@ fn chroma_pred(mode: i8, plane: &mut [u8], off: usize, stride: usize) {
 fn block16(coeffs: &[i16; 384], base: usize) -> [i16; 16] {
     let mut b = [0i16; 16];
     b.copy_from_slice(&coeffs[base..base + 16]);
+    b
+}
+
+#[inline]
+fn block64(coeffs: &[i16; 384], base: usize) -> [i16; 64] {
+    let mut b = [0i16; 64];
+    b.copy_from_slice(&coeffs[base..base + 64]);
     b
 }
 
@@ -94,6 +121,8 @@ pub fn recon_intra_mb(ctx: &mut DecoderContext, mb_xy: usize, coeffs: &[i16; 384
     nzc_chroma.copy_from_slice(ctx.nzc_chroma_mb(mb_xy));
     let mut final_mode = [0i8; 16];
     final_mode.copy_from_slice(&ctx.i4_final_mode[mb_xy * 16..mb_xy * 16 + 16]);
+    let transform_8x8 = ctx.transform_8x8[mb_xy];
+    let i8_avail = ctx.i8_avail[mb_xy];
 
     let ystride = ctx.picture.luma_stride;
     let cstride = ctx.picture.chroma_stride;
@@ -111,6 +140,33 @@ pub fn recon_intra_mb(ctx: &mut DecoderContext, mb_xy: usize, coeffs: &[i16; 384
                 // DC may be non-zero even when AC count is zero.
                 if nzc_luma[raster] != 0 || coeffs[base] != 0 {
                     idct4x4_add(&mut pic.y[off..], ystride, &block16(coeffs, base));
+                }
+            }
+        }
+        MbType::Intra4x4 if transform_8x8 => {
+            // I_8x8: four 8x8 blocks in scan order (TL, TR, BL, BR). Per-block
+            // top-left / top-right reference availability (`RecI8x8Luma`).
+            let b_tl = [
+                i8_avail & 0x02 != 0,
+                i8_avail & 0x01 != 0,
+                i8_avail & 0x04 != 0,
+                true,
+            ];
+            let b_tr = [
+                i8_avail & 0x01 != 0,
+                i8_avail & 0x08 != 0,
+                true,
+                false,
+            ];
+            for i8 in 0..4 {
+                let bx8 = i8 & 1;
+                let by8 = i8 >> 1;
+                let off = y_off + by8 * 8 * ystride + bx8 * 8;
+                let mode = final_mode[BLOCK_RASTER[i8 * 4]];
+                luma8_pred(mode, &mut pic.y, off, ystride, b_tl[i8], b_tr[i8]);
+                let any_nz = (0..4).any(|j| nzc_luma[BLOCK_RASTER[i8 * 4 + j]] != 0);
+                if any_nz {
+                    idct8x8_add(&mut pic.y[off..], ystride, &block64(coeffs, i8 * 64));
                 }
             }
         }

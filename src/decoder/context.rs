@@ -188,7 +188,15 @@ pub struct DecoderContext {
     /// neighbour-mode predictor), 16 entries per MB in raster order.
     pub i4_best_mode: Vec<i8>,
     /// Per-block final intra4x4 mode (`I4_PRED_*` incl. DC_L/DDL_TOP variants).
+    /// For an I_8x8 macroblock the four 4x4 sub-blocks of each 8x8 share the
+    /// 8x8 mode (so neighbour-mode prediction reads it uniformly).
     pub i4_final_mode: Vec<i8>,
+    /// Per-MB `transform_size_8x8_flag` (High profile): luma residual uses the
+    /// 8x8 transform; an intra MB with this set is I_8x8.
+    pub transform_8x8: Vec<bool>,
+    /// Per-MB I_8x8 neighbour-availability flag (`pIntraNxNAvailFlag`):
+    /// `(TopRight<<3)|(Left<<2)|(TopLeft<<1)|Top`, read by 8x8 luma recon.
+    pub i8_avail: Vec<u8>,
     /// Per-block luma non-zero-coefficient count, 16/MB raster order.
     pub nzc_luma: Vec<i8>,
     /// Per-block chroma non-zero-coefficient count, 8/MB: Cb 0..3 then Cr 0..3,
@@ -256,6 +264,8 @@ impl DecoderContext {
             deblock_beta_off: vec![0; total_mb],
             i4_best_mode: vec![-1; total_mb * 16],
             i4_final_mode: vec![2; total_mb * 16],
+            transform_8x8: vec![false; total_mb],
+            i8_avail: vec![0; total_mb],
             nzc_luma: vec![0; total_mb * 16],
             nzc_chroma: vec![0; total_mb * 8],
             mv: vec![0; total_mb * 16 * 2],
