@@ -77,6 +77,15 @@ impl Encoder {
         self.height
     }
 
+    /// Advertise `fps` in the SPS VUI timing info so raw Annex-B players
+    /// (ffplay/QuickTime) and the decoder know the playback rate. Set it before
+    /// the first encoded frame (the SPS is emitted with each IDR). `0` disables
+    /// VUI. Note: this is a declaration — feed frames at this rate for it to be
+    /// accurate.
+    pub fn set_frame_rate(&mut self, fps: u32) {
+        self.cfg.fps = if fps > 0 { Some(fps) } else { None };
+    }
+
     /// Force the next [`encode_frame`](Self::encode_frame) to emit an IDR
     /// (clears the reference + resets the frame counter), e.g. for a clean
     /// random-access point.

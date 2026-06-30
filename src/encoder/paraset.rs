@@ -27,6 +27,10 @@ pub struct ParamConfig {
     pub log2_max_frame_num: u32,
     /// log2_max_pic_order_cnt_lsb (>= 4).
     pub log2_max_poc_lsb: u32,
+    /// Frame rate (fps) to advertise in VUI timing info. `None` omits VUI
+    /// entirely (the historical behaviour); `Some(fps)` makes the raw Annex-B
+    /// stream self-describing so players honour the playback rate.
+    pub fps: Option<u32>,
 }
 
 impl ParamConfig {
@@ -46,6 +50,7 @@ impl ParamConfig {
             level_idc: 30,
             log2_max_frame_num: 4,
             log2_max_poc_lsb: 4,
+            fps: None,
         }
     }
 
@@ -85,7 +90,27 @@ pub fn write_sps(cfg: &ParamConfig) -> Vec<u8> {
         bw.write_ue(0); // crop_top
         bw.write_ue(cfg.crop_bottom);
     }
-    bw.write_flag(false); // vui_parameters_present_flag
+    match cfg.fps {
+        // VUI carrying only timing_info, so raw Annex-B players know the frame
+        // rate. fps = time_scale / (2 * num_units_in_tick) => num_units_in_tick=1,
+        // time_scale=2*fps. Mirrors the decoder's `parse_vui`.
+        Some(fps) if fps > 0 => {
+            bw.write_flag(true); // vui_parameters_present_flag
+            bw.write_flag(false); // aspect_ratio_info_present_flag
+            bw.write_flag(false); // overscan_info_present_flag
+            bw.write_flag(false); // video_signal_type_present_flag
+            bw.write_flag(false); // chroma_loc_info_present_flag
+            bw.write_flag(true); // timing_info_present_flag
+            bw.write_bits(1, 32); // num_units_in_tick
+            bw.write_bits(2 * fps, 32); // time_scale
+            bw.write_flag(true); // fixed_frame_rate_flag
+            bw.write_flag(false); // nal_hrd_parameters_present_flag
+            bw.write_flag(false); // vcl_hrd_parameters_present_flag
+            bw.write_flag(false); // pic_struct_present_flag
+            bw.write_flag(false); // bitstream_restriction_flag
+        }
+        _ => bw.write_flag(false), // vui_parameters_present_flag
+    }
 
     bw.write_trailing_bits();
     bw.finish()
@@ -134,6 +159,28 @@ mod tests {
                 assert_eq!(sps.sps_id, 0);
                 assert!(sps.frame_mbs_only_flag);
             }
+        }
+    }
+
+    #[test]
+    fn sps_roundtrip_vui_timing() {
+        // No fps -> no VUI.
+        let sps = parse_sps(&write_sps(&ParamConfig::new(640, 480, 26))).unwrap();
+        assert!(!sps.vui_parameters_present_flag);
+
+        // fps set -> VUI timing such that time_scale / (2 * num_units_in_tick) == fps.
+        for &fps in &[24u32, 25, 30, 60] {
+            let mut cfg = ParamConfig::new(1920, 1080, 26);
+            cfg.fps = Some(fps);
+            let sps = parse_sps(&write_sps(&cfg)).expect("parse_sps");
+            assert!(sps.vui_parameters_present_flag, "{fps}");
+            assert!(sps.vui.timing_info_present_flag, "{fps}");
+            assert_eq!(sps.vui.num_units_in_tick, 1, "{fps}");
+            assert_eq!(sps.vui.time_scale, 2 * fps, "{fps}");
+            assert!(sps.vui.fixed_frame_rate_flag, "{fps}");
+            // Dimensions still decode correctly with VUI present.
+            assert_eq!(sps.width, 1920, "{fps}");
+            assert_eq!(sps.height, 1080, "{fps}");
         }
     }
 
