@@ -40,11 +40,14 @@ tables → dsp/tables.rs, and the luma/chroma DC dequant-IDCT (decode_slice.cpp:
       · BANM 176x144, BA1 352x288, SVA 176x144. HRD not stored (Unsupported). 
 - [x] `decoder/slice_header.rs` — slice header parse (7.3.3), AVC path; SliceType
       enum + reorder/weight/marking sub-structs; validated on BANM/BA1 (2 tests)
-- [ ] `dsp/tables.rs` — dequant (g_kuiDequantCoeff[52][8]+8x8), scan (g_kuiScan8,
-      zigzag, luma/chroma DC scan) — pull from common_tables.cpp + decoder_data_tables.cpp
-- [ ] `decoder/cavlc_tables.rs` + `decoder/cavlc.rs` — CAVLC MB parse (parse_mb_syn_cavlc.cpp)
-- [ ] `decoder/cabac.rs` + `decoder/cabac_mb.rs` — CABAC engine + MB parse
-- [ ] anchor test: `DecUT_ParseSyntax.cpp`
+- [x] `dsp/tables.rs` — dequant 4x4/8x8 + scan/zigzag tables (5 tests, a28ee89)
+- [x] `decoder/cavlc.rs` + `cavlc_tables.rs` — coeff_token/level/total_zeros/run_before
+      residual decode; vs spec Table 9-5/9-7/9-9 (6 tests, f454e0d)
+- [🚧] `decoder/cabac.rs` + `cabac_tables.rs` + `cabac_mb.rs` — engine + residual — DELEGATED
+- [ ] anchor `DecUT_ParseSyntax.cpp`: full-decoder integration → exercised in P3/P4
+- NOTE: MB-level syntax needing neighbor context (mb_type/mvd/cbp via CAVLC/CABAC)
+  folds into P3 decode loop (needs mb_cache). residual_block_cavlc fills out_level in
+  scan order; P3 maps zigzag→raster + dequant.
 
 ## P3 — Decoder reconstruction ⬜
 - [ ] `decoder/mv_pred.rs` · anchor `DecUT_PredMv.cpp`
