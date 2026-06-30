@@ -239,6 +239,13 @@ struct BPart {
     dy: usize,
     w: usize,
     h: usize,
+    /// OpenH264 16x8/8x16 bi-prediction quirk index: -1 = none (16x16/8x8 do a
+    /// proper bi-average); 0 = first partition (a bi partition reduces to L1);
+    /// 1 = second partition (a bi partition reduces to L0). This replicates
+    /// `GetInterBPred`'s destination-pointer over-advance for `IS_INTER_16x8` /
+    /// `IS_INTER_8x16`, where the bi-average lands outside the partition and the
+    /// L0 (part 1) or L1 (part 0) prediction is the one that survives.
+    quirk: i8,
 }
 
 /// Enumerate the motion-compensation partitions of a B macroblock from its
@@ -248,29 +255,29 @@ fn b_partitions(ctx: &DecoderContext, mb_xy: usize) -> alloc::vec::Vec<BPart> {
     let mut parts: Vec<BPart> = Vec::new();
     match ctx.mb_type[mb_xy] {
         MbType::BSkip | MbType::BDirect16x16 | MbType::B16x16 => {
-            parts.push(BPart { dx: 0, dy: 0, w: 16, h: 16 });
+            parts.push(BPart { dx: 0, dy: 0, w: 16, h: 16, quirk: -1 });
         }
         MbType::B16x8 => {
-            parts.push(BPart { dx: 0, dy: 0, w: 16, h: 8 });
-            parts.push(BPart { dx: 0, dy: 8, w: 16, h: 8 });
+            parts.push(BPart { dx: 0, dy: 0, w: 16, h: 8, quirk: 0 });
+            parts.push(BPart { dx: 0, dy: 8, w: 16, h: 8, quirk: 1 });
         }
         MbType::B8x16 => {
-            parts.push(BPart { dx: 0, dy: 0, w: 8, h: 16 });
-            parts.push(BPart { dx: 8, dy: 0, w: 8, h: 16 });
+            parts.push(BPart { dx: 0, dy: 0, w: 8, h: 16, quirk: 0 });
+            parts.push(BPart { dx: 8, dy: 0, w: 8, h: 16, quirk: 1 });
         }
         MbType::B8x8 => {
             for i in 0..4 {
                 let blk8x = (i & 1) * 8;
                 let blk8y = (i >> 1) * 8;
                 match ctx.sub_mb_type[mb_xy * 4 + i] {
-                    SubMbType::P8x8 => parts.push(BPart { dx: blk8x, dy: blk8y, w: 8, h: 8 }),
+                    SubMbType::P8x8 => parts.push(BPart { dx: blk8x, dy: blk8y, w: 8, h: 8, quirk: -1 }),
                     SubMbType::P8x4 => {
-                        parts.push(BPart { dx: blk8x, dy: blk8y, w: 8, h: 4 });
-                        parts.push(BPart { dx: blk8x, dy: blk8y + 4, w: 8, h: 4 });
+                        parts.push(BPart { dx: blk8x, dy: blk8y, w: 8, h: 4, quirk: -1 });
+                        parts.push(BPart { dx: blk8x, dy: blk8y + 4, w: 8, h: 4, quirk: -1 });
                     }
                     SubMbType::P4x8 => {
-                        parts.push(BPart { dx: blk8x, dy: blk8y, w: 4, h: 8 });
-                        parts.push(BPart { dx: blk8x + 4, dy: blk8y, w: 4, h: 8 });
+                        parts.push(BPart { dx: blk8x, dy: blk8y, w: 4, h: 8, quirk: -1 });
+                        parts.push(BPart { dx: blk8x + 4, dy: blk8y, w: 4, h: 8, quirk: -1 });
                     }
                     SubMbType::P4x4 => {
                         for j in 0..4 {
@@ -279,6 +286,7 @@ fn b_partitions(ctx: &DecoderContext, mb_xy: usize) -> alloc::vec::Vec<BPart> {
                                 dy: blk8y + (j >> 1) * 4,
                                 w: 4,
                                 h: 4,
+                                quirk: -1,
                             });
                         }
                     }
@@ -310,8 +318,17 @@ pub fn recon_b_mb(
         let r1 = ctx.ref_idx_l1[mb_xy * 16 + rep];
         let mv0 = [ctx.mv[(mb_xy * 16 + rep) * 2], ctx.mv[(mb_xy * 16 + rep) * 2 + 1]];
         let mv1 = [ctx.mv_l1[(mb_xy * 16 + rep) * 2], ctx.mv_l1[(mb_xy * 16 + rep) * 2 + 1]];
-        let l0 = r0 >= 0;
-        let l1 = r1 >= 0;
+        let mut l0 = r0 >= 0;
+        let mut l1 = r1 >= 0;
+        // OpenH264 16x8/8x16 bi quirk: the bi-average is discarded, so a bi
+        // partition reduces to a single list (part 0 -> L1, part 1 -> L0).
+        if l0 && l1 {
+            match p.quirk {
+                0 => l0 = false, // first partition keeps L1
+                1 => l1 = false, // second partition keeps L0
+                _ => {}
+            }
+        }
         let dim = Dim { w: p.w, h: p.h };
 
         let ls = ctx.picture.luma_stride;
@@ -320,21 +337,30 @@ pub fn recon_b_mb(
         let c_off = ctx.picture.chroma_mb_offset(mb_x, mb_y) + (p.dy / 2) * cs + (p.dx / 2);
 
         if l0 && l1 {
-            // List-0 prediction into the picture, list-1 into a scratch buffer.
+            // Both lists into scratch buffers, then average into the picture.
             let ref0 = ref_pics[0][r0 as usize];
             let ref1 = ref_pics[1][r1 as usize];
-            {
-                let pic = &mut ctx.picture;
-                mc_to(ref0, mb_x, mb_y, p.dx, p.dy, mv0, dim, &mut pic.y[y_off..], ls, &mut pic.u[c_off..], &mut pic.v[c_off..], cs);
-            }
+            let mut t0y = [0u8; 256];
+            let mut t0u = [0u8; 64];
+            let mut t0v = [0u8; 64];
+            mc_to(ref0, mb_x, mb_y, p.dx, p.dy, mv0, dim, &mut t0y, 16, &mut t0u, &mut t0v, 8);
             let mut ty = [0u8; 256];
             let mut tu = [0u8; 64];
             let mut tv = [0u8; 64];
             mc_to(ref1, mb_x, mb_y, p.dx, p.dy, mv1, dim, &mut ty, 16, &mut tu, &mut tv, 8);
             let pic = &mut ctx.picture;
-            avg_into(&mut pic.y, y_off, ls, &ty, 16, dim);
-            avg_into(&mut pic.u, c_off, cs, &tu, 8, Dim { w: p.w / 2, h: p.h / 2 });
-            avg_into(&mut pic.v, c_off, cs, &tv, 8, Dim { w: p.w / 2, h: p.h / 2 });
+            let cdim = Dim { w: p.w / 2, h: p.h / 2 };
+            for i in 0..dim.h {
+                for j in 0..dim.w {
+                    pic.y[y_off + i * ls + j] = ((t0y[i * 16 + j] as i32 + ty[i * 16 + j] as i32 + 1) >> 1) as u8;
+                }
+            }
+            for i in 0..cdim.h {
+                for j in 0..cdim.w {
+                    pic.u[c_off + i * cs + j] = ((t0u[i * 8 + j] as i32 + tu[i * 8 + j] as i32 + 1) >> 1) as u8;
+                    pic.v[c_off + i * cs + j] = ((t0v[i * 8 + j] as i32 + tv[i * 8 + j] as i32 + 1) >> 1) as u8;
+                }
+            }
         } else {
             let (rp, mv) = if l0 { (ref_pics[0][r0 as usize], mv0) } else { (ref_pics[1][r1 as usize], mv1) };
             let pic = &mut ctx.picture;
@@ -345,14 +371,3 @@ pub fn recon_b_mb(
     add_inter_residual(ctx, mb_xy, coeffs);
 }
 
-/// `(dst + src + 1) >> 1` averaging of a temp block (tight `src_stride`) into the
-/// destination plane in place (`BiPrediction`).
-fn avg_into(dst: &mut [u8], dst_off: usize, dst_stride: usize, src: &[u8], src_stride: usize, dim: Dim) {
-    for i in 0..dim.h {
-        for j in 0..dim.w {
-            let d = dst[dst_off + i * dst_stride + j] as i32;
-            let s = src[i * src_stride + j] as i32;
-            dst[dst_off + i * dst_stride + j] = ((d + s + 1) >> 1) as u8;
-        }
-    }
-}

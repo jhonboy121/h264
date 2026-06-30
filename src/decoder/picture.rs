@@ -40,12 +40,6 @@ pub struct Picture {
     pub visible_width: usize,
     /// Visible (post-crop) luma height in pixels. Defaults to the coded height.
     pub visible_height: usize,
-    /// Debug: per-MB type code (set by the B decode path; empty otherwise).
-    pub dbg_mb: Vec<u8>,
-    /// Debug: per-MB block-0 `[mv0x,mv0y,mv1x,mv1y]` (quarter-pel).
-    pub dbg_mv: Vec<[i16; 4]>,
-    /// Debug: per-MB block-0 `[ref0, ref1]`.
-    pub dbg_ref: Vec<[i8; 2]>,
 }
 
 impl Picture {
@@ -75,9 +69,6 @@ impl Picture {
             visible_y: 0,
             visible_width: width,
             visible_height: height,
-            dbg_mb: Vec::new(),
-            dbg_mv: Vec::new(),
-            dbg_ref: Vec::new(),
         }
     }
 
