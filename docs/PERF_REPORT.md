@@ -142,6 +142,51 @@ is dominated by SAD and sub-pel MC — exactly the NEON kernels added in P10. In
 encode is essentially unchanged (its cost is the forward transform / quant / CAVLC
 bit-writing, not the SIMD'd kernels).
 
+### Multithreaded encode (1080p) — P9
+
+`examples/bench_encode_hd.rs`, a self-contained synthetic **1920×1080** moving
+source (16 frames, panning textured gradient + pseudo-noise → real inter motion),
+SIMD on. Single-threaded is the compression-optimal **1 slice/frame** baseline;
+the threaded fan-out uses `std::thread::scope` (zero external deps). On this
+machine `available_parallelism = 18`, so IPPP runs **18 slices/frame**.
+`cargo run --release --features "simd threads" --example bench_encode_hd`.
+
+| Mode | QP | 1-thread fps | 1-thread ×RT30 | **threaded fps** | **threaded ×RT30** | speedup | avg AU B (1T → NT) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| INTRA (all-I) | 26 | 25.1 | 0.84× | **296.3** | **9.88×** | 11.8× | 209 744 → 209 744 (+0%) |
+| IPPP          | 26 | 13.7 | 0.46× | **127.2** | **4.24×** | 9.3×  | 20 681 → 22 104 (+6.9%) |
+| INTRA (all-I) | 32 | 26.9 | 0.90× | **308.0** | **10.27×** | 11.5× | 135 145 → 135 145 (+0%) |
+| IPPP          | 32 | 13.8 | 0.46× | **120.4** | **4.01×** | 8.7×  | 14 816 → 16 121 (+8.8%) |
+
+**Verdict: real-time 30 fps 1080p is reached in every mode.** Threaded IPPP is
+**~4.2× realtime-30** (127 fps) and threaded all-intra **~10× realtime-30**
+(300+ fps). Single-threaded was below realtime (IPPP 0.46×, intra ~0.9×).
+
+- **Design.** Each frame is partitioned into `S` contiguous MB-row-band slices,
+  each its own slice NAL with an independent CAVLC bitstream and prediction state
+  reset at the boundary (intra availability, mvd/MV prediction and nC neighbour
+  derivation treat the slice's first MB row as having no top neighbour — exactly
+  as the decoder gates on its per-MB `slice_idc`). **Deblocking is signalled off
+  (`disable_deblocking_filter_idc = 1`, output == reconstruction), so slices are
+  fully independent and no cross-slice filtering exists** — the simplest
+  bit-exact option (no idc=2 boundary bookkeeping, no serial whole-frame deblock
+  pass needed). All-intra goes **frame-parallel** (`encode_frames_parallel`: N
+  independent IDRs, 1 slice each → **0% compression overhead**); IPPP goes
+  **slice-parallel** (`encode_frame_parallel`: frames serial since P references
+  the prior reconstruction, S slices within a frame concurrent), then a serial
+  step stitches the per-slice reconstructions and border-extends the reference.
+- **Determinism.** Threaded output is **byte-identical** to the serial path
+  (asserted in `tests/encode_threaded.rs`): slices are independent, so execution
+  order cannot change a bit — of the bitstream or the next P frame's reference.
+- **Compression overhead.** Multi-slice IPPP costs **~7–9%** more bits at 18
+  slices (per-slice CAVLC context reset + headers); all-intra frame-parallel
+  costs **0%** (still 1 slice/frame). Fewer slices trade speedup for tighter
+  compression.
+- **Scaling.** IPPP slice-parallel scales ~9×, below the 18-way thread count:
+  slice bands are uneven in cost, the per-frame reconstruction stitch + border
+  extension is serial, and frames cannot overlap (P dependency). All-intra
+  frame-parallel scales ~11–12× (no inter-frame dependency).
+
 ### Round-trip quality (encode → our own conformant decoder)
 
 From `tests/encode_roundtrip.rs`. **Single intra frame** (BANM frame 0):
@@ -180,6 +225,11 @@ inter path and the encoder↔decoder reconstruction agree.
 - **Encode bench** (`examples/bench_encode.rs`): decodes the in-tree BANM stream to
   recover 100 real frames, then times `encode_frame` over the whole sequence
   (all-intra via `force_idr`, and IPPP), auto-scaled, **median** reported.
+- **HD/threaded encode bench** (`examples/bench_encode_hd.rs`): a self-contained
+  synthetic 1920×1080 moving source (no corpus), times single-threaded (1 slice)
+  vs the `threads`-gated fan-out (frame-parallel intra, slice-parallel IPPP),
+  auto-scaled, **median** reported, in fps + MB/s + ×realtime-30. Threaded output
+  is asserted byte-identical to serial in `tests/encode_threaded.rs`.
 - **SIMD bit-exactness**: the same SIMD kernels are validated against scalar by
   the existing kernel unit tests under `--features simd` (e.g. the 2000-case
   random IDCT test, the all-position MC anchor test, the random SAD test) and by

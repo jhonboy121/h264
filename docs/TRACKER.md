@@ -181,7 +181,28 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
 
 
 ## P8 — Processing ⏸  (downsample/denoise/scenechange/vaa)
-## P9 — Threading ⏸  (slice MT + thread pool; std-only, wasm off)
+
+## P9 — Threading ✅  (multi-slice encode + slice/frame parallelism; std-only, wasm off)
+- [x] **P9.1 multi-slice encode** ✅ — `Encoder::new_with_slices` / `set_slices`
+      partition each frame into `S` contiguous MB-row-band slices, each its own
+      slice NAL (correct `first_mb_in_slice`), independent CAVLC bitstream, and
+      prediction state reset at the boundary (intra availability, mvd/MV pred and
+      nC neighbour derivation gated by `slice_top_y`, mirroring the decoder's
+      per-MB `slice_idc`). Deblocking off (`disable_deblocking_filter_idc=1`,
+      output==recon) ⇒ slices fully independent, no cross-slice filter. P-slice
+      `mb_skip_run` flushed per slice. `FrameEnc` refactored to borrow src+ref
+      planes. Validated S=4/8 round-trip vs single-slice in
+      `tests/encode_multislice.rs` (PSNR matches, decoder accepts).
+- [x] **P9.2 threaded fan-out** ✅ (`threads` feature, `std::thread::scope`,
+      zero-dep) — `encode_frames_parallel` (all-intra frame-parallel, N
+      independent IDRs, 0% overhead) and `encode_frame_parallel` (IPPP
+      slice-parallel: frames serial for the P reference, S slices concurrent,
+      then a serial reconstruction-stitch + border-extend). **Byte-identical** to
+      serial (asserted, `tests/encode_threaded.rs`). wasm builds with threads off.
+- [x] **P9.3 1080p benchmark** ✅ — `examples/bench_encode_hd.rs`. **Real-time 30
+      fps 1080p reached:** threaded IPPP **127 fps (4.2×RT30)**, all-intra **300+
+      fps (10×RT30)** vs single-thread 13.7 / 25 fps. ~7–9% bits for 18-slice
+      IPPP, 0% for frame-parallel intra. See `PERF_REPORT.md` §3.
 
 ## P10 — SIMD ✅  (NEON + wasm128 behind `simd`, bit-exact)
 - [x] **simd.1 NEON** ✅ — `dsp/simd/{mod,neon}.rs`. aarch64 baseline (no runtime

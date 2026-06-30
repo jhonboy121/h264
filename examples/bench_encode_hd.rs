@@ -132,8 +132,7 @@ fn main() {
 
     #[cfg(feature = "threads")]
     let cores = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1);
-    #[cfg(not(feature = "threads"))]
-    let cores = 1usize;
+    #[cfg(feature = "threads")]
     let slices = cores as u32;
 
     println!("machine: arm64   build: --release (opt-level=3, lto=thin, codegen-units=1)");

@@ -43,6 +43,14 @@ See `TRACKER.md` for the phase-by-phase detail and `PERF_REPORT.md` for numbers.
 - **Round-trip validated** (encode → our own conformant decoder): single-frame
   intra Y-PSNR 41.16 dB @ QP26 / 37.27 dB @ QP32; IPPP holds quality with no drift
   and P access units ~12–16× smaller than the IDR. PSNR is monotonic in QP.
+- **Multi-slice + multithreaded (P9):** each frame partitions into `S`
+  independent slices (correct `first_mb_in_slice`, per-slice CAVLC, prediction
+  reset at the boundary; deblocking off so slices are fully independent). The
+  `threads` feature (std-only, `std::thread::scope`, zero deps) adds
+  `encode_frames_parallel` (frame-parallel all-intra) and `encode_frame_parallel`
+  (slice-parallel IPPP), **byte-identical to serial**. **Real-time 30 fps 1080p
+  reached:** threaded IPPP **127 fps** (4.2× realtime-30), all-intra **300+ fps**
+  (10×), vs 13.7 / 25 fps single-threaded.
 
 ### SIMD (P10)
 
@@ -67,7 +75,10 @@ See `TRACKER.md` for the phase-by-phase detail and `PERF_REPORT.md` for numbers.
   iterator; `decoder::decode_stream` convenience.
 - `h264::Frame` / `DecodedYuv` / `YUVSource` / `VisibleRegion` — planar I420
   output with visible-region accessors and BT.601 `write_rgb8` / `write_rgba8`.
-- `h264::encoder::Encoder` — `new(w, h, qp)`, `encode_frame`, `force_idr`.
+- `h264::encoder::Encoder` — `new(w, h, qp)`, `new_with_slices(w, h, qp, slices)`,
+  `set_slices`, `encode_frame`, `force_idr`, `set_frame_rate`; with `--features
+  threads`: `encode_frame_parallel` (slice-parallel) and `encode_frames_parallel`
+  (frame-parallel all-intra, takes `FrameInput`s).
 - `h264::{DecodeError, EncodeError}`.
 
 (The decoder/encoder/api/formats modules are feature-gated; `dsp` and `bits` are
@@ -112,8 +123,9 @@ where they would change the bit parse.)
 CABAC encoding, rate control. (Fixed-QP baseline IPPP works and round-trips
 without drift — these are encoder-freedom features, not correctness gaps.)
 
-**Pipeline (whole phases):** P8 processing (downsample/denoise/scene-change/VAA)
-and P9 threading (slice-level multithreading + thread pool, std-only).
+**Pipeline (whole phases):** P8 processing (downsample/denoise/scene-change/VAA).
+**P9 threading is done** — encoder slice/frame parallelism (std-only); a decoder
+thread pool is not implemented (decode already meets target).
 
 **SIMD (remaining):** deblock filters, `mc_hor_ver22`, chroma MC, and x86
 SSE/AVX — see the SIMD note above for why deblock/`mc_hor_ver22` were kept scalar.
