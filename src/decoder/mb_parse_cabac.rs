@@ -644,6 +644,23 @@ fn parse_residuals_cabac(
 
 /// Decode one I-slice macroblock in CABAC into `ctx` + `coeffs`. Returns the
 /// `end_of_slice_flag`.
+/// Decode an I_PCM macroblock (CABAC, spec 7.3.5 / 9.3.1): pull the 384 raw
+/// sample bytes from the bitstream and re-initialise the arithmetic engine past
+/// them, copy the samples into the picture, and commit PCM MB state (QP=0,
+/// nnz=16). Shared by the I- and P-slice CABAC paths.
+fn decode_pcm_mb_cabac(dec: &mut CabacDecoder, ctx: &mut DecoderContext, mb_xy: usize) -> Result<()> {
+    let raw = dec.read_pcm_bytes()?;
+    let mut luma = [0u8; 256];
+    luma.copy_from_slice(&raw[0..256]);
+    let mut cb = [0u8; 64];
+    cb.copy_from_slice(&raw[256..320]);
+    let mut cr = [0u8; 64];
+    cr.copy_from_slice(&raw[320..384]);
+    super::recon_intra::recon_pcm_mb(ctx, mb_xy, &luma, &cb, &cr);
+    super::mb_parse_cavlc::commit_pcm_state(ctx, mb_xy);
+    Ok(())
+}
+
 pub fn decode_mb_cabac_islice(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
@@ -672,7 +689,7 @@ fn decode_intra_mb_body(
     let MbCtx { ctx, mb_xy, pps } = mb;
     let QpState { last_mb_qp, last_delta_qp } = qp;
     if ui_mb_type == 25 {
-        return Err(DecodeError::Unsupported("I_PCM (CABAC)"));
+        return decode_pcm_mb_cabac(dec, ctx, mb_xy);
     }
     if ui_mb_type > 25 {
         return Err(DecodeError::InvalidSyntax("intra mb_type (cabac)"));
@@ -1107,7 +1124,7 @@ pub fn decode_mb_cabac_pslice(
                 coeffs,
             )?;
         } else if ui_mb_type == 30 {
-            return Err(DecodeError::Unsupported("I_PCM (CABAC P)"));
+            decode_pcm_mb_cabac(dec, ctx, mb_xy)?;
         } else {
             decode_intra_mb_body(dec, ctxs, MbCtx { ctx, mb_xy, pps }, qp, coeffs, &n, ui_mb_type - 5)?;
         }

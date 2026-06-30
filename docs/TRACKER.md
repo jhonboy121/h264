@@ -105,6 +105,15 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
 - [x] **I_PCM (CAVLC) → 39/54.** `MbType::IPcm` (intra for deblock; QP=0, nnz=16),
       `parse_pcm_mb_cavlc` byte-aligns past `pcm_alignment_zero_bit` then reads
       256+64+64 raw samples into the picture (`recon_pcm_mb`). CVPCMNL1_SVA_C BITEXACT.
+- [x] **I_PCM (CABAC) → 40/54.** `CabacDecoder::read_pcm_bytes` reproduces
+      RestoreCabacDecEngineToBS + InitCabacDecEngineFromBS (stream pos =
+      `pBuffCurr - (iBitsLeft>>3)`, re-init engine past the 384 raw bytes).
+      PCM neighbour coded_block_flag = 1 via `cbf_dc=0xFFFF` (spec 9.3.3.1.1.9).
+      Wired into both I- and P-slice CABAC paths. QCIF_2P_I_allIPCM BITEXACT.
+- [⏸] **sps_subsetsps_bothVUI DEFERRED.** Its only coded picture is in a NAL type
+      20 (coded slice *extension*, SVC scalable layer) — no base-layer type-1/5
+      slice exists. Decoding it needs full SVC scalable-extension slice support,
+      a large separate feature (same class as interlace/field). Not a cheap bug.
 - [x] **Perf report v1** `docs/PERF_REPORT.md` — Rust scalar 1.07-1.65× of C NEON, byte-identical
 - [x] `src/api.rs` Rusty `Decoder` facade (incremental `decode`/`flush`/`decode_all`,
       `nal_units`) + `src/formats/` (`YUVSource`, `DecodedYuv`/`Frame`, BT.601

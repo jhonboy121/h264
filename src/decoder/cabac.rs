@@ -184,6 +184,24 @@ impl<'a> CabacDecoder<'a> {
         }
     }
 
+    /// Read the 384 raw I_PCM sample bytes (256 luma + 64 Cb + 64 Cr, 4:2:0)
+    /// that follow an I_PCM `mb_type`, then re-initialise the arithmetic engine
+    /// just past them. This reproduces `RestoreCabacDecEngineToBS` +
+    /// `InitReadBits(.., 1)` + `InitCabacDecEngineFromBS` (spec 9.3.1): the
+    /// actual stream position is `pBuffCurr - (iBitsLeft >> 3)`, and re-init from
+    /// that position + 384 is exactly a fresh engine constructed there.
+    pub fn read_pcm_bytes(&mut self) -> Result<[u8; 384]> {
+        let pcm_start = self.curr - ((self.bits_left >> 3) as usize);
+        if pcm_start + 384 > self.data.len() {
+            return Err(DecodeError::UnexpectedEof);
+        }
+        let mut out = [0u8; 384];
+        out.copy_from_slice(&self.data[pcm_start..pcm_start + 384]);
+        let data = self.data;
+        *self = CabacDecoder::new(data, pcm_start + 384)?;
+        Ok(out)
+    }
+
     /// `DecodeBinCabac`: decode one bin using context `ctx`, updating its state
     /// and the engine range/offset (the `DecodeDecision` of spec 9.3.4.2).
     pub fn decode_decision(&mut self, ctx: &mut CabacCtx) -> u32 {

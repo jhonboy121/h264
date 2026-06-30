@@ -378,6 +378,11 @@ pub(super) fn commit_pcm_state(ctx: &mut DecoderContext, mb_xy: usize) {
     ctx.chroma_qp[mb_xy * 2 + 1] = 0;
     ctx.nzc_luma[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(&[16i8; 16]);
     ctx.nzc_chroma[mb_xy * 8..mb_xy * 8 + 8].copy_from_slice(&[16i8; 8]);
+    // CABAC coded_block_flag context: a PCM neighbour contributes condTermFlag=1
+    // for every transform block (spec 9.3.3.1.1.9). The nnz=16 above covers the
+    // AC/4x4 path; set every DC cbf bit so the DC path reads 1 too. (Unused on
+    // the CAVLC path, harmless to set.)
+    ctx.cbf_dc[mb_xy] = 0xFFFF;
     ctx.i4_best_mode[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(&[-1i8; 16]);
     ctx.i4_final_mode[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(&[2i8; 16]);
     for b in 0..16 {
