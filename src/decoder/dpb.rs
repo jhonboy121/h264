@@ -212,15 +212,19 @@ impl Dpb {
         }
 
         let mut cur: Option<Picture> = Some(pic);
+        let mut had_mmco5 = false;
         if adaptive {
-            self.apply_mmco(mmco, frame_num, id, &mut cur);
+            had_mmco5 = self.apply_mmco(mmco, frame_num, id, &mut cur);
         } else {
             self.sliding_window(frame_num);
         }
+        // After MMCO 5 the current picture is stored with frame_num 0 (spec
+        // 8.2.4.1 / WelsMarkAsRef bLastHasMmco5), affecting future PicNums.
+        let store_frame_num = if had_mmco5 { 0 } else { frame_num };
         // If MMCO 6 did not consume the current picture as a long-term ref,
         // add it as a short-term reference.
         if let Some(pic) = cur {
-            self.push_short(pic, frame_num, id);
+            self.push_short(pic, store_frame_num, id);
         }
     }
 
@@ -277,7 +281,8 @@ impl Dpb {
         frame_num: i32,
         id: i32,
         cur: &mut Option<Picture>,
-    ) {
+    ) -> bool {
+        let mut had_mmco5 = false;
         for e in mmco {
             match e.mmco_type {
                 MMCO_SHORT2UNUSED => {
@@ -321,6 +326,7 @@ impl Dpb {
                 MMCO_RESET => {
                     self.refs.clear();
                     self.max_long_term_frame_idx = -1;
+                    had_mmco5 = true;
                 }
                 MMCO_LONG => {
                     // Mark the current picture as a long-term reference.
@@ -338,6 +344,7 @@ impl Dpb {
                 _ => {}
             }
         }
+        had_mmco5
     }
 
     fn remove_long(&mut self, long_term_frame_idx: i32) {
