@@ -14,13 +14,27 @@ use alloc::vec::Vec;
 use super::params::{Pps, Sps};
 use super::picture::Picture;
 
-/// Macroblock prediction class for the baseline intra path.
+/// Macroblock prediction class. Covers the baseline intra path plus the P-slice
+/// inter partition kinds (mirrors the relevant `MB_TYPE_*` from
+/// `wels_common_defs.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MbType {
     /// `MB_TYPE_INTRA4x4`.
     Intra4x4,
     /// `MB_TYPE_INTRA16x16`.
     Intra16x16,
+    /// `MB_TYPE_16x16` (P_L0_16x16).
+    Inter16x16,
+    /// `MB_TYPE_16x8` (P_L0_L0_16x8).
+    Inter16x8,
+    /// `MB_TYPE_8x16` (P_L0_L0_8x16).
+    Inter8x16,
+    /// `MB_TYPE_8x8` (P_8x8).
+    Inter8x8,
+    /// `MB_TYPE_8x8_REF0` (P_8x8ref0).
+    Inter8x8Ref0,
+    /// `MB_TYPE_SKIP` (P_Skip).
+    PSkip,
 }
 
 impl MbType {
@@ -28,6 +42,57 @@ impl MbType {
     #[inline]
     pub fn is_intra_nxn(self) -> bool {
         matches!(self, MbType::Intra4x4)
+    }
+
+    /// `IS_INTRA`.
+    #[inline]
+    pub fn is_intra(self) -> bool {
+        matches!(self, MbType::Intra4x4 | MbType::Intra16x16)
+    }
+
+    /// `IS_INTER` (skip counts as inter).
+    #[inline]
+    pub fn is_inter(self) -> bool {
+        !self.is_intra()
+    }
+
+    /// `IS_SKIP`.
+    #[inline]
+    pub fn is_skip(self) -> bool {
+        matches!(self, MbType::PSkip)
+    }
+
+    /// `IS_INTER_16x16` (16x16 or skip).
+    #[inline]
+    pub fn is_inter_16x16(self) -> bool {
+        matches!(self, MbType::Inter16x16 | MbType::PSkip)
+    }
+}
+
+/// Sub-macroblock partition kind for a P_8x8 macroblock partition
+/// (`g_ksInterPSubMbTypeInfo`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubMbType {
+    /// `SUB_MB_TYPE_8x8` (1 part, width 2).
+    P8x8,
+    /// `SUB_MB_TYPE_8x4` (2 parts, width 2).
+    P8x4,
+    /// `SUB_MB_TYPE_4x8` (2 parts, width 1).
+    P4x8,
+    /// `SUB_MB_TYPE_4x4` (4 parts, width 1).
+    P4x4,
+}
+
+impl SubMbType {
+    /// (partition count, partition width in 4x4 units).
+    #[inline]
+    pub fn part_info(self) -> (usize, usize) {
+        match self {
+            SubMbType::P8x8 => (1, 2),
+            SubMbType::P8x4 => (2, 2),
+            SubMbType::P4x8 => (2, 1),
+            SubMbType::P4x4 => (4, 1),
+        }
     }
 }
 
@@ -89,6 +154,18 @@ pub struct DecoderContext {
     /// each component in raster order.
     pub nzc_chroma: Vec<i8>,
 
+    /// Per-4x4-block list-0 motion vectors, 16 per MB in raster (`g_kuiScan4`)
+    /// order, `[x, y]` in quarter-pel. Stored flat: `mv[(mb*16 + raster)*2 + c]`.
+    pub mv: Vec<i16>,
+    /// Per-4x4-block list-0 reference index (slice-local, 0-based), 16 per MB in
+    /// raster order; `REF_NOT_IN_LIST` (-1) for intra blocks.
+    pub ref_idx: Vec<i8>,
+    /// Per-4x4-block resolved reference-picture identity used by the inter
+    /// deblock bS rule, 16 per MB raster order; `-1` for intra / not-in-list.
+    pub ref_pic_id: Vec<i32>,
+    /// Per-MB sub-mb partition kinds (P_8x8 only), 4 per MB.
+    pub sub_mb_type: Vec<SubMbType>,
+
     pub picture: Picture,
 }
 
@@ -122,6 +199,10 @@ impl DecoderContext {
             i4_final_mode: vec![2; total_mb * 16],
             nzc_luma: vec![0; total_mb * 16],
             nzc_chroma: vec![0; total_mb * 8],
+            mv: vec![0; total_mb * 16 * 2],
+            ref_idx: vec![-1; total_mb * 16],
+            ref_pic_id: vec![-1; total_mb * 16],
+            sub_mb_type: vec![SubMbType::P8x8; total_mb * 4],
             picture: Picture::new(mb_width, mb_height),
         }
     }

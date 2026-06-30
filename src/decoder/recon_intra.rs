@@ -120,6 +120,7 @@ pub fn recon_intra_mb(ctx: &mut DecoderContext, mb_xy: usize, coeffs: &[i16; 384
                 }
             }
         }
+        _ => unreachable!("recon_intra_mb called on an inter macroblock"),
     }
 
     // Chroma (identical for both intra MB kinds).
