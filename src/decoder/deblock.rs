@@ -410,9 +410,11 @@ fn inter_bs(
             }
         }
     } else {
-        // DeblockingBSInsideMBNormal: BS_EDGE with within-MB MV-difference check.
+        // DeblockingBSInsideMBNormal: BS_EDGE — compares the two 4x4 blocks'
+        // reference pictures (different ref_idx across 8x8/16x8/8x16 partitions)
+        // as well as their MVs.
         let bs_edge = |bsx1: i32, idx: usize, nidx: usize| -> u8 {
-            let smb = mb_bs_mv(0, 0, mv(idx), mv(nidx)); // ref ignored within MB
+            let smb = mb_bs_mv(refp(idx), refp(nidx), mv(idx), mv(nidx));
             if bsx1 != 0 { 2 } else { smb }
         };
         for seg in 0..4 {

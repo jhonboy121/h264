@@ -53,6 +53,32 @@ fn main() {
     }
     match first_bad {
         None => println!("ALL {n} frames bit-exact"),
-        Some(f) => println!("first divergence at frame {f}"),
+        Some(f) => {
+            println!("first divergence at frame {f}");
+            // Per-MB luma diff map for frame f.
+            let w = pics[f].width;
+            let h = pics[f].height;
+            let got = extract_i420(&pics[f]);
+            let exp = &oracle[f * fsize..(f + 1) * fsize];
+            let mbw = w / 16;
+            let mbh = h / 16;
+            println!("per-MB luma diff map ({mbw}x{mbh}), '.'=0 'X'=diff:");
+            for my in 0..mbh {
+                let mut row = String::new();
+                for mx in 0..mbw {
+                    let mut d = 0;
+                    for yy in 0..16 {
+                        for xx in 0..16 {
+                            let p = (my * 16 + yy) * w + mx * 16 + xx;
+                            if got[p] != exp[p] {
+                                d += 1;
+                            }
+                        }
+                    }
+                    row.push(if d == 0 { '.' } else { 'X' });
+                }
+                println!("{my:2}: {row}");
+            }
+        }
     }
 }

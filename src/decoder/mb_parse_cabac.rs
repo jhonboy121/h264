@@ -830,14 +830,16 @@ impl InterCacheC {
 
         let mut mv = [[0i16; 2]; 30];
         let mut ref_idx = [REF_NOT_AVAIL_C; 30];
-        let mvd = [[0i16; 2]; 30];
+        let mut mvd = [[0i16; 2]; 30];
         let mv_of = |xy: usize, b: usize| [ctx.mv[(xy * 16 + b) * 2], ctx.mv[(xy * 16 + b) * 2 + 1]];
+        let mvd_of = |xy: usize, b: usize| [ctx.mvd[(xy * 16 + b) * 2], ctx.mvd[(xy * 16 + b) * 2 + 1]];
         let ref_of = |xy: usize, b: usize| ctx.ref_idx[xy * 16 + b];
 
         if left && ctx.mb_type[left_xy].is_inter() {
             for (k, &b) in [3usize, 7, 11, 15].iter().enumerate() {
                 let c = [6, 12, 18, 24][k];
                 mv[c] = mv_of(left_xy, b);
+                mvd[c] = mvd_of(left_xy, b);
                 ref_idx[c] = ref_of(left_xy, b);
             }
         } else {
@@ -848,6 +850,7 @@ impl InterCacheC {
         }
         if left_top && ctx.mb_type[left_top_xy].is_inter() {
             mv[0] = mv_of(left_top_xy, 15);
+            mvd[0] = mvd_of(left_top_xy, 15);
             ref_idx[0] = ref_of(left_top_xy, 15);
         } else {
             ref_idx[0] = if left_top { REF_NOT_IN_LIST_C } else { REF_NOT_AVAIL_C };
@@ -856,6 +859,7 @@ impl InterCacheC {
             for (k, &b) in [12usize, 13, 14, 15].iter().enumerate() {
                 let c = 1 + k;
                 mv[c] = mv_of(top_xy, b);
+                mvd[c] = mvd_of(top_xy, b);
                 ref_idx[c] = ref_of(top_xy, b);
             }
         } else {
@@ -866,6 +870,7 @@ impl InterCacheC {
         }
         if right_top && ctx.mb_type[right_top_xy].is_inter() {
             mv[5] = mv_of(right_top_xy, 12);
+            mvd[5] = mvd_of(right_top_xy, 12);
             ref_idx[5] = ref_of(right_top_xy, 12);
         } else {
             ref_idx[5] = if right_top { REF_NOT_IN_LIST_C } else { REF_NOT_AVAIL_C };
@@ -1147,23 +1152,22 @@ fn parse_inter_motion_cabac(
     ref_pic_ids: &[i32],
     n: &Neigh,
 ) -> Result<()> {
-    // helper to store ref index into mb (raster) + cur_ref + ctx.
     match mb_type {
         MbType::Inter16x16 => {
             let iref = parse_ref_idx(dec, ctxs, cache, cur_ref, n, 0, ref_count) as i8;
-            store_ref_full(ctx, cache, cur_ref, mb_xy, iref, ref_pic_ids[iref as usize]);
+            store_ref_block(ctx, cache, cur_ref, mb_xy, 0, CACHE30_SCAN_IDX[0], iref, ref_pic_ids[iref as usize], 4, 4);
             let mvp = pred_mv(&cache.mv, &cache.ref_idx, 0, 4, iref);
             let mx = parse_mvd(dec, ctxs, cache, 0, 0);
             let my = parse_mvd(dec, ctxs, cache, 0, 1);
             let mv = [mvp[0] + mx, mvp[1] + my];
-            store_mv_mvd_block(ctx, cache, mb_xy, 0, 0, mv, [mx, my], 4, 4);
+            store_mvmvd_block(ctx, cache, mb_xy, 0, CACHE30_SCAN_IDX[0], mv, [mx, my], 4, 4);
         }
         MbType::Inter16x8 => {
             let mut r = [0i8; 2];
             for i in 0..2 {
                 let part = i << 3;
                 r[i] = parse_ref_idx(dec, ctxs, cache, cur_ref, n, part, ref_count) as i8;
-                store_ref_part(ctx, cache, cur_ref, mb_xy, part, r[i], ref_pic_ids[r[i] as usize], 2);
+                store_ref_block(ctx, cache, cur_ref, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], r[i], ref_pic_ids[r[i] as usize], 4, 2);
             }
             for i in 0..2 {
                 let part = i << 3;
@@ -1171,8 +1175,7 @@ fn parse_inter_motion_cabac(
                 let mx = parse_mvd(dec, ctxs, cache, part, 0);
                 let my = parse_mvd(dec, ctxs, cache, part, 1);
                 let mv = [mvp[0] + mx, mvp[1] + my];
-                store_mv_mvd_block(ctx, cache, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], mv, [mx, my], 2, 2);
-                store_mv_mvd_block(ctx, cache, mb_xy, SCAN4[part + 4], CACHE30_SCAN_IDX[part + 4], mv, [mx, my], 2, 2);
+                store_mvmvd_block(ctx, cache, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], mv, [mx, my], 4, 2);
             }
         }
         MbType::Inter8x16 => {
@@ -1180,7 +1183,7 @@ fn parse_inter_motion_cabac(
             for i in 0..2 {
                 let part = i << 2;
                 r[i] = parse_ref_idx(dec, ctxs, cache, cur_ref, n, part, ref_count) as i8;
-                store_ref_part(ctx, cache, cur_ref, mb_xy, part, r[i], ref_pic_ids[r[i] as usize], 8);
+                store_ref_block(ctx, cache, cur_ref, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], r[i], ref_pic_ids[r[i] as usize], 2, 4);
             }
             for i in 0..2 {
                 let part = i << 2;
@@ -1188,8 +1191,7 @@ fn parse_inter_motion_cabac(
                 let mx = parse_mvd(dec, ctxs, cache, part, 0);
                 let my = parse_mvd(dec, ctxs, cache, part, 1);
                 let mv = [mvp[0] + mx, mvp[1] + my];
-                store_mv_mvd_block(ctx, cache, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], mv, [mx, my], 2, 2);
-                store_mv_mvd_block(ctx, cache, mb_xy, SCAN4[part + 8], CACHE30_SCAN_IDX[part + 8], mv, [mx, my], 2, 2);
+                store_mvmvd_block(ctx, cache, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], mv, [mx, my], 2, 4);
             }
         }
         MbType::Inter8x8 | MbType::Inter8x8Ref0 => {
@@ -1206,17 +1208,13 @@ fn parse_inter_motion_cabac(
                 };
             }
             ctx.sub_mb_type[mb_xy * 4..mb_xy * 4 + 4].copy_from_slice(&subs);
-            // ref idx per 8x8.
+            // ref pass: fills only the raster per-MB ref (cur_ref + ctx), NOT the
+            // 30-entry cache (UpdateP8x8RefIdxCabac). The cache ref is filled per
+            // 8x8 inside the mv loop, just before that 8x8's mvs are predicted.
             let mut iref = [0i8; 4];
             for (i, ir) in iref.iter_mut().enumerate() {
                 let z = i << 2;
                 *ir = if ref0 { 0 } else { parse_ref_idx(dec, ctxs, cache, cur_ref, n, z, eff) as i8 };
-                // fill ref across the 8x8 (cache + cur_ref + ctx).
-                let c8 = CACHE30_SCAN_IDX[z];
-                cache.ref_idx[c8] = *ir;
-                cache.ref_idx[c8 + 1] = *ir;
-                cache.ref_idx[c8 + 6] = *ir;
-                cache.ref_idx[c8 + 7] = *ir;
                 let s8 = SCAN4[z];
                 let rp = ref_pic_ids[*ir as usize];
                 for &rr in &[s8, s8 + 1, s8 + 4, s8 + 5] {
@@ -1227,20 +1225,26 @@ fn parse_inter_motion_cabac(
             }
             for i in 0..4 {
                 let z8 = i << 2;
+                // Fill the cache ref for this 8x8 only now (UpdateP8x8RefCacheIdx).
+                let c8 = CACHE30_SCAN_IDX[z8];
+                cache.ref_idx[c8] = iref[i];
+                cache.ref_idx[c8 + 1] = iref[i];
+                cache.ref_idx[c8 + 6] = iref[i];
+                cache.ref_idx[c8 + 7] = iref[i];
                 let (pc, pw) = subs[i].part_info();
+                let (w, h) = match subs[i] {
+                    SubMbType::P8x8 => (2, 2),
+                    SubMbType::P8x4 => (2, 1),
+                    SubMbType::P4x8 => (1, 2),
+                    SubMbType::P4x4 => (1, 1),
+                };
                 for j in 0..pc {
                     let part = z8 + j * pw;
                     let mvp = pred_mv(&cache.mv, &cache.ref_idx, part, pw, iref[i]);
                     let mx = parse_mvd(dec, ctxs, cache, part, 0);
                     let my = parse_mvd(dec, ctxs, cache, part, 1);
                     let mv = [mvp[0] + mx, mvp[1] + my];
-                    let (w, h) = match subs[i] {
-                        SubMbType::P8x8 => (2, 2),
-                        SubMbType::P8x4 => (2, 1),
-                        SubMbType::P4x8 => (1, 2),
-                        SubMbType::P4x4 => (1, 1),
-                    };
-                    store_mv_mvd_block(ctx, cache, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], mv, [mx, my], w, h);
+                    store_mvmvd_block(ctx, cache, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], mv, [mx, my], w, h);
                 }
             }
         }
@@ -1249,52 +1253,36 @@ fn parse_inter_motion_cabac(
     Ok(())
 }
 
-fn store_ref_full(
-    ctx: &mut DecoderContext,
-    cache: &mut InterCacheC,
-    cur_ref: &mut [i8; 16],
-    mb_xy: usize,
-    iref: i8,
-    ref_pic: i32,
-) {
-    for raster in 0..16 {
-        cur_ref[raster] = iref;
-        ctx.ref_idx[mb_xy * 16 + raster] = iref;
-        ctx.ref_pic_id[mb_xy * 16 + raster] = ref_pic;
-    }
-    // fill current-MB ref cache cells (g_kuiCache30ScanIdx for all 16 blocks).
-    for z in 0..16 {
-        cache.ref_idx[CACHE30_SCAN_IDX[z]] = iref;
-    }
-}
-
-fn store_ref_part(
-    ctx: &mut DecoderContext,
-    cache: &mut InterCacheC,
-    cur_ref: &mut [i8; 16],
-    mb_xy: usize,
-    part: usize,
-    iref: i8,
-    ref_pic: i32,
-    step: usize,
-) {
-    let mut p = part;
-    let count = if step == 2 { 2 } else { 2 };
-    for _ in 0..count {
-        let s = SCAN4[p];
-        let c = CACHE30_SCAN_IDX[p];
-        for (rr, cc) in [(s, c), (s + 1, c + 1), (s + 4, c + 6), (s + 5, c + 7)] {
-            cur_ref[rr] = iref;
-            ctx.ref_idx[mb_xy * 16 + rr] = iref;
-            ctx.ref_pic_id[mb_xy * 16 + rr] = ref_pic;
-            cache.ref_idx[cc] = iref;
-        }
-        p += step;
-    }
-}
-
+/// Store a reference index across a `w`x`h` 4x4 block (raster `ctx` + `cur_ref`
+/// + the 30-entry cache).
 #[allow(clippy::too_many_arguments)]
-fn store_mv_mvd_block(
+fn store_ref_block(
+    ctx: &mut DecoderContext,
+    cache: &mut InterCacheC,
+    cur_ref: &mut [i8; 16],
+    mb_xy: usize,
+    scan4: usize,
+    cache_idx: usize,
+    iref: i8,
+    ref_pic: i32,
+    w: usize,
+    h: usize,
+) {
+    for by in 0..h {
+        for bx in 0..w {
+            let raster = scan4 + by * 4 + bx;
+            cur_ref[raster] = iref;
+            ctx.ref_idx[mb_xy * 16 + raster] = iref;
+            ctx.ref_pic_id[mb_xy * 16 + raster] = ref_pic;
+            cache.ref_idx[cache_idx + by * 6 + bx] = iref;
+        }
+    }
+}
+
+/// Store a motion vector + mvd across a `w`x`h` 4x4 block (raster `ctx.mv` /
+/// `ctx.mvd` + the 30-entry mv/mvd caches).
+#[allow(clippy::too_many_arguments)]
+fn store_mvmvd_block(
     ctx: &mut DecoderContext,
     cache: &mut InterCacheC,
     mb_xy: usize,
@@ -1311,6 +1299,8 @@ fn store_mv_mvd_block(
             let base = (mb_xy * 16 + raster) * 2;
             ctx.mv[base] = mv[0];
             ctx.mv[base + 1] = mv[1];
+            ctx.mvd[base] = mvd[0];
+            ctx.mvd[base + 1] = mvd[1];
             let c = cache_idx + by * 6 + bx;
             cache.mv[c] = mv;
             cache.mvd[c] = mvd;

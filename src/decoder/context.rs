@@ -170,6 +170,9 @@ pub struct DecoderContext {
     pub ref_pic_id: Vec<i32>,
     /// Per-MB sub-mb partition kinds (P_8x8 only), 4 per MB.
     pub sub_mb_type: Vec<SubMbType>,
+    /// Per-4x4-block list-0 motion-vector difference (`pMvd`), 16 per MB raster
+    /// order, `[x, y]`. Only the CABAC mvd-context derivation reads it.
+    pub mvd: Vec<i16>,
 
     pub picture: Picture,
 }
@@ -209,6 +212,7 @@ impl DecoderContext {
             ref_idx: vec![-1; total_mb * 16],
             ref_pic_id: vec![-1; total_mb * 16],
             sub_mb_type: vec![SubMbType::P8x8; total_mb * 4],
+            mvd: vec![0; total_mb * 16 * 2],
             picture: Picture::new(mb_width, mb_height),
         }
     }
