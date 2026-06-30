@@ -100,10 +100,13 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
       `nal_units`) + `src/formats/` (`YUVSource`, `DecodedYuv`/`Frame`, BT.601
       `write_rgb8`/`write_rgba8`) — mirrors `openh264` crate shape, no_std-clean
 
-## P5 — Encoder DSP ⬜
-- [ ] fwd transform/quant (`encode_mb_aux.cpp`) · `EncUT_EncoderMbAux`, `EncUT_DecodeMbAux`
-- [ ] enc intra predictor · `EncUT_GetIntraPredictor`
-- [ ] SAD/SATD (`sample.cpp`) · `EncUT_Sample`
+## P5 — Encoder DSP ✅
+- [x] fwd DCT/quant/DC-Hadamard/scan (dsp/transform.rs) · EncUT_EncoderMbAux ✓ (d8efa26)
+- [x] SATD + four-pos SAD (dsp/satd.rs, sad.rs) · EncUT_Sample ✓ (fc81e7d)
+- [x] enc intra predictors + SATD/SAD mode-cost combined3 helpers (encoder/intra_pred.rs)
+      · EncUT_GetIntraPredictor ✓ (47854ea). 122 tests, encoder-only no_std builds.
+
+## P6 — Encoder core (MVP: intra-only, validated by round-trip thru OUR decoder) 🚧
 
 ## P6 — Encoder core ⬜
 - [ ] `bits/writer.rs` + Exp-Golomb write · `EncUT_ExpGolomb`
