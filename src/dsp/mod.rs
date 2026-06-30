@@ -22,6 +22,7 @@ pub mod expand;
 pub mod intra_pred;
 pub mod mc;
 pub mod sad;
+pub mod satd;
 pub mod tables;
 // Added in later phases:
 // pub mod expand;   // P3 (coupled to padded Plane buffer)

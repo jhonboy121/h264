@@ -3,9 +3,8 @@
 //! (`WelsSampleSad{4x4,8x4,4x8,8x8,16x8,8x16,16x16}_c`).
 //!
 //! Each computes `sum |a - b|` over a `w`x`h` block with independent strides.
-//! The `...Four_c` variants have no scalar C reference (asm-only) and are
-//! omitted here; the motion-estimation layer (P5/P6) builds four-position SAD
-//! from these scalar kernels.
+//! The four-position `WelsSampleSadFour*_c` variants (used by motion estimation
+//! to score the four neighbours of a candidate) are ported in [`sad_four`].
 
 /// Generic `w`x`h` SAD with independent strides.
 #[inline]
@@ -38,6 +37,23 @@ named_sad!(sad8x8, 8, 8, "Port of `WelsSampleSad8x8_c`.");
 named_sad!(sad16x8, 16, 8, "Port of `WelsSampleSad16x8_c`.");
 named_sad!(sad8x16, 8, 16, "Port of `WelsSampleSad8x16_c`.");
 named_sad!(sad16x16, 16, 16, "Port of `WelsSampleSad16x16_c`.");
+
+/// Four-position SAD: scores `s1` (at `o1`) against the four neighbours of the
+/// candidate centred at `o2` in `s2` — up, down, left, right — returning
+/// `[above, below, left, right]`. Port of the `WelsSampleSadFour*_c` family
+/// (`reference/codec/common/src/sad_common.cpp`).
+///
+/// The caller must ensure `o2 >= st2 + 1` so the up/left neighbours are in
+/// bounds (the motion-vector clamp guarantees this in the encoder).
+#[inline]
+pub fn sad_four(s1: &[u8], o1: usize, st1: usize, s2: &[u8], o2: usize, st2: usize, w: usize, h: usize) -> [u32; 4] {
+    [
+        sad(&s1[o1..], st1, &s2[o2 - st2..], st2, w, h),
+        sad(&s1[o1..], st1, &s2[o2 + st2..], st2, w, h),
+        sad(&s1[o1..], st1, &s2[o2 - 1..], st2, w, h),
+        sad(&s1[o1..], st1, &s2[o2 + 1..], st2, w, h),
+    ]
+}
 
 #[cfg(test)]
 mod tests {
@@ -88,6 +104,30 @@ mod tests {
                 sad_ref(&a, stride, &b, stride, w, h),
                 "{w}x{h}"
             );
+        }
+    }
+
+    #[test]
+    fn sad_four_matches_reference() {
+        let mut state = 0x1234_ABCDu32;
+        let mut next = || {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            (state >> 24) as u8
+        };
+        let (st1, st2) = (32usize, 36usize);
+        let a: alloc::vec::Vec<u8> = (0..st1 * 20).map(|_| next()).collect();
+        let b: alloc::vec::Vec<u8> = (0..st2 * 20).map(|_| next()).collect();
+        // Centre the candidate one row/col in so the up/left neighbours are valid.
+        let (o1, o2) = (0usize, st2 + 1);
+        for (w, h) in [(4, 4), (8, 4), (4, 8), (8, 8), (16, 8), (8, 16), (16, 16)] {
+            let got = sad_four(&a, o1, st1, &b, o2, st2, w, h);
+            let want = [
+                sad_ref(&a[o1..], st1, &b[o2 - st2..], st2, w, h),
+                sad_ref(&a[o1..], st1, &b[o2 + st2..], st2, w, h),
+                sad_ref(&a[o1..], st1, &b[o2 - 1..], st2, w, h),
+                sad_ref(&a[o1..], st1, &b[o2 + 1..], st2, w, h),
+            ];
+            assert_eq!(got, want, "{w}x{h}");
         }
     }
 }
