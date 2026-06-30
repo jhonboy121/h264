@@ -7,8 +7,22 @@
 //! to score the four neighbours of a candidate) are ported in [`sad_four`].
 
 /// Generic `w`x`h` SAD with independent strides.
+///
+/// Dispatches to a bit-exact SIMD kernel when `--features simd` is enabled on a
+/// supported target (NEON / wasm `simd128`), otherwise the scalar reference.
 #[inline]
+#[allow(unreachable_code)]
 pub fn sad(s1: &[u8], st1: usize, s2: &[u8], st2: usize, w: usize, h: usize) -> u32 {
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    return crate::dsp::simd::neon::sad(s1, st1, s2, st2, w, h);
+    #[cfg(all(feature = "simd", target_arch = "wasm32", target_feature = "simd128"))]
+    return crate::dsp::simd::wasm::sad(s1, st1, s2, st2, w, h);
+    sad_scalar(s1, st1, s2, st2, w, h)
+}
+
+/// Scalar reference SAD (the conformance baseline / SIMD fallback).
+#[inline]
+pub(crate) fn sad_scalar(s1: &[u8], st1: usize, s2: &[u8], st2: usize, w: usize, h: usize) -> u32 {
     let mut sum = 0u32;
     for y in 0..h {
         let r1 = y * st1;

@@ -18,7 +18,20 @@ pub fn clip1(x: i32) -> u8 {
 /// `pred` is the destination/prediction plane; `stride` its row stride; `rs` the
 /// 16 dequantized residual coefficients in raster order. Port of
 /// `IdctResAddPred_c`.
+///
+/// Dispatches to a bit-exact SIMD kernel when `--features simd` is enabled on a
+/// supported target (NEON / wasm `simd128`), otherwise the scalar reference.
+#[allow(unreachable_code)]
 pub fn idct4x4_add(pred: &mut [u8], stride: usize, rs: &[i16; 16]) {
+    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    return crate::dsp::simd::neon::idct4x4_add(pred, stride, rs);
+    #[cfg(all(feature = "simd", target_arch = "wasm32", target_feature = "simd128"))]
+    return crate::dsp::simd::wasm::idct4x4_add(pred, stride, rs);
+    idct4x4_add_scalar(pred, stride, rs)
+}
+
+/// Scalar reference for [`idct4x4_add`] (the conformance baseline / SIMD fallback).
+pub fn idct4x4_add_scalar(pred: &mut [u8], stride: usize, rs: &[i16; 16]) {
     // C stores the horizontal pass into `int16_t iSrc[16]`, so it truncates to
     // 16 bits before the vertical pass — replicate with wrapping i16.
     let mut src = [0i16; 16];

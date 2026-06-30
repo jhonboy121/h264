@@ -22,6 +22,8 @@ pub mod expand;
 pub mod intra_pred;
 pub mod mc;
 pub mod sad;
+#[cfg(feature = "simd")]
+pub mod simd;
 pub mod satd;
 pub mod tables;
 // Added in later phases:
