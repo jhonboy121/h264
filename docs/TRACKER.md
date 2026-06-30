@@ -106,7 +106,16 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
 - [x] enc intra predictors + SATD/SAD mode-cost combined3 helpers (encoder/intra_pred.rs)
       · EncUT_GetIntraPredictor ✓ (47854ea). 122 tests, encoder-only no_std builds.
 
-## P6 — Encoder core (MVP: intra-only, validated by round-trip thru OUR decoder) 🚧
+## P6 — Encoder core 🚧
+- [x] **Intra encoder MVP** ✅ — Encoder::new(w,h,qp)/encode_frame → Annex-B IDR.
+      CAVLC writer (round-trip-validated vs decoder, 30k blocks exact), SPS/PPS gen,
+      NAL encap, intra mode decision (SATD), fwd DCT/quant, in-place reconstruct.
+      **Round-trip PSNR (encode→OUR decoder): QP26 Y=41.16dB, QP32 Y=37.27dB**, monotonic.
+      134 tests. ed82638. Files: encoder/{cavlc_writer,paraset,nal_encap,encode_mb,mod}.rs.
+- [ ] **P-frame encode** — motion estimation (svc_motion_estimate.cpp, EncUT_MotionEstimate),
+      inter mode decision, enc mv_pred, inter MB encode → IPPP round-trip PSNR.
+- [ ] rate control (ratectl.cpp) for target bitrate (optional; fixed-QP works).
+- [⏸] CABAC encode (set_mb_syn_cabac.cpp) — deferred (CAVLC encode works).
 
 ## P6 — Encoder core ⬜
 - [ ] `bits/writer.rs` + Exp-Golomb write · `EncUT_ExpGolomb`
