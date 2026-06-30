@@ -51,7 +51,12 @@ tables → dsp/tables.rs, and the luma/chroma DC dequant-IDCT (decode_slice.cpp:
 
 ## P3 — Decoder reconstruction 🚧  (integration phase — shared DecoderContext)
 Strategy: build the shared backbone types first, then layer decode paths. Order:
-- [ ] **P3a baseline I-frame (CAVLC) MVP** — the smallest end-to-end:
+- [x] **P3a baseline I-frame (CAVLC) MVP** ✅ — decodes BANM_MW_D IDR 176x144,
+      deterministic, luma 19-251 (80 tests). Files: picture/context/mb_parse_cavlc/
+      recon_intra/frame.rs. Implements I4x4(9 modes)+I16x16+chroma, nC, dequant,
+      luma/chroma DC IDCT. Deferred: PCM, 8x8/High, CABAC, P/B, deblock, FMO.
+      ⚠️ NOT yet bit-exact-validated (no oracle, no deblock) — P4 gate next.
+- [~] **P3a (original spec below, now done):**
       `decoder/picture.rs` (Plane/Picture YUV420 + PADDING border, alloc-once),
       `decoder/context.rs` (DecoderContext: SPS/PPS maps, cur pic, per-MB arrays
       mb_type/intra_modes/cbp/qp/nnz, mb_cache+neighbor avail, sized from SPS),
