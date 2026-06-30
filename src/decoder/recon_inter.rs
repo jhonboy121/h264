@@ -8,6 +8,7 @@
 
 use crate::dsp::mc::{mc_chroma, mc_luma};
 use crate::dsp::transform::idct4x4_add;
+use crate::dsp::{Dim, Mv};
 
 use super::context::{DecoderContext, MbType, SubMbType};
 use super::picture::{Picture, PADDING};
@@ -16,21 +17,19 @@ const BLOCK_RASTER: [usize; 16] = [0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11,
 const BLOCK_BX: [usize; 16] = [0, 1, 0, 1, 2, 3, 2, 3, 0, 1, 0, 1, 2, 3, 2, 3];
 const BLOCK_BY: [usize; 16] = [0, 0, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 2, 2, 3, 3];
 
-/// `BaseMC`: clip the full-pel MV into the padded reference, then motion
-/// compensate one `w`x`h` luma block (+ `w/2`x`h/2` chroma) from `ref_pic`
-/// into the current picture at MB-relative offset `(dx, dy)` luma pixels.
-#[allow(clippy::too_many_arguments)]
-fn base_mc(
-    pic: &mut Picture,
-    ref_pic: &Picture,
-    mb_x: usize,
-    mb_y: usize,
+/// Destination placement of a partition inside its macroblock: pixel offset
+/// `(dx, dy)` from the macroblock's top-left luma sample.
+struct PartPos {
     dx: usize,
     dy: usize,
-    mv: [i16; 2],
-    w: usize,
-    h: usize,
-) {
+}
+
+/// `BaseMC`: clip the full-pel MV into the padded reference, then motion
+/// compensate one `dim` luma block (+ `dim/2` chroma) from `ref_pic`
+/// into the current picture at MB-relative offset `(pos.dx, pos.dy)` luma pixels.
+fn base_mc(pic: &mut Picture, ref_pic: &Picture, mb_x: usize, mb_y: usize, pos: PartPos, mv: [i16; 2], dim: Dim) {
+    let PartPos { dx, dy } = pos;
+    let (w, h) = (dim.w, dim.h);
     let pic_w = pic.width as i32;
     let pic_h = pic.height as i32;
     let abs_x = ((mb_x * 16 + dx) as i32) << 2;
@@ -49,10 +48,8 @@ fn base_mc(
         &ref_pic.y,
         src_l,
         ls,
-        full_mvx as i16,
-        full_mvy as i16,
-        w,
-        h,
+        Mv { x: full_mvx as i16, y: full_mvy as i16 },
+        Dim { w, h },
     );
 
     // Chroma (half resolution; MV in quarter-luma == eighth-chroma units).
@@ -62,8 +59,10 @@ fn base_mc(
     let dst_c = pic.chroma_origin() + (mb_y * 8 + cdy) * cs + (mb_x * 8 + cdx);
     let src_c = (ref_pic.chroma_origin() as i32 + (full_mvx >> 3) + (full_mvy >> 3) * cs as i32) as usize;
     let (cw, ch) = (w / 2, h / 2);
-    mc_chroma(&mut pic.u[dst_c..], cs, &ref_pic.u, src_c, cs, full_mvx as i16, full_mvy as i16, cw, ch);
-    mc_chroma(&mut pic.v[dst_c..], cs, &ref_pic.v, src_c, cs, full_mvx as i16, full_mvy as i16, cw, ch);
+    let cmv = Mv { x: full_mvx as i16, y: full_mvy as i16 };
+    let cdim = Dim { w: cw, h: ch };
+    mc_chroma(&mut pic.u[dst_c..], cs, &ref_pic.u, src_c, cs, cmv, cdim);
+    mc_chroma(&mut pic.v[dst_c..], cs, &ref_pic.v, src_c, cs, cmv, cdim);
 }
 
 #[inline]
@@ -102,15 +101,15 @@ pub fn recon_inter_mb(
     // ---- Motion compensation ----
     match mb_type {
         MbType::Inter16x16 | MbType::PSkip => {
-            base_mc(&mut ctx.picture, rp(ref_idx[0]), mb_x, mb_y, 0, 0, mv[0], 16, 16);
+            base_mc(&mut ctx.picture, rp(ref_idx[0]), mb_x, mb_y, PartPos { dx: 0, dy: 0 }, mv[0], Dim { w: 16, h: 16 });
         }
         MbType::Inter16x8 => {
-            base_mc(&mut ctx.picture, rp(ref_idx[0]), mb_x, mb_y, 0, 0, mv[0], 16, 8);
-            base_mc(&mut ctx.picture, rp(ref_idx[8]), mb_x, mb_y, 0, 8, mv[8], 16, 8);
+            base_mc(&mut ctx.picture, rp(ref_idx[0]), mb_x, mb_y, PartPos { dx: 0, dy: 0 }, mv[0], Dim { w: 16, h: 8 });
+            base_mc(&mut ctx.picture, rp(ref_idx[8]), mb_x, mb_y, PartPos { dx: 0, dy: 8 }, mv[8], Dim { w: 16, h: 8 });
         }
         MbType::Inter8x16 => {
-            base_mc(&mut ctx.picture, rp(ref_idx[0]), mb_x, mb_y, 0, 0, mv[0], 8, 16);
-            base_mc(&mut ctx.picture, rp(ref_idx[2]), mb_x, mb_y, 8, 0, mv[2], 8, 16);
+            base_mc(&mut ctx.picture, rp(ref_idx[0]), mb_x, mb_y, PartPos { dx: 0, dy: 0 }, mv[0], Dim { w: 8, h: 16 });
+            base_mc(&mut ctx.picture, rp(ref_idx[2]), mb_x, mb_y, PartPos { dx: 8, dy: 0 }, mv[2], Dim { w: 8, h: 16 });
         }
         MbType::Inter8x8 | MbType::Inter8x8Ref0 => {
             for (i, &sub) in subs.iter().enumerate() {
@@ -120,15 +119,15 @@ pub fn recon_inter_mb(
                 let r = rp(ref_idx[i_idx]);
                 match sub {
                     SubMbType::P8x8 => {
-                        base_mc(&mut ctx.picture, r, mb_x, mb_y, blk8x, blk8y, mv[i_idx], 8, 8);
+                        base_mc(&mut ctx.picture, r, mb_x, mb_y, PartPos { dx: blk8x, dy: blk8y }, mv[i_idx], Dim { w: 8, h: 8 });
                     }
                     SubMbType::P8x4 => {
-                        base_mc(&mut ctx.picture, r, mb_x, mb_y, blk8x, blk8y, mv[i_idx], 8, 4);
-                        base_mc(&mut ctx.picture, r, mb_x, mb_y, blk8x, blk8y + 4, mv[i_idx + 4], 8, 4);
+                        base_mc(&mut ctx.picture, r, mb_x, mb_y, PartPos { dx: blk8x, dy: blk8y }, mv[i_idx], Dim { w: 8, h: 4 });
+                        base_mc(&mut ctx.picture, r, mb_x, mb_y, PartPos { dx: blk8x, dy: blk8y + 4 }, mv[i_idx + 4], Dim { w: 8, h: 4 });
                     }
                     SubMbType::P4x8 => {
-                        base_mc(&mut ctx.picture, r, mb_x, mb_y, blk8x, blk8y, mv[i_idx], 4, 8);
-                        base_mc(&mut ctx.picture, r, mb_x, mb_y, blk8x + 4, blk8y, mv[i_idx + 1], 4, 8);
+                        base_mc(&mut ctx.picture, r, mb_x, mb_y, PartPos { dx: blk8x, dy: blk8y }, mv[i_idx], Dim { w: 4, h: 8 });
+                        base_mc(&mut ctx.picture, r, mb_x, mb_y, PartPos { dx: blk8x + 4, dy: blk8y }, mv[i_idx + 1], Dim { w: 4, h: 8 });
                     }
                     SubMbType::P4x4 => {
                         for j in 0..4 {
@@ -136,8 +135,8 @@ pub fn recon_inter_mb(
                             let b4x = (j & 1) << 2;
                             let b4y = (j >> 1) << 2;
                             base_mc(
-                                &mut ctx.picture, r, mb_x, mb_y, blk8x + b4x, blk8y + b4y,
-                                mv[i_idx + j_idx], 4, 4,
+                                &mut ctx.picture, r, mb_x, mb_y, PartPos { dx: blk8x + b4x, dy: blk8y + b4y },
+                                mv[i_idx + j_idx], Dim { w: 4, h: 4 },
                             );
                         }
                     }

@@ -24,9 +24,10 @@ use crate::dsp::transform::{
 };
 
 use crate::dsp::mc::{mc_chroma, mc_luma};
+use crate::dsp::{Blk, Dim, Mv};
 
 use super::cavlc_writer::write_residual_block;
-use super::motion_est::{me_lambda, median, pred_mv, search_mv, RefView, REF_NOT_AVAIL, REF_NOT_IN_LIST};
+use super::motion_est::{me_lambda, median, pred_mv, search_mv, Pos, RefView, REF_NOT_AVAIL, REF_NOT_IN_LIST};
 
 // g_kuiInterCbpTable: maps the coded_block_pattern ue code -> cbp value (the
 // inverse direction the decoder reads). The encoder needs cbp -> code, derived
@@ -202,7 +203,6 @@ fn nc_average(na: i32, nb: i32) -> i32 {
 }
 
 impl FrameEnc {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mb_width: usize,
         mb_height: usize,
@@ -510,7 +510,14 @@ impl FrameEnc {
         let px = (mb_x * 16) as i32;
         let py = (mb_y * 16) as i32;
         let soff = self.src_y_off(mb_x, mb_y);
-        search_mv(&refv, px, py, &self.src_y, soff, self.src_ystride, 16, 16, mvp, me_lambda(self.qp))
+        search_mv(
+            &refv,
+            Pos { x: px, y: py },
+            Blk { data: &self.src_y, off: soff, stride: self.src_ystride },
+            Dim { w: 16, h: 16 },
+            mvp,
+            me_lambda(self.qp),
+        )
     }
 
     /// Motion-compensate a 16x16 luma + 8x8 chroma partition from the reference
@@ -529,14 +536,16 @@ impl FrameEnc {
 
         let dst = origin + (py as usize) * ls + px as usize;
         let src = (origin as i32 + (fx >> 2) + (fy >> 2) * ls as i32) as usize;
-        mc_luma(&mut self.rec_y[dst..], ls, &self.ref_y, src, ls, fx as i16, fy as i16, 16, 16);
+        mc_luma(&mut self.rec_y[dst..], ls, &self.ref_y, src, ls, Mv { x: fx as i16, y: fy as i16 }, Dim { w: 16, h: 16 });
 
         let cs = self.cstride;
         let corigin = BORDER * cs + BORDER;
         let cdst = corigin + (mb_y * 8) * cs + mb_x * 8;
         let csrc = (corigin as i32 + (fx >> 3) + (fy >> 3) * cs as i32) as usize;
-        mc_chroma(&mut self.rec_u[cdst..], cs, &self.ref_u, csrc, cs, fx as i16, fy as i16, 8, 8);
-        mc_chroma(&mut self.rec_v[cdst..], cs, &self.ref_v, csrc, cs, fx as i16, fy as i16, 8, 8);
+        let cmv = Mv { x: fx as i16, y: fy as i16 };
+        let cdim = Dim { w: 8, h: 8 };
+        mc_chroma(&mut self.rec_u[cdst..], cs, &self.ref_u, csrc, cs, cmv, cdim);
+        mc_chroma(&mut self.rec_v[cdst..], cs, &self.ref_v, csrc, cs, cmv, cdim);
     }
 
     /// Reconstruct an inter 16x16 MB: MC into rec, then forward-transform/quant

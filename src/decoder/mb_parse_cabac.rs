@@ -371,7 +371,6 @@ fn fill_nzc_cache(cache: &mut [i16; 48], n: &Neigh) {
 /// `ParseCbfInfoCabac` cbf bin for an AC / 4x4 block: neighbour ctx from the nzc
 /// cache. `cur_intra` is `IS_INTRA` of the current MB (default nA/nB). PCM is
 /// never produced, so the PCM term is always false.
-#[allow(clippy::too_many_arguments)]
 fn cbf_ac(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
@@ -396,7 +395,6 @@ fn cbf_ac(
 
 /// `ParseCbfInfoCabac` cbf bin for a DC block (luma DC / chroma DC), via the
 /// per-MB `pCbfDc` neighbour state.
-#[allow(clippy::too_many_arguments)]
 fn cbf_dc(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
@@ -424,7 +422,6 @@ fn cbf_dc(
 // Residual decode (mirrors WelsDecodeMbCabacISliceBaseMode0 residual section).
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
 fn parse_residuals_cabac(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
@@ -576,7 +573,6 @@ fn parse_residuals_cabac(
 
 /// Decode one I-slice macroblock in CABAC into `ctx` + `coeffs`. Returns the
 /// `end_of_slice_flag`.
-#[allow(clippy::too_many_arguments)]
 pub fn decode_mb_cabac_islice(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
@@ -595,7 +591,6 @@ pub fn decode_mb_cabac_islice(
 
 /// Shared intra-MB body (I-slice mb_type already decoded; P-slice intra hands in
 /// the same `ui_mb_type` code via the I-slice numbering).
-#[allow(clippy::too_many_arguments)]
 fn decode_intra_mb_body(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
@@ -721,7 +716,6 @@ fn parse_transform_size_8x8(
 /// `ParseIntraPredModeLuma`) + the chroma mode. Mirrors the CAVLC
 /// `parse_intra4x4`, swapping the bit reads for CABAC. Returns the checked
 /// chroma mode.
-#[allow(clippy::too_many_arguments)]
 fn parse_intra4x4_cabac(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
@@ -945,7 +939,6 @@ fn parse_sub_mb_type_p(dec: &mut CabacDecoder, ctxs: &mut CabacContexts) -> u32 
 }
 
 /// `ParseRefIdxCabac`: ref_idx_l0 with neighbour ctx from the ref-index cache.
-#[allow(clippy::too_many_arguments)]
 fn parse_ref_idx(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
@@ -1013,7 +1006,6 @@ fn parse_mvd(
 }
 
 /// Decode one P-slice macroblock in CABAC. Returns `end_of_slice_flag`.
-#[allow(clippy::too_many_arguments)]
 pub fn decode_mb_cabac_pslice(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
@@ -1079,7 +1071,6 @@ fn commit_inter_meta(
     ctx.nzc_chroma[mb_xy * 8..mb_xy * 8 + 8].copy_from_slice(nzc_chroma);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn parse_inter_mb_cabac(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
@@ -1141,7 +1132,6 @@ fn parse_inter_mb_cabac(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn parse_inter_motion_cabac(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
@@ -1257,7 +1247,6 @@ fn parse_inter_motion_cabac(
 
 /// Store a reference index across a `w`x`h` 4x4 block (raster `ctx` + `cur_ref`
 /// + the 30-entry cache).
-#[allow(clippy::too_many_arguments)]
 fn store_ref_block(
     ctx: &mut DecoderContext,
     cache: &mut InterCacheC,
@@ -1283,7 +1272,6 @@ fn store_ref_block(
 
 /// Store a motion vector + mvd across a `w`x`h` 4x4 block (raster `ctx.mv` /
 /// `ctx.mvd` + the 30-entry mv/mvd caches).
-#[allow(clippy::too_many_arguments)]
 fn store_mvmvd_block(
     ctx: &mut DecoderContext,
     cache: &mut InterCacheC,

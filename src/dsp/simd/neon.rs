@@ -12,6 +12,8 @@
 
 use core::arch::aarch64::*;
 
+use crate::dsp::{Blk, BlkMut, Dim};
+
 // ---------------------------------------------------------------------------
 // SAD
 // ---------------------------------------------------------------------------
@@ -234,20 +236,19 @@ unsafe fn ver8(dst: *mut u8, doff: usize, src: *const u8, base: isize, ss: isize
 }
 
 /// Bit-exact NEON `mc_hor_ver20` (horizontal half-pel) for w in {8,16}.
-#[allow(clippy::too_many_arguments)]
-pub fn mc_hor_ver20(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss: usize, w: usize, h: usize) {
-    if w != 8 && w != 16 {
-        crate::dsp::mc::mc_hor_ver20_scalar(dst, do_, ds, src, so, ss, w, h);
+pub fn mc_hor_ver20(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss: usize, dim: Dim) {
+    if dim.w != 8 && dim.w != 16 {
+        crate::dsp::mc::mc_hor_ver20_scalar(dst, do_, ds, src, so, ss, dim);
         return;
     }
     unsafe {
         let sp = src.as_ptr();
         let dp = dst.as_mut_ptr();
-        for i in 0..h {
+        for i in 0..dim.h {
             let base = (so + i * ss) as isize;
             let doff = do_ + i * ds;
             hor8(dp, doff, sp, base);
-            if w == 16 {
+            if dim.w == 16 {
                 hor8(dp, doff + 8, sp, base + 8);
             }
         }
@@ -255,21 +256,20 @@ pub fn mc_hor_ver20(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize
 }
 
 /// Bit-exact NEON `mc_hor_ver02` (vertical half-pel) for w in {8,16}.
-#[allow(clippy::too_many_arguments)]
-pub fn mc_hor_ver02(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss: usize, w: usize, h: usize) {
-    if w != 8 && w != 16 {
-        crate::dsp::mc::mc_hor_ver02_scalar(dst, do_, ds, src, so, ss, w, h);
+pub fn mc_hor_ver02(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss: usize, dim: Dim) {
+    if dim.w != 8 && dim.w != 16 {
+        crate::dsp::mc::mc_hor_ver02_scalar(dst, do_, ds, src, so, ss, dim);
         return;
     }
     unsafe {
         let sp = src.as_ptr();
         let dp = dst.as_mut_ptr();
         let ssi = ss as isize;
-        for i in 0..h {
+        for i in 0..dim.h {
             let base = (so + i * ss) as isize;
             let doff = do_ + i * ds;
             ver8(dp, doff, sp, base, ssi);
-            if w == 16 {
+            if dim.w == 16 {
                 ver8(dp, doff + 8, sp, base + 8, ssi);
             }
         }
@@ -277,33 +277,20 @@ pub fn mc_hor_ver02(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize
 }
 
 /// Bit-exact NEON `pixel_avg` (`(a + b + 1) >> 1`) for w in {8,16}.
-#[allow(clippy::too_many_arguments)]
-pub fn pixel_avg(
-    dst: &mut [u8],
-    do_: usize,
-    ds: usize,
-    a: &[u8],
-    ao: usize,
-    as_: usize,
-    b: &[u8],
-    bo: usize,
-    bs: usize,
-    w: usize,
-    h: usize,
-) {
-    if w != 8 && w != 16 {
-        crate::dsp::mc::pixel_avg_scalar(dst, do_, ds, a, ao, as_, b, bo, bs, w, h);
+pub fn pixel_avg(dst: BlkMut, a: Blk, b: Blk, dim: Dim) {
+    if dim.w != 8 && dim.w != 16 {
+        crate::dsp::mc::pixel_avg_scalar(dst, a, b, dim);
         return;
     }
     unsafe {
-        let ap = a.as_ptr();
-        let bp = b.as_ptr();
-        let dp = dst.as_mut_ptr();
-        for i in 0..h {
-            let da = dp.add(do_ + i * ds);
-            let pa = ap.add(ao + i * as_);
-            let pb = bp.add(bo + i * bs);
-            if w == 16 {
+        let ap = a.data.as_ptr();
+        let bp = b.data.as_ptr();
+        let dp = dst.data.as_mut_ptr();
+        for i in 0..dim.h {
+            let da = dp.add(dst.off + i * dst.stride);
+            let pa = ap.add(a.off + i * a.stride);
+            let pb = bp.add(b.off + i * b.stride);
+            if dim.w == 16 {
                 vst1q_u8(da, vrhaddq_u8(vld1q_u8(pa), vld1q_u8(pb)));
             } else {
                 vst1_u8(da, vrhadd_u8(vld1_u8(pa), vld1_u8(pb)));

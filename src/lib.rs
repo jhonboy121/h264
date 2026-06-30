@@ -6,7 +6,6 @@
 //! enables file helpers and the test/oracle harness. Codec state owns its scratch
 //! buffers (allocated once, reused per frame) — there is no global mutable state.
 #![cfg_attr(not(feature = "std"), no_std)]
-#![allow(clippy::too_many_arguments)] // faithful ports of C kernels carry wide signatures
 
 extern crate alloc;
 

@@ -15,6 +15,36 @@ pub fn clip3(x: i32, lo: i32, hi: i32) -> i32 {
     x.clamp(lo, hi)
 }
 
+/// Block geometry: width/height of a rectangular sample block.
+#[derive(Clone, Copy)]
+pub struct Dim {
+    pub w: usize,
+    pub h: usize,
+}
+
+/// A motion vector (quarter-pel for luma, eighth-pel for chroma).
+#[derive(Clone, Copy)]
+pub struct Mv {
+    pub x: i16,
+    pub y: i16,
+}
+
+/// Read-only rectangular view into a plane: element `(y, x)` is
+/// `data[off + y * stride + x]`.
+#[derive(Clone, Copy)]
+pub struct Blk<'a> {
+    pub data: &'a [u8],
+    pub off: usize,
+    pub stride: usize,
+}
+
+/// Mutable rectangular view into a plane (see [`Blk`]).
+pub struct BlkMut<'a> {
+    pub data: &'a mut [u8],
+    pub off: usize,
+    pub stride: usize,
+}
+
 // Submodules are added per P1 item:
 pub mod copy;
 pub mod deblock;

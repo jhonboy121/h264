@@ -127,7 +127,6 @@ fn deblock_mb(ctx: &mut DecoderContext, mb_xy: usize, mb_width: usize) {
 }
 
 /// All-intra macroblock: bS = 4 on MB boundaries, bS = 3 on internal 4x4 edges.
-#[allow(clippy::too_many_arguments)]
 fn deblock_intra_mb(
     ctx: &mut DecoderContext,
     mb_xy: usize,
@@ -170,7 +169,6 @@ fn deblock_intra_mb(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 fn deblock_luma(
     y: &mut [u8],
     y_off: usize,
@@ -214,7 +212,6 @@ fn deblock_luma(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn deblock_chroma(
     cb: &mut [u8],
     cr: &mut [u8],
@@ -246,7 +243,6 @@ fn deblock_chroma(
 /// Strong (bS = 4) chroma edge. `vertical` selects the H (vertical-edge) vs V
 /// (horizontal-edge) kernel. Uses the two-plane kernel when Cb/Cr share a QP
 /// (always true for baseline), else the single-plane kernels per component.
-#[allow(clippy::too_many_arguments)]
 fn chroma_edge_eq4(
     cb: &mut [u8],
     cr: &mut [u8],
@@ -278,7 +274,6 @@ fn chroma_edge_eq4(
 }
 
 /// Normal (bS = 3 internal) chroma edge.
-#[allow(clippy::too_many_arguments)]
 fn chroma_edge_lt4(
     cb: &mut [u8],
     cr: &mut [u8],
@@ -435,7 +430,6 @@ fn inter_bs(
     nbs
 }
 
-#[allow(clippy::too_many_arguments)]
 fn deblock_inter_mb(
     ctx: &mut DecoderContext,
     mb_xy: usize,
@@ -478,7 +472,6 @@ fn deblock_inter_mb(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 fn inter_luma(
     y: &mut [u8],
     y_off: usize,
@@ -546,7 +539,6 @@ fn inter_luma(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn inter_chroma(
     cb: &mut [u8],
     cr: &mut [u8],
@@ -578,7 +570,6 @@ fn inter_chroma(
 
 /// Filter one chroma edge with per-segment bS. `bS == 4` selects the strong
 /// (eq4) filter; otherwise the `Lt4` filter with `tc` from the bS array.
-#[allow(clippy::too_many_arguments)]
 fn inter_chroma_edge(
     cb: &mut [u8],
     cr: &mut [u8],

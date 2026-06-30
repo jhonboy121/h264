@@ -658,7 +658,6 @@ fn intra_16x16_combined3(
 
 /// `WelsSampleSatdIntra8x8Combined3_c`: chroma Cb+Cr V/H/DC (modes 2/1/0).
 /// `dst` holds Cb at `[0..64]` and Cr at `[64..128]` (stride 8).
-#[allow(clippy::too_many_arguments)]
 pub fn satd_intra_8x8_combined3(
     dec_cb: &[u8],
     dec_off_cb: usize,
@@ -680,7 +679,6 @@ pub fn satd_intra_8x8_combined3(
 }
 
 /// `WelsSampleSadIntra8x8Combined3_c`: as above but using SAD.
-#[allow(clippy::too_many_arguments)]
 pub fn sad_intra_8x8_combined3(
     dec_cb: &[u8],
     dec_off_cb: usize,
@@ -713,7 +711,6 @@ pub fn sad_intra_8x8_combined3(
 }
 
 #[inline]
-#[allow(clippy::too_many_arguments)]
 fn intra_8x8_combined3(
     dec_cb: &[u8],
     dec_off_cb: usize,

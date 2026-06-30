@@ -514,7 +514,6 @@ fn nc_chroma(
     nc_average(na, nb)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn parse_residuals(
     bs: &mut BitReader<'_>,
     mb_type: MbType,
@@ -786,7 +785,6 @@ impl InterCache {
 /// Store one motion vector + reference index into both the current MB's per-4x4
 /// raster arrays (in `ctx`) and the neighbour cache, over a `w`x`h` block of
 /// 4x4 cells anchored at raster index `scan4` / cache index `cache`.
-#[allow(clippy::too_many_arguments)]
 fn store_block(
     ctx: &mut DecoderContext,
     cache: &mut InterCache,
@@ -821,7 +819,6 @@ fn store_block(
 /// run"). `ref_pic_ids` maps slice-local list-0 ref indices to a stable
 /// reference-picture identity for the deblocker; its length is the active
 /// list-0 reference count.
-#[allow(clippy::too_many_arguments)]
 pub fn parse_p_mb_cavlc(
     bs: &mut BitReader<'_>,
     ctx: &mut DecoderContext,
@@ -889,7 +886,6 @@ fn commit_inter_meta(
 }
 
 /// Parse a genuine inter macroblock (`ui_mb_type` 0..4): motion then residual.
-#[allow(clippy::too_many_arguments)]
 fn parse_inter_mb(
     bs: &mut BitReader<'_>,
     ctx: &mut DecoderContext,

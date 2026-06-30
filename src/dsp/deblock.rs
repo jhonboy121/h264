@@ -20,7 +20,6 @@ fn abs_i32(x: i32) -> i32 {
 
 /// Luma `Lt4` edge filter, generic strides (`DeblockLumaLt4_c`). `stride_x` steps
 /// across the edge (p/q direction), `stride_y` along it; 16 lines, `tc[line>>2]`.
-#[allow(clippy::too_many_arguments)]
 pub fn deblock_luma_lt4(
     pix: &mut [u8],
     off: usize,
@@ -155,7 +154,6 @@ fn chroma_eq4_one(pix: &mut [u8], base: isize, stride_x: isize, alpha: i32, beta
 
 /// Two-plane chroma `Lt4` edge filter (`DeblockChromaLt4_c`); 8 lines, `tc[line>>1]`,
 /// applied only when `tc0 > 0`.
-#[allow(clippy::too_many_arguments)]
 pub fn deblock_chroma_lt4(
     cb: &mut [u8],
     cb_off: usize,
@@ -179,7 +177,6 @@ pub fn deblock_chroma_lt4(
 }
 
 /// Two-plane chroma `Eq4` edge filter (`DeblockChromaEq4_c`).
-#[allow(clippy::too_many_arguments)]
 pub fn deblock_chroma_eq4(
     cb: &mut [u8],
     cb_off: usize,
@@ -199,12 +196,10 @@ pub fn deblock_chroma_eq4(
 }
 
 /// Vertical two-plane chroma `Lt4` (`DeblockChromaLt4V_c`).
-#[allow(clippy::too_many_arguments)]
 pub fn deblock_chroma_lt4_v(cb: &mut [u8], cb_off: usize, cr: &mut [u8], cr_off: usize, stride: usize, alpha: i32, beta: i32, tc: &[i8]) {
     deblock_chroma_lt4(cb, cb_off, cr, cr_off, stride as isize, 1, alpha, beta, tc);
 }
 /// Horizontal two-plane chroma `Lt4` (`DeblockChromaLt4H_c`).
-#[allow(clippy::too_many_arguments)]
 pub fn deblock_chroma_lt4_h(cb: &mut [u8], cb_off: usize, cr: &mut [u8], cr_off: usize, stride: usize, alpha: i32, beta: i32, tc: &[i8]) {
     deblock_chroma_lt4(cb, cb_off, cr, cr_off, 1, stride as isize, alpha, beta, tc);
 }

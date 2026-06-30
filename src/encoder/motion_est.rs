@@ -15,6 +15,14 @@
 use crate::dsp::mc::mc_luma;
 use crate::dsp::sad::sad;
 use crate::dsp::satd::{satd16x16, satd16x8, satd4x4, satd4x8, satd8x16, satd8x4, satd8x8};
+use crate::dsp::{Blk, Dim, Mv};
+
+/// An integer pixel position `(x, y)` in coded-plane coordinates.
+#[derive(Clone, Copy)]
+pub struct Pos {
+    pub x: i32,
+    pub y: i32,
+}
 
 /// Reference-plane padding, matching the decoder's `picture::PADDING`. The
 /// encoder reconstruction planes carry the same border so MC reads agree.
@@ -158,40 +166,20 @@ fn satd_wh(a: &[u8], sta: usize, b: &[u8], stb: usize, w: usize, h: usize) -> i3
 /// integer MV `(mvx_q, mvy_q)` (both multiples of 4). The decoder clamp keeps
 /// every read inside the bordered plane.
 #[inline]
-fn integer_sad(
-    refv: &RefView,
-    px: i32,
-    py: i32,
-    mvx_q: i32,
-    mvy_q: i32,
-    src: &[u8],
-    src_off: usize,
-    src_stride: usize,
-    w: usize,
-    h: usize,
-) -> u32 {
-    let fx = clamp_full(px, mvx_q, refv.pic_w) >> 2;
-    let fy = clamp_full(py, mvy_q, refv.pic_h) >> 2;
+fn integer_sad(refv: &RefView, pos: Pos, mvx_q: i32, mvy_q: i32, src: Blk, dim: Dim) -> u32 {
+    let fx = clamp_full(pos.x, mvx_q, refv.pic_w) >> 2;
+    let fy = clamp_full(pos.y, mvy_q, refv.pic_h) >> 2;
     let ro = (refv.origin as i32 + fx + fy * refv.stride as i32) as usize;
-    sad(&src[src_off..], src_stride, &refv.plane[ro..], refv.stride, w, h)
+    sad(&src.data[src.off..], src.stride, &refv.plane[ro..], refv.stride, dim.w, dim.h)
 }
 
 /// Form a (possibly sub-pel) prediction into `scratch` (stride = `w`) for the
 /// signalled MV `(mvx_q, mvy_q)`, applying the decoder clamp.
-fn subpel_pred(
-    scratch: &mut [u8],
-    refv: &RefView,
-    px: i32,
-    py: i32,
-    mvx_q: i32,
-    mvy_q: i32,
-    w: usize,
-    h: usize,
-) {
-    let fx = clamp_full(px, mvx_q, refv.pic_w);
-    let fy = clamp_full(py, mvy_q, refv.pic_h);
+fn subpel_pred(scratch: &mut [u8], refv: &RefView, pos: Pos, mvx_q: i32, mvy_q: i32, dim: Dim) {
+    let fx = clamp_full(pos.x, mvx_q, refv.pic_w);
+    let fy = clamp_full(pos.y, mvy_q, refv.pic_h);
     let so = (refv.origin as i32 + (fx >> 2) + (fy >> 2) * refv.stride as i32) as usize;
-    mc_luma(scratch, w, refv.plane, so, refv.stride, fx as i16, fy as i16, w, h);
+    mc_luma(scratch, dim.w, refv.plane, so, refv.stride, Mv { x: fx as i16, y: fy as i16 }, dim);
 }
 
 /// Result of a motion search: the chosen MV (quarter-pel) and its SATD-based
@@ -204,20 +192,7 @@ pub struct MeResult {
 /// Full integer-pel search over `[-range, range]^2` quarter-pel-aligned MVs.
 /// Deterministic; used as a correctness oracle and a fallback. Returns the best
 /// integer MV (quarter-pel units) minimizing `SAD + lambda * mvd_bits`.
-#[allow(clippy::too_many_arguments)]
-pub fn full_search(
-    refv: &RefView,
-    px: i32,
-    py: i32,
-    src: &[u8],
-    src_off: usize,
-    src_stride: usize,
-    w: usize,
-    h: usize,
-    mvp: [i16; 2],
-    range: i32,
-    lambda: i32,
-) -> [i16; 2] {
+pub fn full_search(refv: &RefView, pos: Pos, src: Blk, dim: Dim, mvp: [i16; 2], range: i32, lambda: i32) -> [i16; 2] {
     let mut best = [0i16; 2];
     let mut best_cost = i32::MAX;
     let mut dy = -range;
@@ -226,7 +201,7 @@ pub fn full_search(
         while dx <= range {
             let mvx = dx << 2;
             let mvy = dy << 2;
-            let s = integer_sad(refv, px, py, mvx, mvy, src, src_off, src_stride, w, h) as i32;
+            let s = integer_sad(refv, pos, mvx, mvy, src, dim) as i32;
             let bits = mvd_bits(mvx - mvp[0] as i32) + mvd_bits(mvy - mvp[1] as i32);
             let cost = s + lambda * bits as i32;
             if cost < best_cost {
@@ -242,21 +217,10 @@ pub fn full_search(
 
 /// Small-diamond integer search seeded from the predictor and the origin, then
 /// half- and quarter-pel refinement. Returns the final quarter-pel MV + cost.
-#[allow(clippy::too_many_arguments)]
-pub fn search_mv(
-    refv: &RefView,
-    px: i32,
-    py: i32,
-    src: &[u8],
-    src_off: usize,
-    src_stride: usize,
-    w: usize,
-    h: usize,
-    mvp: [i16; 2],
-    lambda: i32,
-) -> MeResult {
+pub fn search_mv(refv: &RefView, pos: Pos, src: Blk, dim: Dim, mvp: [i16; 2], lambda: i32) -> MeResult {
+    let Dim { w, h } = dim;
     let icost = |mvx: i32, mvy: i32| -> i32 {
-        let s = integer_sad(refv, px, py, mvx, mvy, src, src_off, src_stride, w, h) as i32;
+        let s = integer_sad(refv, pos, mvx, mvy, src, dim) as i32;
         let bits = mvd_bits(mvx - mvp[0] as i32) + mvd_bits(mvy - mvp[1] as i32);
         s + lambda * bits as i32
     };
@@ -294,8 +258,8 @@ pub fn search_mv(
     // Sub-pel refinement scored with SATD.
     let mut scratch = [0u8; 256];
     let scost = |mvx: i32, mvy: i32, scratch: &mut [u8]| -> i32 {
-        subpel_pred(scratch, refv, px, py, mvx, mvy, w, h);
-        let d = satd_wh(scratch, w, &src[src_off..], src_stride, w, h);
+        subpel_pred(scratch, refv, pos, mvx, mvy, dim);
+        let d = satd_wh(scratch, w, &src.data[src.off..], src.stride, w, h);
         let bits = mvd_bits(mvx - mvp[0] as i32) + mvd_bits(mvy - mvp[1] as i32);
         d + lambda * bits as i32
     };
@@ -420,7 +384,15 @@ mod tests {
                     src[src_off + y as usize * src_stride + x as usize] = refp[ro];
                 }
             }
-            let mv = full_search(&refv, px, py, &src, src_off, src_stride, 16, 16, [0, 0], 16, 1);
+            let mv = full_search(
+                &refv,
+                Pos { x: px, y: py },
+                Blk { data: &src, off: src_off, stride: src_stride },
+                Dim { w: 16, h: 16 },
+                [0, 0],
+                16,
+                1,
+            );
             assert_eq!(mv, [(tx << 2) as i16, (ty << 2) as i16], "translation ({tx},{ty})");
         }
     }
@@ -463,14 +435,14 @@ mod tests {
             }
         }
         // Integer-SAD at the predictor (0,0) vs at the diamond result, same metric.
-        let pred_sad = integer_sad(&refv, px, py, 0, 0, &src, src_off, src_stride, 16, 16);
+        let blk = Blk { data: &src, off: src_off, stride: src_stride };
+        let pred_sad = integer_sad(&refv, Pos { x: px, y: py }, 0, 0, blk, Dim { w: 16, h: 16 });
         // With pure distortion (lambda 0) the greedy diamond walks the convex
         // SAD surface to the exact translation; a Lagrangian penalty would (by
         // design) stop short on the shallow gradient near the optimum.
-        let res = search_mv(&refv, px, py, &src, src_off, src_stride, 16, 16, [0, 0], 0);
+        let res = search_mv(&refv, Pos { x: px, y: py }, blk, Dim { w: 16, h: 16 }, [0, 0], 0);
         assert_eq!(res.mv, [(tx << 2) as i16, (ty << 2) as i16]);
-        let found_sad =
-            integer_sad(&refv, px, py, res.mv[0] as i32, res.mv[1] as i32, &src, src_off, src_stride, 16, 16);
+        let found_sad = integer_sad(&refv, Pos { x: px, y: py }, res.mv[0] as i32, res.mv[1] as i32, blk, Dim { w: 16, h: 16 });
         assert!(found_sad < pred_sad, "search SAD {found_sad} not below predictor SAD {pred_sad}");
     }
 }
