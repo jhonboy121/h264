@@ -14,6 +14,9 @@
 
 use crate::dsp::{Blk, BlkMut, Dim, Mv, clip1};
 
+/// A quarter-pel luma MC kernel: `(dst, dst_off, dst_stride, src, src_off, src_stride, dim)`.
+type McKernel = fn(&mut [u8], usize, usize, &[u8], usize, usize, Dim);
+
 /// Chroma bilinear weights: `g_kuiABCD[dy][dx] = [A, B, C, D]` where
 /// `A=(8-dx)(8-dy)`, `B=dx(8-dy)`, `C=(8-dx)dy`, `D=dx*dy`.
 #[rustfmt::skip]
@@ -282,7 +285,7 @@ fn mc_hor_ver33(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss
 pub fn mc_luma(dst: &mut [u8], dst_stride: usize, src: &[u8], src_off: usize, src_stride: usize, mv: Mv, dim: Dim) {
     let x = (mv.x & 0x03) as usize;
     let y = (mv.y & 0x03) as usize;
-    let f: fn(&mut [u8], usize, usize, &[u8], usize, usize, Dim) = match (x, y) {
+    let f: McKernel = match (x, y) {
         (0, 0) => mc_copy,
         (0, 1) => mc_hor_ver01,
         (0, 2) => mc_hor_ver02,

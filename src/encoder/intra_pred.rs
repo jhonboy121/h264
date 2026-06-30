@@ -18,6 +18,7 @@
 //! anchors.
 
 use crate::dsp::clip1;
+use crate::dsp::Blk;
 use crate::dsp::sad::{sad8x8, sad16x16};
 use crate::dsp::satd::{satd16x16, satd4x4, satd8x8};
 
@@ -562,17 +563,15 @@ pub fn i16x16_luma_pred_plane(pred: &mut [u8], reff: &[u8], roff: usize, stride:
 /// `WelsSampleSatdIntra4x4Combined3_c`: scores luma 4x4 DC/H/V (modes 2/1/0).
 /// The best prediction (16 bytes, stride 4) is written to `dst`.
 pub fn satd_intra_4x4_combined3(
-    dec: &[u8],
-    dec_off: usize,
-    dec_stride: usize,
-    enc: &[u8],
-    enc_off: usize,
-    enc_stride: usize,
+    dec: Blk,
+    enc: Blk,
     dst: &mut [u8],
     lambda2: i32,
     lambda1: i32,
     lambda0: i32,
 ) -> (i32, i32) {
+    let Blk { data: dec, off: dec_off, stride: dec_stride } = dec;
+    let Blk { data: enc, off: enc_off, stride: enc_stride } = enc;
     let mut buf = [[0u8; 16]; 3];
     let e = &enc[enc_off..];
     i4x4_luma_pred_dc(&mut buf[2], dec, dec_off, dec_stride);
@@ -596,47 +595,25 @@ pub fn satd_intra_4x4_combined3(
 
 /// `WelsSampleSatdIntra16x16Combined3_c`: luma 16x16 V/H/DC (modes 0/1/2).
 /// `dst` (256 bytes, stride 16) is left holding the last (DC) prediction.
-pub fn satd_intra_16x16_combined3(
-    dec: &[u8],
-    dec_off: usize,
-    dec_stride: usize,
-    enc: &[u8],
-    enc_off: usize,
-    enc_stride: usize,
-    dst: &mut [u8],
-    lambda: i32,
-) -> (i32, i32) {
-    intra_16x16_combined3(dec, dec_off, dec_stride, enc, enc_off, enc_stride, dst, lambda, satd16x16)
+pub fn satd_intra_16x16_combined3(dec: Blk, enc: Blk, dst: &mut [u8], lambda: i32) -> (i32, i32) {
+    intra_16x16_combined3(dec, enc, dst, lambda, satd16x16)
 }
 
 /// `WelsSampleSadIntra16x16Combined3_c`: as above but using SAD.
-pub fn sad_intra_16x16_combined3(
-    dec: &[u8],
-    dec_off: usize,
-    dec_stride: usize,
-    enc: &[u8],
-    enc_off: usize,
-    enc_stride: usize,
-    dst: &mut [u8],
-    lambda: i32,
-) -> (i32, i32) {
-    intra_16x16_combined3(dec, dec_off, dec_stride, enc, enc_off, enc_stride, dst, lambda, |a, sa, b, sb| {
-        sad16x16(a, sa, b, sb) as i32
-    })
+pub fn sad_intra_16x16_combined3(dec: Blk, enc: Blk, dst: &mut [u8], lambda: i32) -> (i32, i32) {
+    intra_16x16_combined3(dec, enc, dst, lambda, |a, sa, b, sb| sad16x16(a, sa, b, sb) as i32)
 }
 
 #[inline]
 fn intra_16x16_combined3(
-    dec: &[u8],
-    dec_off: usize,
-    dec_stride: usize,
-    enc: &[u8],
-    enc_off: usize,
-    enc_stride: usize,
+    dec: Blk,
+    enc: Blk,
     dst: &mut [u8],
     lambda: i32,
     metric: impl Fn(&[u8], usize, &[u8], usize) -> i32,
 ) -> (i32, i32) {
+    let Blk { data: dec, off: dec_off, stride: dec_stride } = dec;
+    let Blk { data: enc, off: enc_off, stride: enc_stride } = enc;
     let e = &enc[enc_off..];
     i16x16_luma_pred_v(dst, dec, dec_off, dec_stride);
     let mut best_cost = metric(dst, 16, e, enc_stride);
@@ -659,73 +636,42 @@ fn intra_16x16_combined3(
 /// `WelsSampleSatdIntra8x8Combined3_c`: chroma Cb+Cr V/H/DC (modes 2/1/0).
 /// `dst` holds Cb at `[0..64]` and Cr at `[64..128]` (stride 8).
 pub fn satd_intra_8x8_combined3(
-    dec_cb: &[u8],
-    dec_off_cb: usize,
-    dec_stride: usize,
-    enc_cb: &[u8],
-    enc_off_cb: usize,
-    enc_stride: usize,
+    dec_cb: Blk,
+    enc_cb: Blk,
     dst: &mut [u8],
     lambda: i32,
-    dec_cr: &[u8],
-    dec_off_cr: usize,
-    enc_cr: &[u8],
-    enc_off_cr: usize,
+    dec_cr: Blk,
+    enc_cr: Blk,
 ) -> (i32, i32) {
-    intra_8x8_combined3(
-        dec_cb, dec_off_cb, dec_stride, enc_cb, enc_off_cb, enc_stride, dst, lambda, dec_cr, dec_off_cr, enc_cr,
-        enc_off_cr, satd8x8,
-    )
+    intra_8x8_combined3(dec_cb, enc_cb, dst, lambda, dec_cr, enc_cr, satd8x8)
 }
 
 /// `WelsSampleSadIntra8x8Combined3_c`: as above but using SAD.
 pub fn sad_intra_8x8_combined3(
-    dec_cb: &[u8],
-    dec_off_cb: usize,
-    dec_stride: usize,
-    enc_cb: &[u8],
-    enc_off_cb: usize,
-    enc_stride: usize,
+    dec_cb: Blk,
+    enc_cb: Blk,
     dst: &mut [u8],
     lambda: i32,
-    dec_cr: &[u8],
-    dec_off_cr: usize,
-    enc_cr: &[u8],
-    enc_off_cr: usize,
+    dec_cr: Blk,
+    enc_cr: Blk,
 ) -> (i32, i32) {
-    intra_8x8_combined3(
-        dec_cb,
-        dec_off_cb,
-        dec_stride,
-        enc_cb,
-        enc_off_cb,
-        enc_stride,
-        dst,
-        lambda,
-        dec_cr,
-        dec_off_cr,
-        enc_cr,
-        enc_off_cr,
-        |a, sa, b, sb| sad8x8(a, sa, b, sb) as i32,
-    )
+    intra_8x8_combined3(dec_cb, enc_cb, dst, lambda, dec_cr, enc_cr, |a, sa, b, sb| sad8x8(a, sa, b, sb) as i32)
 }
 
 #[inline]
 fn intra_8x8_combined3(
-    dec_cb: &[u8],
-    dec_off_cb: usize,
-    dec_stride: usize,
-    enc_cb: &[u8],
-    enc_off_cb: usize,
-    enc_stride: usize,
+    dec_cb: Blk,
+    enc_cb: Blk,
     dst: &mut [u8],
     lambda: i32,
-    dec_cr: &[u8],
-    dec_off_cr: usize,
-    enc_cr: &[u8],
-    enc_off_cr: usize,
+    dec_cr: Blk,
+    enc_cr: Blk,
     metric: impl Fn(&[u8], usize, &[u8], usize) -> i32,
 ) -> (i32, i32) {
+    let Blk { data: dec_cb, off: dec_off_cb, stride: dec_stride } = dec_cb;
+    let Blk { data: enc_cb, off: enc_off_cb, stride: enc_stride } = enc_cb;
+    let Blk { data: dec_cr, off: dec_off_cr, stride: _ } = dec_cr;
+    let Blk { data: enc_cr, off: enc_off_cr, stride: _ } = enc_cr;
     let ecb = &enc_cb[enc_off_cb..];
     let ecr = &enc_cr[enc_off_cr..];
     let cost_both = |dst: &[u8], lambda_add: i32| {

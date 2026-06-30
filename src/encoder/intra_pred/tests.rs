@@ -4,6 +4,7 @@
 //! the same random reference plane the kernels read.
 
 use super::*;
+use crate::dsp::Blk;
 use alloc::vec::Vec;
 
 struct Lcg(u32);
@@ -500,7 +501,14 @@ fn combined3_4x4_matches_recomputed() {
         let enc_off = 0usize;
         let (l2, l1, l0) = ((r.next() % 200) as i32, (r.next() % 200) as i32, (r.next() % 200) as i32);
         let mut dst = [0u8; 16];
-        let (cost, mode) = satd_intra_4x4_combined3(&dec, dec_off, stride, &enc, enc_off, stride, &mut dst, l2, l1, l0);
+        let (cost, mode) = satd_intra_4x4_combined3(
+            Blk { data: &dec, off: dec_off, stride },
+            Blk { data: &enc, off: enc_off, stride },
+            &mut dst,
+            l2,
+            l1,
+            l0,
+        );
 
         // Recompute independently.
         let e = &enc[enc_off..];
@@ -538,10 +546,12 @@ fn combined3_16x16_matches_recomputed() {
         let mut dst = [0u8; 256];
 
         for use_sad in [false, true] {
+            let dec_blk = Blk { data: &dec, off: dec_off, stride };
+            let enc_blk = Blk { data: &enc, off: 0, stride };
             let (cost, mode) = if use_sad {
-                sad_intra_16x16_combined3(&dec, dec_off, stride, &enc, 0, stride, &mut dst, lambda)
+                sad_intra_16x16_combined3(dec_blk, enc_blk, &mut dst, lambda)
             } else {
-                satd_intra_16x16_combined3(&dec, dec_off, stride, &enc, 0, stride, &mut dst, lambda)
+                satd_intra_16x16_combined3(dec_blk, enc_blk, &mut dst, lambda)
             };
             let metric = |a: &[u8], b: &[u8]| -> i32 {
                 if use_sad {
@@ -583,10 +593,14 @@ fn combined3_8x8_chroma_matches_recomputed() {
         let mut dst = [0u8; 128];
 
         for use_sad in [false, true] {
+            let dec_cb_blk = Blk { data: &dec_cb, off: off_cb, stride };
+            let enc_cb_blk = Blk { data: &enc_cb, off: 0, stride };
+            let dec_cr_blk = Blk { data: &dec_cr, off: off_cr, stride };
+            let enc_cr_blk = Blk { data: &enc_cr, off: 0, stride };
             let (cost, mode) = if use_sad {
-                sad_intra_8x8_combined3(&dec_cb, off_cb, stride, &enc_cb, 0, stride, &mut dst, lambda, &dec_cr, off_cr, &enc_cr, 0)
+                sad_intra_8x8_combined3(dec_cb_blk, enc_cb_blk, &mut dst, lambda, dec_cr_blk, enc_cr_blk)
             } else {
-                satd_intra_8x8_combined3(&dec_cb, off_cb, stride, &enc_cb, 0, stride, &mut dst, lambda, &dec_cr, off_cr, &enc_cr, 0)
+                satd_intra_8x8_combined3(dec_cb_blk, enc_cb_blk, &mut dst, lambda, dec_cr_blk, enc_cr_blk)
             };
             let m = |a: &[u8], b: &[u8]| -> i32 {
                 if use_sad {

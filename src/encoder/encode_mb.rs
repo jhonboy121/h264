@@ -139,6 +139,43 @@ static QUANT_INTRA_FF: [[i16; 8]; 52] = [
 /// same samples the decoder will, guaranteeing bit-identical reconstruction.
 const BORDER: usize = 32;
 
+/// A YUV triple of plane buffers (source or reference).
+pub(crate) struct PlaneSet {
+    pub y: Vec<u8>,
+    pub u: Vec<u8>,
+    pub v: Vec<u8>,
+}
+
+/// Frame dimensions in macroblocks.
+#[derive(Clone, Copy)]
+pub(crate) struct MbDims {
+    pub width: usize,
+    pub height: usize,
+}
+
+/// Macroblock position (in MB units).
+#[derive(Clone, Copy)]
+struct MbPos {
+    x: usize,
+    y: usize,
+}
+
+/// Left/top neighbour availability.
+#[derive(Clone, Copy)]
+struct Avail {
+    left: bool,
+    top: bool,
+}
+
+/// Full intra neighbour availability (left/top plus the two diagonals).
+#[derive(Clone, Copy)]
+struct NeighAvail {
+    left: bool,
+    top: bool,
+    left_top: bool,
+    top_right: bool,
+}
+
 /// Per-frame encoder state: padded reconstruction + source planes plus the
 /// neighbour context (non-zero counts, I4x4 modes, MB types) needed to mirror
 /// the decoder's CAVLC nC prediction and intra-mode prediction.
@@ -204,18 +241,16 @@ fn nc_average(na: i32, nb: i32) -> i32 {
 
 impl FrameEnc {
     pub fn new(
-        mb_width: usize,
-        mb_height: usize,
+        dims: MbDims,
         qp: i32,
-        src_y: Vec<u8>,
-        src_u: Vec<u8>,
-        src_v: Vec<u8>,
+        src: PlaneSet,
         src_ystride: usize,
         src_cstride: usize,
-        ref_y: Vec<u8>,
-        ref_u: Vec<u8>,
-        ref_v: Vec<u8>,
+        refs: PlaneSet,
     ) -> Self {
+        let MbDims { width: mb_width, height: mb_height } = dims;
+        let PlaneSet { y: src_y, u: src_u, v: src_v } = src;
+        let PlaneSet { y: ref_y, u: ref_u, v: ref_v } = refs;
         let ystride = mb_width * 16 + 2 * BORDER;
         let cstride = mb_width * 8 + 2 * BORDER;
         let ylen = ystride * (mb_height * 16 + 2 * BORDER);
@@ -292,7 +327,7 @@ impl FrameEnc {
         let mut enc = MbEnc::default();
         self.intra_encode(mb_x, mb_y, &mut enc);
         self.commit_intra_context(mb_xy, &enc);
-        self.write_mb_syntax(bw, mb_x, mb_y, left, top, &enc, 0);
+        self.write_mb_syntax(bw, MbPos { x: mb_x, y: mb_y }, Avail { left, top }, &enc, 0);
     }
 
     /// Full intra encode of one MB (luma I16x16-vs-I4x4 decision + chroma),
@@ -304,15 +339,17 @@ impl FrameEnc {
         let left_top = left && top;
         let top_right = top && mb_x + 1 < self.mb_width;
 
+        let pos = MbPos { x: mb_x, y: mb_y };
+        let avail = NeighAvail { left, top, left_top, top_right };
         let cost16 = self.decide_i16(mb_x, mb_y, left, top, left_top, enc);
         let i16_base = enc.i16_base_mode;
-        let cost4 = self.encode_i4x4(mb_x, mb_y, left, top, left_top, top_right, enc);
+        let cost4 = self.encode_i4x4(pos, avail, enc);
 
         let luma_cost = if cost4 < cost16 {
             enc.is_i16 = false;
             cost4
         } else {
-            self.encode_i16x16(mb_x, mb_y, left, top, left_top, i16_base, enc);
+            self.encode_i16x16(pos, avail, i16_base, enc);
             enc.is_i16 = true;
             cost16
         };
@@ -375,13 +412,13 @@ impl FrameEnc {
             bw.write_ue(*pending);
             *pending = 0;
             self.commit_inter_context(mb_xy, me.mv, 0, &enc.nzc_luma, &enc.nzc_chroma);
-            self.write_inter_mb_syntax(bw, mb_x, mb_y, left, top, me.mv, mvp, &enc);
+            self.write_inter_mb_syntax(bw, MbPos { x: mb_x, y: mb_y }, Avail { left, top }, me.mv, mvp, &enc);
         } else {
             bw.write_ue(*pending);
             *pending = 0;
             self.commit_intra_context(mb_xy, &intra_enc);
             // Intra mb_type in a P slice carries the +5 offset.
-            self.write_mb_syntax(bw, mb_x, mb_y, left, top, &intra_enc, 5);
+            self.write_mb_syntax(bw, MbPos { x: mb_x, y: mb_y }, Avail { left, top }, &intra_enc, 5);
         }
     }
 
@@ -612,14 +649,14 @@ impl FrameEnc {
     fn write_inter_mb_syntax(
         &self,
         bw: &mut BitWriter,
-        mb_x: usize,
-        mb_y: usize,
-        left: bool,
-        top: bool,
+        pos: MbPos,
+        avail: Avail,
         mv: [i16; 2],
         mvp: [i16; 2],
         enc: &MbEnc,
     ) {
+        let MbPos { x: mb_x, y: mb_y } = pos;
+        let Avail { left, top } = avail;
         let mb_xy = mb_y * self.mb_width + mb_x;
         let cbp = (enc.cbp_c << 4) | enc.cbp_l;
         bw.write_ue(0); // mb_type = P_L0_16x16
@@ -664,16 +701,9 @@ impl FrameEnc {
 
     /// Full I16x16 encode: predict, forward transform + quant (DC Hadamard +
     /// AC), reconstruct in place, and store the levels/nzc/cbp in `enc`.
-    fn encode_i16x16(
-        &mut self,
-        mb_x: usize,
-        mb_y: usize,
-        left: bool,
-        top: bool,
-        left_top: bool,
-        base_mode: i8,
-        enc: &mut MbEnc,
-    ) {
+    fn encode_i16x16(&mut self, pos: MbPos, avail: NeighAvail, base_mode: i8, enc: &mut MbEnc) {
+        let MbPos { x: mb_x, y: mb_y } = pos;
+        let NeighAvail { left, top, left_top, .. } = avail;
         let off = self.y_off(mb_x, mb_y);
         let soff = self.src_y_off(mb_x, mb_y);
         let stride = self.ystride;
@@ -757,16 +787,9 @@ impl FrameEnc {
     /// Full I4x4 luma encode: per block pick the best available mode, transform/
     /// quant, reconstruct in place (so the next block predicts correctly), and
     /// record levels/modes/nzc. Returns the summed residual SATD.
-    fn encode_i4x4(
-        &mut self,
-        mb_x: usize,
-        mb_y: usize,
-        left: bool,
-        top: bool,
-        left_top: bool,
-        top_right: bool,
-        enc: &mut MbEnc,
-    ) -> i32 {
+    fn encode_i4x4(&mut self, pos: MbPos, avail: NeighAvail, enc: &mut MbEnc) -> i32 {
+        let MbPos { x: mb_x, y: mb_y } = pos;
+        let NeighAvail { left, top, left_top, top_right } = avail;
         let off = self.y_off(mb_x, mb_y);
         let soff = self.src_y_off(mb_x, mb_y);
         let stride = self.ystride;
@@ -979,7 +1002,9 @@ impl FrameEnc {
 
     // ===================== Syntax write =====================
 
-    fn write_mb_syntax(&self, bw: &mut BitWriter, mb_x: usize, mb_y: usize, left: bool, top: bool, enc: &MbEnc, mb_type_offset: u32) {
+    fn write_mb_syntax(&self, bw: &mut BitWriter, pos: MbPos, avail: Avail, enc: &MbEnc, mb_type_offset: u32) {
+        let MbPos { x: mb_x, y: mb_y } = pos;
+        let Avail { left, top } = avail;
         let mb_xy = mb_y * self.mb_width + mb_x;
         let cbp = (enc.cbp_c << 4) | enc.cbp_l;
 

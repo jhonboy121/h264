@@ -115,8 +115,14 @@ impl Encoder {
             None => (Vec::new(), Vec::new(), Vec::new()),
         };
 
-        let mut frame =
-            FrameEnc::new(mb_width, mb_height, qp, src_y, src_u, src_v, sy_stride, sc_stride, ref_y, ref_u, ref_v);
+        let mut frame = FrameEnc::new(
+            encode_mb::MbDims { width: mb_width, height: mb_height },
+            qp,
+            encode_mb::PlaneSet { y: src_y, u: src_u, v: src_v },
+            sy_stride,
+            sc_stride,
+            encode_mb::PlaneSet { y: ref_y, u: ref_u, v: ref_v },
+        );
 
         let mut out = Vec::new();
         let mut bw = BitWriter::new();
