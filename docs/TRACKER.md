@@ -6,10 +6,11 @@ Legend: ✅ done & tested · 🚧 in progress · ⬜ not started · ⏸ deferred
 The C source for it is in `reference/` (see `REFERENCE_MAP.md` for the exact file).
 Port it, add tests, run `cargo test`, then check it off here with a one-line note.
 
-Last updated: **P1 COMPLETE** (40 tests, 0 warnings, all 7 targets + no_std green).
-NEXT: P2 parsing — SPS/PPS/slice-header (au_parser.cpp), then CAVLC + vlc tables
-(parse_mb_syn_cavlc.cpp), then CABAC (cabac_decoder.cpp). Also pull dequant/scan
-tables → dsp/tables.rs, and the luma/chroma DC dequant-IDCT (decode_slice.cpp:246,359).
+Last updated: **DECODER DONE (P1-P4)**. Baseline CAVLC + Main CABAC, I+P, multi-ref,
+deblock, DPB — 28/54 corpus streams BIT-EXACT vs C (3875 frames). Rusty API + perf report.
+99 tests, 0 warnings, 7 targets + no_std + wasm. **NEXT: ENCODER (P5 DSP → P6 core → P7
+round-trip), then SIMD (P10) + final perf report (P11).** Decoder follow-ups (deferred,
+optional): B-slices, transform8x8/High, PCM, FMO — all cleanly gated Unsupported.
 
 ---
 
@@ -90,7 +91,7 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
 - [ ] **P3f FMO** (`fmo.rs`), **error concealment** (`error_conceal.rs`) — lower priority.
 - [ ] `dsp/expand.rs` border padding (deferred from P1) — needed by MC ref reads.
 
-## P4 — Decoder API + conformance 🚧
+## P4 — Decoder API + conformance ✅
 - [x] C `h264dec` oracle built; conformance harness `examples/conformance.rs`
 - [x] **Corpus run: 28/54 streams BIT-EXACT** (3875 frames); 11 unsupported
       (8x8-transform/B/PCM), 11 mismatch (mostly crop/interlace len), 4 corrupted. d5011f7
