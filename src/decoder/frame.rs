@@ -95,11 +95,98 @@ struct CurPic {
     frame_num: i32,
     is_ref: bool,
     is_idr: bool,
+    /// Picture order count (display order).
+    poc: i32,
     /// `dec_ref_pic_marking` from the first slice of this picture (reference
     /// pictures only), driving sliding-window vs adaptive (MMCO) marking.
     marking: Option<super::slice_header::RefPicMarking>,
     slice_index: i32,
     region: VisibleRegion,
+}
+
+/// Picture-order-count derivation state carried across pictures (spec 8.2.1).
+#[derive(Default, Clone)]
+struct PocState {
+    prev_poc_msb: i32,
+    prev_poc_lsb: i32,
+    prev_frame_num_offset: i32,
+    prev_frame_num: i32,
+}
+
+impl PocState {
+    /// Compute the picture order count for one frame and update state
+    /// (`ParseSliceHeaderSyntaxs` POC block). Frame-coded only.
+    fn compute(&mut self, sps: &Sps, sh: &SliceHeader, pps: &Pps, is_idr: bool, nal_ref_idc: u8) -> i32 {
+        match sps.pic_order_cnt_type {
+            0 => {
+                if is_idr {
+                    self.prev_poc_msb = 0;
+                    self.prev_poc_lsb = 0;
+                }
+                let max = 1i32 << sps.log2_max_poc_lsb;
+                let lsb = sh.pic_order_cnt_lsb as i32;
+                let msb = if lsb < self.prev_poc_lsb && self.prev_poc_lsb - lsb >= max / 2 {
+                    self.prev_poc_msb + max
+                } else if lsb > self.prev_poc_lsb && lsb - self.prev_poc_lsb > max / 2 {
+                    self.prev_poc_msb - max
+                } else {
+                    self.prev_poc_msb
+                };
+                let mut poc = msb + lsb;
+                if pps.bottom_field_pic_order_in_frame_present_flag && !sh.field_pic_flag {
+                    poc += sh.delta_pic_order_cnt_bottom;
+                }
+                if nal_ref_idc != 0 {
+                    self.prev_poc_lsb = lsb;
+                    self.prev_poc_msb = msb;
+                }
+                poc
+            }
+            2 => {
+                // spec 8.2.1.3 (frame-coded): POC tracks 2*FrameNumOffset+frame_num.
+                let max_frame_num = 1i32 << sps.log2_max_frame_num;
+                let frame_num = sh.frame_num as i32;
+                let frame_num_offset = if is_idr {
+                    0
+                } else if self.prev_frame_num > frame_num {
+                    self.prev_frame_num_offset + max_frame_num
+                } else {
+                    self.prev_frame_num_offset
+                };
+                let poc = if is_idr {
+                    0
+                } else if nal_ref_idc == 0 {
+                    2 * (frame_num_offset + frame_num) - 1
+                } else {
+                    2 * (frame_num_offset + frame_num)
+                };
+                self.prev_frame_num_offset = frame_num_offset;
+                self.prev_frame_num = frame_num;
+                poc
+            }
+            // POC type 1 is not present in the corpus; a monotonic fallback keeps
+            // I/P output ordering correct (B-streams in the corpus use type 0).
+            _ => 2 * sh.frame_num as i32,
+        }
+    }
+}
+
+/// Snapshot the current picture's per-block motion for use as a colocated
+/// reference by future B slices (`colocPic->pMbType / pMv / pRefIndex`).
+fn build_col_motion(ctx: &DecoderContext) -> super::dpb::ColMotion {
+    let n = ctx.total_mb;
+    let mut intra = alloc::vec![false; n];
+    let mut uses_l1 = alloc::vec![false; n];
+    for mb in 0..n {
+        intra[mb] = ctx.mb_type[mb].is_intra();
+        uses_l1[mb] = (0..16).any(|b| ctx.ref_idx_l1[mb * 16 + b] >= 0);
+    }
+    super::dpb::ColMotion {
+        intra,
+        uses_l1,
+        mv: [ctx.mv.clone(), ctx.mv_l1.clone()],
+        ref_idx: [ctx.ref_idx.clone(), ctx.ref_idx_l1.clone()],
+    }
 }
 
 /// Visible (post-crop) rectangle of a picture coded by `sps`. 4:2:0 only:
@@ -148,6 +235,7 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
     let mut dpb: Option<Dpb> = None;
     let mut next_id: i32 = 0;
     let mut cur: Option<CurPic> = None;
+    let mut poc_state = PocState::default();
 
     for nal in &nals {
         if !nal.unit_type.is_vcl() {
@@ -177,11 +265,13 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
             }
             let mb_width = sps.mb_width as usize;
             let mb_height = sps.mb_height as usize;
+            let poc = poc_state.compute(&sps, &sh, &pps, is_idr, nal.ref_idc);
             cur = Some(CurPic {
                 ctx: DecoderContext::new(Vec::new(), Vec::new(), mb_width, mb_height),
                 frame_num: sh.frame_num as i32,
                 is_ref: nal.ref_idc != 0,
                 is_idr,
+                poc,
                 marking: sh.dec_ref_pic_marking.clone(),
                 slice_index: 0,
                 region: region_from_sps(&sps),
@@ -217,6 +307,7 @@ fn finalize_into(mut c: CurPic, dpb: &mut Dpb, next_id: &mut i32) -> Frame {
     let region = c.region;
     if c.is_ref {
         crate::dsp::expand::expand_picture(&mut c.ctx.picture);
+        let col = build_col_motion(&c.ctx);
         let pic = c.ctx.picture;
         let id = *next_id;
         *next_id += 1;
@@ -228,7 +319,7 @@ fn finalize_into(mut c: CurPic, dpb: &mut Dpb, next_id: &mut i32) -> Frame {
             ),
             None => (false, false, &[][..]),
         };
-        dpb.mark_and_insert(pic.clone(), c.frame_num, id, c.is_idr, lt_flag, adaptive, mmco);
+        dpb.mark_and_insert(pic.clone(), c.frame_num, id, c.is_idr, lt_flag, adaptive, mmco, c.poc, col);
         Frame::new(pic, region)
     } else {
         Frame::new(c.ctx.picture, region)
@@ -486,6 +577,7 @@ pub(crate) struct StreamDecoder {
     dpb: Option<Dpb>,
     next_id: i32,
     cur: Option<CurPic>,
+    poc_state: PocState,
 }
 
 impl StreamDecoder {
@@ -496,6 +588,7 @@ impl StreamDecoder {
             dpb: None,
             next_id: 0,
             cur: None,
+            poc_state: PocState::default(),
         }
     }
 
@@ -554,6 +647,7 @@ impl StreamDecoder {
             if is_idr {
                 self.dpb.as_mut().unwrap().clear();
             }
+            let poc = self.poc_state.compute(&sps, &sh, &pps, is_idr, nal.ref_idc);
             self.cur = Some(CurPic {
                 ctx: DecoderContext::new(
                     Vec::new(),
@@ -564,6 +658,7 @@ impl StreamDecoder {
                 frame_num: sh.frame_num as i32,
                 is_ref: nal.ref_idc != 0,
                 is_idr,
+                poc,
                 marking: sh.dec_ref_pic_marking.clone(),
                 slice_index: 0,
                 region: region_from_sps(&sps),

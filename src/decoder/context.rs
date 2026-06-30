@@ -38,6 +38,18 @@ pub enum MbType {
     Inter8x8Ref0,
     /// `MB_TYPE_SKIP` (P_Skip).
     PSkip,
+    /// `B_Skip` — direct prediction, no residual. List usage is per-4x4-block.
+    BSkip,
+    /// `B_Direct_16x16` — direct prediction. List usage per-4x4-block.
+    BDirect16x16,
+    /// B 16x16 single partition (L0 / L1 / Bi — read from per-block ref arrays).
+    B16x16,
+    /// B 16x8 (two partitions, each L0/L1/Bi).
+    B16x8,
+    /// B 8x16 (two partitions).
+    B8x16,
+    /// B 8x8 (four 8x8 sub-partitions, each with its own `SubMbType` shape).
+    B8x8,
 }
 
 impl MbType {
@@ -59,16 +71,37 @@ impl MbType {
         !self.is_intra()
     }
 
-    /// `IS_SKIP`.
+    /// `IS_SKIP` (P_Skip / B_Skip): no coded residual, no internal deblock edges.
     #[inline]
     pub fn is_skip(self) -> bool {
-        matches!(self, MbType::PSkip)
+        matches!(self, MbType::PSkip | MbType::BSkip)
     }
 
-    /// `IS_INTER_16x16` (16x16 or skip).
+    /// `IS_INTER_16x16` (single-partition inter: P/B 16x16 or skip/direct).
     #[inline]
     pub fn is_inter_16x16(self) -> bool {
-        matches!(self, MbType::Inter16x16 | MbType::PSkip)
+        matches!(
+            self,
+            MbType::Inter16x16
+                | MbType::PSkip
+                | MbType::B16x16
+                | MbType::BSkip
+                | MbType::BDirect16x16
+        )
+    }
+
+    /// True for any B-slice inter macroblock type.
+    #[inline]
+    pub fn is_b(self) -> bool {
+        matches!(
+            self,
+            MbType::BSkip
+                | MbType::BDirect16x16
+                | MbType::B16x16
+                | MbType::B16x8
+                | MbType::B8x16
+                | MbType::B8x8
+        )
     }
 }
 
@@ -177,6 +210,20 @@ pub struct DecoderContext {
     /// order, `[x, y]`. Only the CABAC mvd-context derivation reads it.
     pub mvd: Vec<i16>,
 
+    /// List-1 per-4x4-block motion vectors (B slices), 16 per MB raster order.
+    pub mv_l1: Vec<i16>,
+    /// List-1 per-4x4-block reference index (slice-local), 16 per MB; -1 = unused.
+    pub ref_idx_l1: Vec<i8>,
+    /// List-1 per-4x4-block resolved reference-picture identity (deblock bS).
+    pub ref_pic_id_l1: Vec<i32>,
+    /// List-1 per-4x4-block motion-vector difference (CABAC mvd context).
+    pub mvd_l1: Vec<i16>,
+    /// Per-4x4-block direct-prediction flag (`pDirect`), 16 per MB raster order;
+    /// 1 when the block was coded with B direct prediction. CABAC ref_idx ctx.
+    pub direct: Vec<i8>,
+    /// True while decoding a B slice (selects B deblock bS rules).
+    pub is_b_slice: bool,
+
     pub picture: Picture,
 }
 
@@ -216,6 +263,12 @@ impl DecoderContext {
             ref_pic_id: vec![-1; total_mb * 16],
             sub_mb_type: vec![SubMbType::P8x8; total_mb * 4],
             mvd: vec![0; total_mb * 16 * 2],
+            mv_l1: vec![0; total_mb * 16 * 2],
+            ref_idx_l1: vec![-1; total_mb * 16],
+            ref_pic_id_l1: vec![-1; total_mb * 16],
+            mvd_l1: vec![0; total_mb * 16 * 2],
+            direct: vec![0; total_mb * 16],
+            is_b_slice: false,
             picture: Picture::new(mb_width, mb_height),
         }
     }

@@ -25,6 +25,20 @@ const MMCO_SET_MAX_LONG: u32 = 4;
 const MMCO_RESET: u32 = 5;
 const MMCO_LONG: u32 = 6;
 
+/// Colocated per-block motion of a reference picture, read by B-slice direct
+/// prediction (`colocPic->pMbType / pMv / pRefIndex`).
+#[derive(Clone, Default)]
+pub struct ColMotion {
+    /// Per-MB: the colocated macroblock is intra-coded.
+    pub intra: Vec<bool>,
+    /// Per-MB: the colocated macroblock uses list-1 (bi/backward prediction).
+    pub uses_l1: Vec<bool>,
+    /// Per-4x4-block list-0 / list-1 motion, 16 per MB raster order, `[x,y]`.
+    pub mv: [Vec<i16>; 2],
+    /// Per-4x4-block list-0 / list-1 reference index (slice-local), -1 = unused.
+    pub ref_idx: [Vec<i8>; 2],
+}
+
 /// One decoded reference frame held in the DPB.
 pub struct RefFrame {
     /// Reconstructed, border-extended picture.
@@ -38,6 +52,10 @@ pub struct RefFrame {
     pub is_long_term: bool,
     /// `LongTermFrameIdx` (== `LongTermPicNum` for frame-coded pictures).
     pub long_term_frame_idx: i32,
+    /// Picture order count (display order; B ref-list ordering & temporal direct).
+    pub poc: i32,
+    /// Colocated motion of this picture for B direct prediction.
+    pub col: ColMotion,
 }
 
 /// Reference-picture buffer (sliding-window + MMCO; short- and long-term).
@@ -113,8 +131,65 @@ impl Dpb {
         reorder: &RefListReorder,
     ) -> Vec<usize> {
         let default = self.default_list0(cur_frame_num);
-        let num = num_ref_active;
+        self.apply_ref_reorder(default, cur_frame_num, num_ref_active, reorder)
+    }
 
+    /// Build the list-0 and list-1 reference lists for a B slice (spec
+    /// 8.2.4.2.3): list-0 = short refs `POC < cur` (POC desc), then `POC > cur`
+    /// (POC asc), then long-term (LongTermFrameIdx asc); list-1 = short refs
+    /// `POC > cur` (POC asc), then `POC < cur` (POC desc), then long-term. Any
+    /// `ref_pic_list_modification` is then applied to each. Returns indices into
+    /// [`Dpb::refs`].
+    pub fn b_ref_lists(
+        &self,
+        cur_frame_num: i32,
+        cur_poc: i32,
+        num0: usize,
+        num1: usize,
+        reorder0: &RefListReorder,
+        reorder1: &RefListReorder,
+    ) -> (Vec<usize>, Vec<usize>) {
+        let mut less: Vec<usize> = (0..self.refs.len())
+            .filter(|&i| !self.refs[i].is_long_term && self.refs[i].poc < cur_poc)
+            .collect();
+        less.sort_by(|&a, &b| self.refs[b].poc.cmp(&self.refs[a].poc)); // desc
+        let mut greater: Vec<usize> = (0..self.refs.len())
+            .filter(|&i| !self.refs[i].is_long_term && self.refs[i].poc >= cur_poc)
+            .collect();
+        greater.sort_by(|&a, &b| self.refs[a].poc.cmp(&self.refs[b].poc)); // asc
+        let mut long: Vec<usize> = (0..self.refs.len())
+            .filter(|&i| self.refs[i].is_long_term)
+            .collect();
+        long.sort_by_key(|&i| self.refs[i].long_term_frame_idx);
+
+        let mut list0: Vec<usize> = Vec::new();
+        list0.extend(less.iter().copied());
+        list0.extend(greater.iter().copied());
+        list0.extend(long.iter().copied());
+
+        let mut list1: Vec<usize> = Vec::new();
+        list1.extend(greater.iter().copied());
+        list1.extend(less.iter().copied());
+        list1.extend(long.iter().copied());
+
+        // When list1 has more than one entry and is identical to list0, swap the
+        // first two of list1 (spec 8.2.4.2.3). OpenH264 omits this; replicate its
+        // behaviour for bit-exactness (and it is a no-op for our single-ref case).
+        (
+            self.apply_ref_reorder(list0, cur_frame_num, num0, reorder0),
+            self.apply_ref_reorder(list1, cur_frame_num, num1, reorder1),
+        )
+    }
+
+    /// Apply `ref_pic_list_modification` (spec 8.2.4.3.1) to `default`, truncate
+    /// to `num`. Shared by P list-0 and both B lists.
+    fn apply_ref_reorder(
+        &self,
+        default: Vec<usize>,
+        cur_frame_num: i32,
+        num: usize,
+        reorder: &RefListReorder,
+    ) -> Vec<usize> {
         if !reorder.flag {
             let mut list = default;
             list.truncate(num);
@@ -192,6 +267,8 @@ impl Dpb {
         long_term_reference_flag: bool,
         adaptive: bool,
         mmco: &[MmcoEntry],
+        poc: i32,
+        col: ColMotion,
     ) {
         if is_idr {
             // The caller has already cleared the DPB for the IDR.
@@ -203,10 +280,12 @@ impl Dpb {
                     id,
                     is_long_term: true,
                     long_term_frame_idx: 0,
+                    poc,
+                    col,
                 });
             } else {
                 self.max_long_term_frame_idx = -1;
-                self.push_short(pic, frame_num, id);
+                self.push_short(pic, frame_num, id, poc, col);
             }
             return;
         }
@@ -214,7 +293,7 @@ impl Dpb {
         let mut cur: Option<Picture> = Some(pic);
         let mut had_mmco5 = false;
         if adaptive {
-            had_mmco5 = self.apply_mmco(mmco, frame_num, id, &mut cur);
+            had_mmco5 = self.apply_mmco(mmco, frame_num, id, &mut cur, poc, &col);
         } else {
             self.sliding_window(frame_num);
         }
@@ -224,13 +303,13 @@ impl Dpb {
         // If MMCO 6 did not consume the current picture as a long-term ref,
         // add it as a short-term reference.
         if let Some(pic) = cur {
-            self.push_short(pic, store_frame_num, id);
+            self.push_short(pic, store_frame_num, id, poc, col);
         }
     }
 
     /// `AddShortTermToList`: insert as a short-term reference, replacing any
     /// existing short-term reference with the same `frame_num`.
-    fn push_short(&mut self, pic: Picture, frame_num: i32, id: i32) {
+    fn push_short(&mut self, pic: Picture, frame_num: i32, id: i32, poc: i32, col: ColMotion) {
         if let Some(slot) = self
             .refs
             .iter_mut()
@@ -238,6 +317,8 @@ impl Dpb {
         {
             slot.pic = pic;
             slot.id = id;
+            slot.poc = poc;
+            slot.col = col;
             return;
         }
         self.refs.push(RefFrame {
@@ -246,6 +327,8 @@ impl Dpb {
             id,
             is_long_term: false,
             long_term_frame_idx: -1,
+            poc,
+            col,
         });
     }
 
@@ -281,6 +364,8 @@ impl Dpb {
         frame_num: i32,
         id: i32,
         cur: &mut Option<Picture>,
+        poc: i32,
+        col: &ColMotion,
     ) -> bool {
         let mut had_mmco5 = false;
         for e in mmco {
@@ -338,6 +423,8 @@ impl Dpb {
                             id,
                             is_long_term: true,
                             long_term_frame_idx: e.long_term_frame_idx,
+                            poc,
+                            col: col.clone(),
                         });
                     }
                 }
@@ -370,6 +457,8 @@ mod tests {
             id,
             is_long_term: false,
             long_term_frame_idx: -1,
+            poc: 0,
+            col: ColMotion::default(),
         }
     }
 
@@ -402,9 +491,9 @@ mod tests {
     #[test]
     fn sliding_window_drops_oldest() {
         let mut dpb = Dpb::new(2, 4);
-        dpb.mark_and_insert(Picture::new(1, 1), 0, 0, false, false, false, &[]);
-        dpb.mark_and_insert(Picture::new(1, 1), 1, 1, false, false, false, &[]);
-        dpb.mark_and_insert(Picture::new(1, 1), 2, 2, false, false, false, &[]);
+        dpb.mark_and_insert(Picture::new(1, 1), 0, 0, false, false, false, &[], 0, ColMotion::default());
+        dpb.mark_and_insert(Picture::new(1, 1), 1, 1, false, false, false, &[], 0, ColMotion::default());
+        dpb.mark_and_insert(Picture::new(1, 1), 2, 2, false, false, false, &[], 0, ColMotion::default());
         assert_eq!(dpb.refs.len(), 2);
         let mut ids: Vec<i32> = dpb.refs.iter().map(|r| r.id).collect();
         ids.sort();
@@ -435,10 +524,10 @@ mod tests {
     fn long_term_selected_by_reorder() {
         let mut dpb = Dpb::new(4, 4);
         // IDR as long-term idx 0.
-        dpb.mark_and_insert(Picture::new(1, 1), 0, 0, true, true, false, &[]);
+        dpb.mark_and_insert(Picture::new(1, 1), 0, 0, true, true, false, &[], 0, ColMotion::default());
         // A couple short-term refs.
-        dpb.mark_and_insert(Picture::new(1, 1), 1, 1, false, false, false, &[]);
-        dpb.mark_and_insert(Picture::new(1, 1), 2, 2, false, false, false, &[]);
+        dpb.mark_and_insert(Picture::new(1, 1), 1, 1, false, false, false, &[], 0, ColMotion::default());
+        dpb.mark_and_insert(Picture::new(1, 1), 2, 2, false, false, false, &[], 0, ColMotion::default());
         // reorder idc 2 -> long-term pic num 0 at front.
         let reorder = RefListReorder {
             flag: true,
