@@ -69,10 +69,11 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
       **VALIDATION (no-deblock):** BANM intra frame vs C: Y-PSNR 43.18dB, U 48.5, V 49.3;
       diffs ±1-3 at 4x4 edges (73 luma px ≥8, 80.8% edge-adjacent) → intra recon CORRECT,
       gap == missing deblock. Oracle ref at /tmp/banm_c_frame0.yuv.
-- [🚧] **P3b deblock integration** — boundary strength + dsp::deblock (DecUT_Deblock).
-      GOAL: bit-exact BANM intra frame (PSNR→inf). Port WelsDeblockingFilterMB/Slice
-      from decoder/core/src/deblocking.cpp (intra bS=4 edge/3 internal; alpha/beta/tc0
-      tables). Inter bS (mv/ref based) comes with P3c P-slices.
+- [x] **P3b deblock integration** ✅ **BIT-EXACT** — BANM intra frame == C oracle
+      (0/38016 bytes differ). decoder/deblock.rs (alpha/beta/tc0 tables, intra bS=4/3,
+      V then H edges, luma+chroma, qp avg). Golden `tests/fixtures/banm_frame0.yuv` +
+      `tests/deblock_conformance.rs`. 386e9d1. **Baseline INTRA decode is conformant.**
+      Inter bS (mv/ref) extends in P3c.
 - [ ] **P3c P-slice** — `mv_pred.rs` (anchor `DecUT_PredMv.cpp`), inter mb parse
       (mb_type/sub_mb/ref_idx/mvd), MC reconstruct (dsp::mc), skip.
 - [ ] **P3d DPB/POC/ref-list** — `dpb.rs`,`ref_pic.rs` (POC types, ref list init, MMCO).
