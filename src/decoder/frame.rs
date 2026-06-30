@@ -433,10 +433,6 @@ fn decode_b_slice_cavlc(
     use super::mb_parse_cavlc::{parse_b_mb_cavlc, BRefs};
     use super::recon_inter::recon_b_mb;
 
-    if !sh.direct_spatial_mv_pred_flag {
-        return Err(DecodeError::Unsupported("B temporal direct"));
-    }
-
     let (blist0, blist1) = dpb.b_ref_lists(
         sh.frame_num as i32,
         cur_poc,
@@ -452,6 +448,7 @@ fn decode_b_slice_cavlc(
     let ref_pic_ids1: Vec<i32> = blist1.iter().map(|&i| dpb.refs[i].id).collect();
     let ref_pics0: Vec<&Picture> = blist0.iter().map(|&i| &dpb.refs[i].pic).collect();
     let ref_pics1: Vec<&Picture> = blist1.iter().map(|&i| &dpb.refs[i].pic).collect();
+    let mv_scale = temporal_mv_scale(dpb, cur_poc, &blist0, &blist1);
 
     let col_frame = &dpb.refs[blist1[0]];
     ctx.is_b_slice = true;
@@ -470,7 +467,7 @@ fn decode_b_slice_cavlc(
                 col: &col_frame.col,
                 is_long: col_frame.is_long_term,
                 inference: direct_8x8_inference,
-                mv_scale: &[],
+                mv_scale: &mv_scale,
                 ref0_count: blist0.len(),
             },
         };
@@ -493,6 +490,25 @@ fn decode_b_slice_cavlc(
         }
     }
     Ok(())
+}
+
+/// Per-list-0-reference temporal-direct MV scale factor (`iMvScale`, spec
+/// 8.4.1.2.3), derived from the POC distances colocated→ref and current→ref.
+fn temporal_mv_scale(dpb: &Dpb, cur_poc: i32, blist0: &[usize], blist1: &[usize]) -> Vec<i32> {
+    let col_poc = dpb.refs[blist1[0]].poc;
+    blist0
+        .iter()
+        .map(|&i| {
+            let ref_poc = dpb.refs[i].poc;
+            let td = (col_poc - ref_poc).clamp(-128, 127);
+            if td == 0 {
+                return 256;
+            }
+            let tb = (cur_poc - ref_poc).clamp(-128, 127);
+            let tx = (16384 + (td.abs() / 2)) / td;
+            ((tb * tx + 32) >> 6).clamp(-1024, 1023)
+        })
+        .collect()
 }
 
 /// Decode one CABAC slice's macroblocks (parse + reconstruct) into `ctx`.
@@ -609,10 +625,6 @@ fn decode_b_slice_cabac(
     use super::mb_parse_cabac::{decode_mb_cabac_bslice, BRefsCabac};
     use super::recon_inter::recon_b_mb;
 
-    if !sh.direct_spatial_mv_pred_flag {
-        return Err(DecodeError::Unsupported("B temporal direct (CABAC)"));
-    }
-
     let (blist0, blist1) = dpb.b_ref_lists(
         sh.frame_num as i32,
         cur_poc,
@@ -628,6 +640,7 @@ fn decode_b_slice_cabac(
     let ref_pic_ids1: Vec<i32> = blist1.iter().map(|&i| dpb.refs[i].id).collect();
     let ref_pics0: Vec<&Picture> = blist0.iter().map(|&i| &dpb.refs[i].pic).collect();
     let ref_pics1: Vec<&Picture> = blist1.iter().map(|&i| &dpb.refs[i].pic).collect();
+    let mv_scale = temporal_mv_scale(dpb, cur_poc, &blist0, &blist1);
     let col_frame = &dpb.refs[blist1[0]];
     ctx.is_b_slice = true;
 
@@ -652,11 +665,12 @@ fn decode_b_slice_cabac(
         let bref = BRefsCabac {
             ref_pic_ids: [&ref_pic_ids0, &ref_pic_ids1],
             ref_count: [blist0.len(), blist1.len()],
+            direct_spatial: sh.direct_spatial_mv_pred_flag,
             col: super::bdirect::ColRef {
                 col: &col_frame.col,
                 is_long: col_frame.is_long_term,
                 inference: direct_8x8_inference,
-                mv_scale: &[],
+                mv_scale: &mv_scale,
                 ref0_count: blist0.len(),
             },
         };

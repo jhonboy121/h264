@@ -1486,6 +1486,7 @@ const NEW_CTX_OFFSET_B_SUBMB_TYPE: usize = 36;
 pub struct BRefsCabac<'a> {
     pub ref_pic_ids: [&'a [i32]; 2],
     pub ref_count: [usize; 2],
+    pub direct_spatial: bool,
     pub col: ColRef<'a>,
 }
 
@@ -1767,7 +1768,7 @@ pub fn decode_mb_cabac_bslice(
         // B_Skip: direct prediction, no residual.
         let QpState { last_mb_qp, last_delta_qp } = qp;
         ctx.mb_type[mb_xy] = MbType::BSkip;
-        apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true);
+        apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true, bref.direct_spatial);
         let luma_qp = *last_mb_qp;
         *last_delta_qp = 0;
         commit_inter_meta(MbCtx { ctx: &mut *ctx, mb_xy, pps }, MbType::BSkip, 0, luma_qp, &[0; 16], &[0; 8]);
@@ -1797,7 +1798,7 @@ pub fn decode_mb_cabac_bslice(
     ctx.mb_type[mb_xy] = mb_type;
 
     if info.shape == BShape::Direct {
-        apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true);
+        apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true, bref.direct_spatial);
     } else {
         let mut cache = BInterCacheC::build(ctx, mb_xy);
         parse_b_motion_cabac(dec, ctxs, ctx, &mut cache, mb_xy, ui_mb_type, bref)?;

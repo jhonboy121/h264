@@ -1495,7 +1495,7 @@ pub fn parse_b_mb_cavlc(
     if old != 0 {
         // B_Skip: direct prediction, cbp = 0.
         ctx.mb_type[mb_xy] = MbType::BSkip;
-        apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true);
+        apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true, bref.direct_spatial);
         let luma_qp = *last_mb_qp;
         commit_inter_meta(MbCtx { ctx, mb_xy, pps }, MbType::BSkip, 0, luma_qp, &[0; 16], &[0; 8]);
         return Ok(());
@@ -1522,7 +1522,7 @@ pub fn parse_b_mb_cavlc(
     ctx.mb_type[mb_xy] = mb_type;
 
     if info.shape == BShape::Direct {
-        apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true);
+        apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true, bref.direct_spatial);
     } else {
         let mut cache = BInterCache::build(ctx, mb_xy);
         parse_b_motion(bs, ctx, &mut cache, mb_xy, ui_mb_type, bref)?;
@@ -1587,7 +1587,20 @@ pub(super) fn apply_b_direct(
     ref_pic_ids: [&[i32]; 2],
     col: &ColRef,
     whole_mb: bool,
+    direct_spatial: bool,
 ) {
+    if !direct_spatial {
+        super::bdirect::b_direct_temporal(ctx, mb_xy, !whole_mb, col);
+        for r in 0..16 {
+            if ctx.ref_idx[mb_xy * 16 + r] >= 0 && !ref_pic_ids[0].is_empty() {
+                ctx.ref_pic_id[mb_xy * 16 + r] = ref_pic_ids[0][0];
+            }
+            if ctx.ref_idx_l1[mb_xy * 16 + r] >= 0 && !ref_pic_ids[1].is_empty() {
+                ctx.ref_pic_id_l1[mb_xy * 16 + r] = ref_pic_ids[1][0];
+            }
+        }
+        return;
+    }
     let info: DirectInfo = b_direct_spatial(ctx, mb_xy, !whole_mb);
     let ref_pic = [
         if info.iref[0] >= 0 && (info.iref[0] as usize) < ref_pic_ids[0].len() {

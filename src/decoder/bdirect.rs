@@ -92,6 +92,57 @@ fn nb(ctx: &DecoderContext, list: usize, xy: usize, blk: usize) -> ([i16; 2], i8
     (mv, rf)
 }
 
+/// Temporal direct prediction (`PredBDirectTemporal` / `FillTemporalDirect8x8Mv`,
+/// spec 8.4.1.2.3). Scales the colocated list-0 MV by the POC-distance ratio in
+/// `cr.mv_scale` and derives the backward MV as `mvL0 - mvCol`. Fills `ctx`.
+///
+/// NOTE: `cr.mv_scale[0]` is used for the reference index (this is exact for the
+/// single-reference case `num_ref_idx_l0_active == 1`); the general
+/// `MapColToList0` mapping requires the colocated picture's own reference list,
+/// which the DPB does not retain. No corpus stream exercises this path (the
+/// temporal-direct streams require transform_8x8, out of scope), so it is
+/// unvalidated.
+pub fn b_direct_temporal(ctx: &mut DecoderContext, mb_xy: usize, cur_is_8x8: bool, cr: &ColRef) {
+    let scale0 = cr.mv_scale.first().copied().unwrap_or(256);
+    let mb16x16 = !cur_is_8x8;
+    let scale_mv = |mv: [i16; 2]| -> [i16; 2] {
+        [
+            ((scale0 * mv[0] as i32 + 128) >> 8) as i16,
+            ((scale0 * mv[1] as i32 + 128) >> 8) as i16,
+        ]
+    };
+    let parts: &[usize] = if mb16x16 { &[0] } else { &[0, 4, 8, 12] };
+    for &part_idx in parts {
+        let scan4 = SCAN4[part_idx];
+        let blocks: &[usize] = if mb16x16 {
+            &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        } else {
+            &[scan4, scan4 + 1, scan4 + 4, scan4 + 5]
+        };
+        let (intra, cref0, _cref1, cmv0, cmv1) = cr.at(mb_xy, scan4);
+        let (mv0, mv1) = if intra {
+            ([0, 0], [0, 0])
+        } else {
+            let mvcol = if cref0 >= 0 { cmv0 } else { cmv1 };
+            let l0 = scale_mv(mvcol);
+            ([l0[0], l0[1]], [l0[0] - mvcol[0], l0[1] - mvcol[1]])
+        };
+        for &r in blocks {
+            let b = (mb_xy * 16 + r) * 2;
+            ctx.mv[b] = mv0[0];
+            ctx.mv[b + 1] = mv0[1];
+            ctx.mv_l1[b] = mv1[0];
+            ctx.mv_l1[b + 1] = mv1[1];
+            ctx.ref_idx[mb_xy * 16 + r] = 0;
+            ctx.ref_idx_l1[mb_xy * 16 + r] = 0;
+            ctx.direct[mb_xy * 16 + r] = 1;
+        }
+        if !mb16x16 {
+            ctx.sub_mb_type[mb_xy * 4 + (part_idx >> 2)] = super::context::SubMbType::P8x8;
+        }
+    }
+}
+
 /// `PredMvBDirectSpatial` neighbour derivation: compute the per-list reference
 /// index and predicted MV from the spatial neighbours (left/top/top-right/
 /// top-left). Does not fill `ctx`.
