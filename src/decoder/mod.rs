@@ -4,6 +4,7 @@
 //! P2 (parsing) and P3 (reconstruction).
 
 pub mod cabac;
+pub mod cabac_mb;
 pub mod cabac_tables;
 pub mod cavlc;
 pub mod cavlc_tables;

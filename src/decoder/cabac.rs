@@ -251,6 +251,31 @@ impl<'a> CabacDecoder<'a> {
         }
     }
 
+    /// `DecodeExpBypassCabac`: decode an Exp-Golomb-order-`k` suffix entirely in
+    /// bypass mode (`iCount == k`). Used by the UEGk binarisations of
+    /// `coeff_abs_level_minus1` (k=0) and `mvd` (k=3).
+    pub fn decode_exp_bypass(&mut self, mut count: i32) -> u32 {
+        let mut sym: i32 = 0;
+        let mut sym2: i32 = 0;
+        loop {
+            let code = self.decode_bypass();
+            if code == 1 {
+                sym += 1 << count;
+                count += 1;
+            }
+            if code == 0 || count == 16 {
+                break;
+            }
+        }
+        while count > 0 {
+            count -= 1;
+            if self.decode_bypass() == 1 {
+                sym2 |= 1 << count;
+            }
+        }
+        (sym + sym2) as u32
+    }
+
     /// `DecodeTerminateCabac`: decode the `end_of_slice_flag` / PCM terminator
     /// bin (spec 9.3.4.4). Returns 1 when the arithmetic decode terminates.
     pub fn decode_terminate(&mut self) -> u32 {
@@ -439,6 +464,21 @@ mod tests {
             let got = dec.decode_bypass();
             assert_eq!(got, predicted);
         }
+    }
+
+    // decode_exp_bypass is pure bypass, so it is fully determined by the
+    // decode_bypass sequence. On an all-zero stream every bypass bin is 0, so
+    // the very first loop iteration (code == 0) ends the prefix with count
+    // unchanged at the initial k, then the k-bit suffix reads k zero bins.
+    #[test]
+    fn exp_bypass_zero_stream() {
+        let zeros = [0u8; 12];
+        let mut dec = CabacDecoder::new(&zeros, 0).unwrap();
+        // k = 0: prefix bin 0 -> sym 0, suffix 0 bits -> 0.
+        assert_eq!(dec.decode_exp_bypass(0), 0);
+        // k = 3: prefix bin 0 -> sym 0, then 3 suffix bins all 0 -> 0.
+        let mut dec2 = CabacDecoder::new(&zeros, 0).unwrap();
+        assert_eq!(dec2.decode_exp_bypass(3), 0);
     }
 
     // DecodeTerminate on a crafted stream: with offset's top bits below
