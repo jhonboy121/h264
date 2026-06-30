@@ -134,8 +134,9 @@ fn main() {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
 
+    let backend = if cfg!(feature = "simd") { "SIMD (NEON)" } else { "SCALAR" };
     println!("machine: {arch}   build: --release (opt-level=3, lto=thin, codegen-units=1)");
-    println!("our decoder: pure-Rust SCALAR   |   C h264dec: OpenH264 ARM NEON asm\n");
+    println!("our decoder: pure-Rust {backend}   |   C h264dec: OpenH264 ARM NEON asm\n");
 
     println!(
         "{:<30} {:>6} {:>7} | {:>9} {:>8} {:>8} | {:>9} {:>8} {:>8} | {:>8}",
