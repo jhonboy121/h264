@@ -284,7 +284,7 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
                 &mut cp.ctx, &mut bs, &nal.rbsp, &sh, &pps, cp.slice_index, dpb.as_ref().unwrap(),
             )?;
         } else {
-            decode_one_slice(&mut cp.ctx, &mut bs, &sh, &pps, cp.slice_index, dpb.as_ref().unwrap())?;
+            decode_one_slice(&mut cp.ctx, &mut bs, &sh, &pps, cp.slice_index, dpb.as_ref().unwrap(), cp.poc, sps.direct_8x8_inference_flag)?;
         }
         cp.slice_index += 1;
     }
@@ -327,6 +327,7 @@ fn finalize_into(mut c: CurPic, dpb: &mut Dpb, next_id: &mut i32) -> Frame {
 }
 
 /// Decode one slice's macroblocks (parse + reconstruct) into `ctx`.
+#[allow(clippy::too_many_arguments)]
 fn decode_one_slice(
     ctx: &mut DecoderContext,
     bs: &mut BitReader<'_>,
@@ -334,10 +335,16 @@ fn decode_one_slice(
     pps: &Pps,
     slice_index: i32,
     dpb: &Dpb,
+    cur_poc: i32,
+    direct_8x8_inference: bool,
 ) -> Result<(), DecodeError> {
     let total_mb = ctx.total_mb;
     let mut last_mb_qp = sh.slice_qp;
     let mut coeffs = [0i16; 384];
+
+    if sh.slice_type == super::slice_header::SliceType::B {
+        return decode_b_slice_cavlc(ctx, bs, sh, pps, slice_index, dpb, cur_poc, direct_8x8_inference, &mut last_mb_qp, &mut coeffs);
+    }
 
     if sh.slice_type.is_intra() {
         let mut mb_xy = sh.first_mb_in_slice as usize;
@@ -352,10 +359,6 @@ fn decode_one_slice(
             }
         }
         return Ok(());
-    }
-
-    if !sh.slice_type.is_p() {
-        return Err(DecodeError::Unsupported("B slice"));
     }
 
     // Build the P list-0 reference list for this slice (default order with any
@@ -392,6 +395,86 @@ fn decode_one_slice(
         }
         mb_xy += 1;
         // A pending skip run keeps consuming MBs without reading more bits.
+        if skip_run <= 0 && !bs.more_rbsp_data() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Decode one B slice's macroblocks (CAVLC): build list-0/list-1, then
+/// parse + bi-predictive reconstruct each MB.
+#[allow(clippy::too_many_arguments)]
+fn decode_b_slice_cavlc(
+    ctx: &mut DecoderContext,
+    bs: &mut BitReader<'_>,
+    sh: &SliceHeader,
+    pps: &Pps,
+    slice_index: i32,
+    dpb: &Dpb,
+    cur_poc: i32,
+    direct_8x8_inference: bool,
+    last_mb_qp: &mut i32,
+    coeffs: &mut [i16; 384],
+) -> Result<(), DecodeError> {
+    use super::mb_parse_cavlc::{parse_b_mb_cavlc, BRefs};
+    use super::recon_inter::recon_b_mb;
+
+    if !sh.direct_spatial_mv_pred_flag {
+        return Err(DecodeError::Unsupported("B temporal direct"));
+    }
+
+    let (blist0, blist1) = dpb.b_ref_lists(
+        sh.frame_num as i32,
+        cur_poc,
+        sh.num_ref_idx_active[0] as usize,
+        sh.num_ref_idx_active[1] as usize,
+        &sh.ref_pic_list_reordering.list[0],
+        &sh.ref_pic_list_reordering.list[1],
+    );
+    if blist0.is_empty() || blist1.is_empty() {
+        return Err(DecodeError::InvalidSyntax("B slice with no references"));
+    }
+    let ref_pic_ids0: Vec<i32> = blist0.iter().map(|&i| dpb.refs[i].id).collect();
+    let ref_pic_ids1: Vec<i32> = blist1.iter().map(|&i| dpb.refs[i].id).collect();
+    let ref_pics0: Vec<&Picture> = blist0.iter().map(|&i| &dpb.refs[i].pic).collect();
+    let ref_pics1: Vec<&Picture> = blist1.iter().map(|&i| &dpb.refs[i].pic).collect();
+
+    let col_frame = &dpb.refs[blist1[0]];
+    ctx.is_b_slice = true;
+
+    let total_mb = ctx.total_mb;
+    let mut skip_run: i32 = -1;
+    let mut mb_xy = sh.first_mb_in_slice as usize;
+    while mb_xy < total_mb {
+        set_mb_deblock(ctx, mb_xy, sh, slice_index);
+        coeffs.iter_mut().for_each(|c| *c = 0);
+        let bref = BRefs {
+            ref_pic_ids: [&ref_pic_ids0, &ref_pic_ids1],
+            ref_count: [blist0.len(), blist1.len()],
+            direct_spatial: sh.direct_spatial_mv_pred_flag,
+            col: super::bdirect::ColRef {
+                col: &col_frame.col,
+                is_long: col_frame.is_long_term,
+                inference: direct_8x8_inference,
+                mv_scale: &[],
+                ref0_count: blist0.len(),
+            },
+        };
+        parse_b_mb_cavlc(
+            bs,
+            super::mb_parse_cavlc::MbCtx { ctx: &mut *ctx, mb_xy, pps },
+            last_mb_qp,
+            &mut skip_run,
+            &bref,
+            coeffs,
+        )?;
+        if ctx.mb_type[mb_xy].is_intra() {
+            recon_intra_mb(ctx, mb_xy, coeffs);
+        } else {
+            recon_b_mb(ctx, mb_xy, coeffs, [&ref_pics0, &ref_pics1]);
+        }
+        mb_xy += 1;
         if skip_run <= 0 && !bs.more_rbsp_data() {
             break;
         }
@@ -673,7 +756,7 @@ impl StreamDecoder {
         if pps.entropy_coding_mode_flag {
             decode_one_slice_cabac(&mut cp.ctx, &mut bs, &nal.rbsp, &sh, &pps, cp.slice_index, dpb)?;
         } else {
-            decode_one_slice(&mut cp.ctx, &mut bs, &sh, &pps, cp.slice_index, dpb)?;
+            decode_one_slice(&mut cp.ctx, &mut bs, &sh, &pps, cp.slice_index, dpb, cp.poc, sps.direct_8x8_inference_flag)?;
         }
         cp.slice_index += 1;
         Ok(())

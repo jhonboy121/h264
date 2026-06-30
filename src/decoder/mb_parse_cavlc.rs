@@ -1265,6 +1265,582 @@ fn update_p8x16(
     }
 }
 
+// ===================== B-slice (bi-predictive) macroblock parse =============
+
+use super::bdirect::{b_direct_spatial, fill_direct_16x16, fill_direct_8x8, ColRef, DirectInfo};
+
+/// B macroblock partition shape (`g_ksInterBMbTypeInfo` geometry).
+#[derive(Clone, Copy, PartialEq)]
+enum BShape {
+    Direct,
+    P16x16,
+    P16x8,
+    P8x16,
+    P8x8,
+}
+
+/// One B mb_type entry: partition shape + per-partition `(uses_l0, uses_l1)`.
+struct BMbInfo {
+    shape: BShape,
+    dir: [(bool, bool); 2],
+}
+
+#[rustfmt::skip]
+const B_MB_INFO: [BMbInfo; 23] = [
+    BMbInfo { shape: BShape::Direct, dir: [(false,false),(false,false)] }, // 0 B_Direct_16x16
+    BMbInfo { shape: BShape::P16x16, dir: [(true,false),(false,false)] },  // 1 B_L0_16x16
+    BMbInfo { shape: BShape::P16x16, dir: [(false,true),(false,false)] },  // 2 B_L1_16x16
+    BMbInfo { shape: BShape::P16x16, dir: [(true,true),(false,false)] },   // 3 B_Bi_16x16
+    BMbInfo { shape: BShape::P16x8,  dir: [(true,false),(true,false)] },   // 4 B_L0_L0_16x8
+    BMbInfo { shape: BShape::P8x16,  dir: [(true,false),(true,false)] },   // 5 B_L0_L0_8x16
+    BMbInfo { shape: BShape::P16x8,  dir: [(false,true),(false,true)] },   // 6 B_L1_L1_16x8
+    BMbInfo { shape: BShape::P8x16,  dir: [(false,true),(false,true)] },   // 7 B_L1_L1_8x16
+    BMbInfo { shape: BShape::P16x8,  dir: [(true,false),(false,true)] },   // 8 B_L0_L1_16x8
+    BMbInfo { shape: BShape::P8x16,  dir: [(true,false),(false,true)] },   // 9 B_L0_L1_8x16
+    BMbInfo { shape: BShape::P16x8,  dir: [(false,true),(true,false)] },   // 10 B_L1_L0_16x8
+    BMbInfo { shape: BShape::P8x16,  dir: [(false,true),(true,false)] },   // 11 B_L1_L0_8x16
+    BMbInfo { shape: BShape::P16x8,  dir: [(true,false),(true,true)] },    // 12 B_L0_Bi_16x8
+    BMbInfo { shape: BShape::P8x16,  dir: [(true,false),(true,true)] },    // 13 B_L0_Bi_8x16
+    BMbInfo { shape: BShape::P16x8,  dir: [(false,true),(true,true)] },    // 14 B_L1_Bi_16x8
+    BMbInfo { shape: BShape::P8x16,  dir: [(false,true),(true,true)] },    // 15 B_L1_Bi_8x16
+    BMbInfo { shape: BShape::P16x8,  dir: [(true,true),(true,false)] },    // 16 B_Bi_L0_16x8
+    BMbInfo { shape: BShape::P8x16,  dir: [(true,true),(true,false)] },    // 17 B_Bi_L0_8x16
+    BMbInfo { shape: BShape::P16x8,  dir: [(true,true),(false,true)] },    // 18 B_Bi_L1_16x8
+    BMbInfo { shape: BShape::P8x16,  dir: [(true,true),(false,true)] },    // 19 B_Bi_L1_8x16
+    BMbInfo { shape: BShape::P16x8,  dir: [(true,true),(true,true)] },     // 20 B_Bi_Bi_16x8
+    BMbInfo { shape: BShape::P8x16,  dir: [(true,true),(true,true)] },     // 21 B_Bi_Bi_8x16
+    BMbInfo { shape: BShape::P8x8,   dir: [(false,false),(false,false)] }, // 22 B_8x8
+];
+
+/// One B sub_mb_type entry (`g_ksInterBSubMbTypeInfo`).
+struct BSubInfo {
+    direct: bool,
+    sub: SubMbType,
+    dir: (bool, bool),
+    part_count: usize,
+    part_w: usize,
+}
+
+#[rustfmt::skip]
+const B_SUB_INFO: [BSubInfo; 13] = [
+    BSubInfo { direct: true,  sub: SubMbType::P8x8, dir: (false,false), part_count: 1, part_w: 2 }, // 0 B_Direct_8x8
+    BSubInfo { direct: false, sub: SubMbType::P8x8, dir: (true,false),  part_count: 1, part_w: 2 }, // 1 B_L0_8x8
+    BSubInfo { direct: false, sub: SubMbType::P8x8, dir: (false,true),  part_count: 1, part_w: 2 }, // 2 B_L1_8x8
+    BSubInfo { direct: false, sub: SubMbType::P8x8, dir: (true,true),   part_count: 1, part_w: 2 }, // 3 B_Bi_8x8
+    BSubInfo { direct: false, sub: SubMbType::P8x4, dir: (true,false),  part_count: 2, part_w: 2 }, // 4 B_L0_8x4
+    BSubInfo { direct: false, sub: SubMbType::P4x8, dir: (true,false),  part_count: 2, part_w: 1 }, // 5 B_L0_4x8
+    BSubInfo { direct: false, sub: SubMbType::P8x4, dir: (false,true),  part_count: 2, part_w: 2 }, // 6 B_L1_8x4
+    BSubInfo { direct: false, sub: SubMbType::P4x8, dir: (false,true),  part_count: 2, part_w: 1 }, // 7 B_L1_4x8
+    BSubInfo { direct: false, sub: SubMbType::P8x4, dir: (true,true),   part_count: 2, part_w: 2 }, // 8 B_Bi_8x4
+    BSubInfo { direct: false, sub: SubMbType::P4x8, dir: (true,true),   part_count: 2, part_w: 1 }, // 9 B_Bi_4x8
+    BSubInfo { direct: false, sub: SubMbType::P4x4, dir: (true,false),  part_count: 4, part_w: 1 }, // 10 B_L0_4x4
+    BSubInfo { direct: false, sub: SubMbType::P4x4, dir: (false,true),  part_count: 4, part_w: 1 }, // 11 B_L1_4x4
+    BSubInfo { direct: false, sub: SubMbType::P4x4, dir: (true,true),   part_count: 4, part_w: 1 }, // 12 B_Bi_4x4
+];
+
+/// Reference data for one B slice, passed to the MB parse.
+pub struct BRefs<'a> {
+    /// Resolved reference-picture ids for `[list0, list1]` (deblock identity).
+    pub ref_pic_ids: [&'a [i32]; 2],
+    /// Active reference counts for `[list0, list1]`.
+    pub ref_count: [usize; 2],
+    /// `direct_spatial_mv_pred_flag`.
+    pub direct_spatial: bool,
+    /// Colocated picture (`list1[0]`) for direct prediction.
+    pub col: ColRef<'a>,
+}
+
+/// The 30-entry list-0 + list-1 neighbour MV / ref-index cache for B
+/// (`WelsFillCacheInter`, both lists).
+struct BInterCache {
+    mv: [[[i16; 2]; 30]; 2],
+    ref_idx: [[i8; 30]; 2],
+}
+
+impl BInterCache {
+    fn build(ctx: &DecoderContext, mb_xy: usize) -> Self {
+        let mb_width = ctx.mb_width;
+        let mb_x = mb_xy % mb_width;
+        let mb_y = mb_xy / mb_width;
+        let cur = ctx.slice_idc[mb_xy];
+        let avail = |xy: usize| ctx.slice_idc[xy] == cur;
+        let left = mb_x != 0 && avail(mb_xy - 1);
+        let top = mb_y != 0 && avail(mb_xy - mb_width);
+        let left_top = mb_x != 0 && mb_y != 0 && avail(mb_xy - mb_width - 1);
+        let right_top = mb_x != mb_width - 1 && mb_y != 0 && avail(mb_xy - mb_width + 1);
+        let left_xy = mb_xy.wrapping_sub(1);
+        let top_xy = mb_xy.wrapping_sub(mb_width);
+        let left_top_xy = mb_xy.wrapping_sub(mb_width + 1);
+        let right_top_xy = (mb_xy + 1).wrapping_sub(mb_width);
+
+        let mut mv = [[[0i16; 2]; 30]; 2];
+        let mut ref_idx = [[REF_NOT_AVAIL; 30]; 2];
+
+        for list in 0..2 {
+            let mv_of = |xy: usize, b: usize| -> [i16; 2] {
+                if list == 0 {
+                    [ctx.mv[(xy * 16 + b) * 2], ctx.mv[(xy * 16 + b) * 2 + 1]]
+                } else {
+                    [ctx.mv_l1[(xy * 16 + b) * 2], ctx.mv_l1[(xy * 16 + b) * 2 + 1]]
+                }
+            };
+            let ref_of = |xy: usize, b: usize| -> i8 {
+                if list == 0 { ctx.ref_idx[xy * 16 + b] } else { ctx.ref_idx_l1[xy * 16 + b] }
+            };
+            let m = &mut mv[list];
+            let r = &mut ref_idx[list];
+            // Left column.
+            if left && ctx.mb_type[left_xy].is_inter() {
+                for (k, &b) in [3usize, 7, 11, 15].iter().enumerate() {
+                    let c = [6, 12, 18, 24][k];
+                    m[c] = mv_of(left_xy, b);
+                    r[c] = ref_of(left_xy, b);
+                }
+            } else {
+                let v = if left { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+                for &c in &[6usize, 12, 18, 24] {
+                    r[c] = v;
+                }
+            }
+            // Left-top.
+            if left_top && ctx.mb_type[left_top_xy].is_inter() {
+                m[0] = mv_of(left_top_xy, 15);
+                r[0] = ref_of(left_top_xy, 15);
+            } else {
+                r[0] = if left_top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+            }
+            // Top row.
+            if top && ctx.mb_type[top_xy].is_inter() {
+                for (k, &b) in [12usize, 13, 14, 15].iter().enumerate() {
+                    m[1 + k] = mv_of(top_xy, b);
+                    r[1 + k] = ref_of(top_xy, b);
+                }
+            } else {
+                let v = if top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+                for slot in &mut r[1..=4] {
+                    *slot = v;
+                }
+            }
+            // Right-top.
+            if right_top && ctx.mb_type[right_top_xy].is_inter() {
+                m[5] = mv_of(right_top_xy, 12);
+                r[5] = ref_of(right_top_xy, 12);
+            } else {
+                r[5] = if right_top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+            }
+            for &c in &[9usize, 11, 17, 21, 23] {
+                r[c] = REF_NOT_AVAIL;
+                m[c] = [0, 0];
+            }
+        }
+        BInterCache { mv, ref_idx }
+    }
+
+    /// Store one block of motion for `list` into both `ctx` and the cache.
+    #[allow(clippy::too_many_arguments)]
+    fn store(
+        &mut self,
+        ctx: &mut DecoderContext,
+        mb_xy: usize,
+        list: usize,
+        scan4: usize,
+        cache_idx: usize,
+        w: usize,
+        h: usize,
+        mv: [i16; 2],
+        iref: i8,
+        ref_pic: i32,
+    ) {
+        for by in 0..h {
+            for bx in 0..w {
+                let raster = scan4 + by * 4 + bx;
+                let b = (mb_xy * 16 + raster) * 2;
+                if list == 0 {
+                    ctx.mv[b] = mv[0];
+                    ctx.mv[b + 1] = mv[1];
+                    ctx.ref_idx[mb_xy * 16 + raster] = iref;
+                    ctx.ref_pic_id[mb_xy * 16 + raster] = if iref >= 0 { ref_pic } else { -1 };
+                } else {
+                    ctx.mv_l1[b] = mv[0];
+                    ctx.mv_l1[b + 1] = mv[1];
+                    ctx.ref_idx_l1[mb_xy * 16 + raster] = iref;
+                    ctx.ref_pic_id_l1[mb_xy * 16 + raster] = if iref >= 0 { ref_pic } else { -1 };
+                }
+                let c = cache_idx + by * 6 + bx;
+                self.mv[list][c] = mv;
+                self.ref_idx[list][c] = iref;
+            }
+        }
+    }
+}
+
+/// Parse one B-slice macroblock (CAVLC). Handles `mb_skip_run`, the B inter
+/// partition kinds, direct/skip, intra MBs appearing in B slices, cbp and
+/// residuals.
+pub fn parse_b_mb_cavlc(
+    bs: &mut BitReader<'_>,
+    mb: MbCtx,
+    last_mb_qp: &mut i32,
+    skip_run: &mut i32,
+    bref: &BRefs,
+    coeffs: &mut [i16; 384],
+) -> Result<()> {
+    let MbCtx { ctx, mb_xy, pps } = mb;
+
+    if *skip_run == -1 {
+        *skip_run = bs.read_ue()? as i32;
+    }
+    let old = *skip_run;
+    *skip_run -= 1;
+    if old != 0 {
+        // B_Skip: direct prediction, cbp = 0.
+        ctx.mb_type[mb_xy] = MbType::BSkip;
+        apply_b_direct(ctx, mb_xy, bref, true);
+        let luma_qp = *last_mb_qp;
+        commit_inter_meta(MbCtx { ctx, mb_xy, pps }, MbType::BSkip, 0, luma_qp, &[0; 16], &[0; 8]);
+        return Ok(());
+    }
+
+    let ui_mb_type = bs.read_ue()?;
+    if ui_mb_type >= 23 {
+        // Intra MB inside a B slice (offset 23).
+        let v = ui_mb_type - 23;
+        if v > 25 {
+            return Err(DecodeError::InvalidSyntax("B intra mb_type"));
+        }
+        return parse_intra_mb_core(bs, ctx, mb_xy, pps, last_mb_qp, coeffs, v);
+    }
+
+    let info = &B_MB_INFO[ui_mb_type as usize];
+    let mb_type = match info.shape {
+        BShape::Direct => MbType::BDirect16x16,
+        BShape::P16x16 => MbType::B16x16,
+        BShape::P16x8 => MbType::B16x8,
+        BShape::P8x16 => MbType::B8x16,
+        BShape::P8x8 => MbType::B8x8,
+    };
+    ctx.mb_type[mb_xy] = mb_type;
+
+    if info.shape == BShape::Direct {
+        apply_b_direct(ctx, mb_xy, bref, true);
+    } else {
+        let mut cache = BInterCache::build(ctx, mb_xy);
+        parse_b_motion(bs, ctx, &mut cache, mb_xy, ui_mb_type, bref)?;
+    }
+
+    // coded_block_pattern (inter mapping).
+    let ui_cbp = bs.read_ue()?;
+    if ui_cbp > 47 {
+        return Err(DecodeError::InvalidSyntax("B inter cbp"));
+    }
+    let cbp = INTER_CBP_TABLE[ui_cbp as usize];
+    let cbp_l = cbp & 0x0f;
+    let cbp_c = cbp >> 4;
+
+    let luma_qp: i32;
+    let mut cur_nzc_luma = [0i8; 16];
+    let mut cur_nzc_chroma = [0i8; 8];
+    if cbp != 0 {
+        coeffs.iter_mut().for_each(|c| *c = 0);
+        let qp_delta = bs.read_se()?;
+        if !(-26..=25).contains(&qp_delta) {
+            return Err(DecodeError::InvalidSyntax("mb_qp_delta"));
+        }
+        luma_qp = (*last_mb_qp + qp_delta + 52) % 52;
+        *last_mb_qp = luma_qp;
+
+        let neigh = ctx.neighbors(mb_xy);
+        let left = NeighborSnap::from_ctx(ctx, neigh.left, neigh.left_xy);
+        let top = NeighborSnap::from_ctx(ctx, neigh.top, neigh.top_xy);
+        let chroma_qp = [
+            CHROMA_QP_TABLE[clip3(luma_qp + pps.chroma_qp_index_offset[0], 0, 51) as usize] as i32,
+            CHROMA_QP_TABLE[clip3(luma_qp + pps.chroma_qp_index_offset[1], 0, 51) as usize] as i32,
+        ];
+        parse_residuals(
+            bs,
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp },
+            Neighbours { left: &left, top: &top },
+            ResidualOut { cur_nzc_luma: &mut cur_nzc_luma, cur_nzc_chroma: &mut cur_nzc_chroma },
+            coeffs,
+        )?;
+    } else {
+        luma_qp = *last_mb_qp;
+    }
+
+    commit_inter_meta(
+        MbCtx { ctx, mb_xy, pps },
+        mb_type,
+        cbp,
+        luma_qp,
+        &cur_nzc_luma,
+        &cur_nzc_chroma,
+    );
+    Ok(())
+}
+
+/// Compute and store B direct prediction (spatial only; temporal direct is not
+/// used by the corpus B streams — see `bdirect.rs`). `whole_mb` true for
+/// skip / B_Direct_16x16.
+fn apply_b_direct(ctx: &mut DecoderContext, mb_xy: usize, bref: &BRefs, whole_mb: bool) {
+    let info: DirectInfo = b_direct_spatial(ctx, mb_xy, !whole_mb);
+    let ref_pic = [
+        if info.iref[0] >= 0 && (info.iref[0] as usize) < bref.ref_pic_ids[0].len() {
+            bref.ref_pic_ids[0][info.iref[0] as usize]
+        } else {
+            -1
+        },
+        if info.iref[1] >= 0 && (info.iref[1] as usize) < bref.ref_pic_ids[1].len() {
+            bref.ref_pic_ids[1][info.iref[1] as usize]
+        } else {
+            -1
+        },
+    ];
+    if info.mb16x16 {
+        fill_direct_16x16(ctx, mb_xy, &info, &bref.col, ref_pic);
+        // Direct resolves a skip/B_Direct_16x16 MB to one 16x16 partition.
+        if ctx.mb_type[mb_xy] == MbType::BDirect16x16 || ctx.mb_type[mb_xy] == MbType::BSkip {
+            // keep the type; recon treats it as 16x16.
+        }
+    } else {
+        // B_8x8 with all sub-partitions direct: fill each 8x8.
+        for i in 0..4 {
+            fill_direct_8x8(ctx, mb_xy, i, 1, 2, &info, &bref.col, ref_pic);
+            ctx.sub_mb_type[mb_xy * 4 + i] = SubMbType::P8x8;
+        }
+    }
+}
+
+/// Parse `ParseInterBInfo`: ref_idx + mvd for the non-direct B partition kinds.
+#[allow(clippy::needless_range_loop)]
+fn parse_b_motion(
+    bs: &mut BitReader<'_>,
+    ctx: &mut DecoderContext,
+    cache: &mut BInterCache,
+    mb_xy: usize,
+    ui_mb_type: u32,
+    bref: &BRefs,
+) -> Result<()> {
+    let info = &B_MB_INFO[ui_mb_type as usize];
+    let read_ref = |bs: &mut BitReader<'_>, list: usize| -> Result<i8> {
+        let n = bref.ref_count[list];
+        let v = bs.read_te(n as u32)?;
+        if v as usize >= n {
+            return Err(DecodeError::InvalidSyntax("B ref_idx"));
+        }
+        Ok(v as i8)
+    };
+
+    match info.shape {
+        BShape::P16x16 => {
+            let mut iref = [0i8; 2];
+            for list in 0..2 {
+                if dir_uses(info.dir[0], list) {
+                    iref[list] = read_ref(bs, list)?;
+                }
+            }
+            for list in 0..2 {
+                if dir_uses(info.dir[0], list) {
+                    let mvp = pred_mv(&cache.mv[list], &cache.ref_idx[list], 0, 4, iref[list]);
+                    let dx = bs.read_se()? as i16;
+                    let dy = bs.read_se()? as i16;
+                    let mv = [mvp[0] + dx, mvp[1] + dy];
+                    cache.store(ctx, mb_xy, list, 0, 0, 4, 4, mv, iref[list], bref.ref_pic_ids[list][iref[list] as usize]);
+                } else {
+                    cache.store(ctx, mb_xy, list, 0, 0, 4, 4, [0, 0], REF_NOT_IN_LIST, -1);
+                }
+            }
+        }
+        BShape::P16x8 | BShape::P8x16 => {
+            let is16x8 = info.shape == BShape::P16x8;
+            let mut iref = [[REF_NOT_IN_LIST; 2]; 2];
+            for list in 0..2 {
+                for p in 0..2 {
+                    if dir_uses(info.dir[p], list) {
+                        iref[p][list] = read_ref(bs, list)?;
+                    }
+                }
+            }
+            for list in 0..2 {
+                for p in 0..2 {
+                    let part_idx = if is16x8 { p << 3 } else { p << 2 };
+                    let scan4 = SCAN4[part_idx];
+                    let cache_idx = CACHE30_SCAN_IDX[part_idx];
+                    if dir_uses(info.dir[p], list) {
+                        let r = iref[p][list];
+                        let mvp = if is16x8 {
+                            pred_inter16x8(&cache.mv[list], &cache.ref_idx[list], part_idx, r)
+                        } else {
+                            pred_inter8x16(&cache.mv[list], &cache.ref_idx[list], part_idx, r)
+                        };
+                        let dx = bs.read_se()? as i16;
+                        let dy = bs.read_se()? as i16;
+                        let mv = [mvp[0] + dx, mvp[1] + dy];
+                        cache.store(ctx, mb_xy, list, scan4, cache_idx, 2, 2, mv, r, bref.ref_pic_ids[list][r as usize]);
+                    } else {
+                        cache.store(ctx, mb_xy, list, scan4, cache_idx, 2, 2, [0, 0], REF_NOT_IN_LIST, -1);
+                    }
+                }
+            }
+        }
+        BShape::P8x8 => {
+            parse_b_8x8(bs, ctx, cache, mb_xy, bref)?;
+        }
+        BShape::Direct => unreachable!(),
+    }
+    Ok(())
+}
+
+#[inline]
+fn dir_uses(d: (bool, bool), list: usize) -> bool {
+    if list == 0 { d.0 } else { d.1 }
+}
+
+/// Parse the four 8x8 sub-partitions of a B_8x8 macroblock.
+#[allow(clippy::needless_range_loop)]
+fn parse_b_8x8(
+    bs: &mut BitReader<'_>,
+    ctx: &mut DecoderContext,
+    cache: &mut BInterCache,
+    mb_xy: usize,
+    bref: &BRefs,
+) -> Result<()> {
+    // sub_mb_type for each 8x8.
+    let mut subs = [0usize; 4];
+    for s in subs.iter_mut() {
+        let st = bs.read_ue()?;
+        if st >= 13 {
+            return Err(DecodeError::InvalidSyntax("B sub_mb_type"));
+        }
+        *s = st as usize;
+    }
+
+    // Direct prediction (computed once, shared by all direct sub-partitions).
+    let any_direct = subs.iter().any(|&s| B_SUB_INFO[s].direct);
+    let direct = if any_direct { Some(b_direct_spatial(ctx, mb_xy, true)) } else { None };
+    let direct_refpic = direct.as_ref().map(|d| {
+        [
+            if d.iref[0] >= 0 && (d.iref[0] as usize) < bref.ref_pic_ids[0].len() { bref.ref_pic_ids[0][d.iref[0] as usize] } else { -1 },
+            if d.iref[1] >= 0 && (d.iref[1] as usize) < bref.ref_pic_ids[1].len() { bref.ref_pic_ids[1][d.iref[1] as usize] } else { -1 },
+        ]
+    });
+
+    // Fill direct 8x8 sub-partitions first.
+    for (i, &s) in subs.iter().enumerate() {
+        let sinfo = &B_SUB_INFO[s];
+        ctx.sub_mb_type[mb_xy * 4 + i] = sinfo.sub;
+        if sinfo.direct {
+            let d = direct.as_ref().unwrap();
+            fill_direct_8x8(ctx, mb_xy, i, 1, 2, d, &bref.col, direct_refpic.unwrap());
+            // sync the cache for this 8x8's blocks.
+            sync_cache_8x8(cache, ctx, mb_xy, i);
+        }
+    }
+
+    // ref_idx for non-direct sub-partitions, per list.
+    let mut iref = [[REF_NOT_IN_LIST; 4]; 2];
+    for (list, irefs) in iref.iter_mut().enumerate() {
+        for (i, &s) in subs.iter().enumerate() {
+            let sinfo = &B_SUB_INFO[s];
+            if sinfo.direct {
+                if let Some(d) = &direct {
+                    irefs[i] = d.iref[list];
+                    set_8x8_ref(ctx, cache, mb_xy, i, list, d.iref[list], direct_refpic.unwrap()[list]);
+                }
+            } else if dir_uses(sinfo.dir, list) {
+                let n = bref.ref_count[list];
+                let v = bs.read_te(n as u32)?;
+                if v as usize >= n {
+                    return Err(DecodeError::InvalidSyntax("B 8x8 ref_idx"));
+                }
+                irefs[i] = v as i8;
+                set_8x8_ref(ctx, cache, mb_xy, i, list, v as i8, bref.ref_pic_ids[list][v as usize]);
+            } else {
+                set_8x8_ref(ctx, cache, mb_xy, i, list, REF_NOT_IN_LIST, -1);
+            }
+        }
+    }
+
+    // mvd for non-direct sub-partitions.
+    for list in 0..2 {
+        for (i, &s) in subs.iter().enumerate() {
+            let sinfo = &B_SUB_INFO[s];
+            if sinfo.direct {
+                continue;
+            }
+            let r = iref[list][i];
+            let uses = dir_uses(sinfo.dir, list);
+            for j in 0..sinfo.part_count {
+                let part_idx = (i << 2) + j * sinfo.part_w;
+                let scan4 = SCAN4[part_idx];
+                let cache_idx = CACHE30_SCAN_IDX[part_idx];
+                let (w, h) = match sinfo.sub {
+                    SubMbType::P8x8 => (2, 2),
+                    SubMbType::P8x4 => (2, 1),
+                    SubMbType::P4x8 => (1, 2),
+                    SubMbType::P4x4 => (1, 1),
+                };
+                if uses {
+                    let mvp = pred_mv(&cache.mv[list], &cache.ref_idx[list], part_idx, sinfo.part_w, r);
+                    let dx = bs.read_se()? as i16;
+                    let dy = bs.read_se()? as i16;
+                    let mv = [mvp[0] + dx, mvp[1] + dy];
+                    cache.store(ctx, mb_xy, list, scan4, cache_idx, w, h, mv, r, if r >= 0 { bref.ref_pic_ids[list][r as usize] } else { -1 });
+                } else {
+                    cache.store(ctx, mb_xy, list, scan4, cache_idx, w, h, [0, 0], REF_NOT_IN_LIST, -1);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Set the reference index for a whole 8x8 (4 blocks) in both ctx and cache.
+fn set_8x8_ref(
+    ctx: &mut DecoderContext,
+    cache: &mut BInterCache,
+    mb_xy: usize,
+    idx8: usize,
+    list: usize,
+    iref: i8,
+    ref_pic: i32,
+) {
+    let base_part = idx8 << 2;
+    let cache8 = CACHE30_SCAN_IDX[base_part];
+    for &c in &[cache8, cache8 + 1, cache8 + 6, cache8 + 7] {
+        cache.ref_idx[list][c] = iref;
+    }
+    let scan8 = SCAN4[base_part];
+    for &raster in &[scan8, scan8 + 1, scan8 + 4, scan8 + 5] {
+        if list == 0 {
+            ctx.ref_idx[mb_xy * 16 + raster] = iref;
+            ctx.ref_pic_id[mb_xy * 16 + raster] = if iref >= 0 { ref_pic } else { -1 };
+        } else {
+            ctx.ref_idx_l1[mb_xy * 16 + raster] = iref;
+            ctx.ref_pic_id_l1[mb_xy * 16 + raster] = if iref >= 0 { ref_pic } else { -1 };
+        }
+    }
+}
+
+/// Sync the neighbour cache for one 8x8's four 4x4 blocks from `ctx` (after a
+/// direct fill, so later partitions' PredMv reads the correct motion).
+fn sync_cache_8x8(cache: &mut BInterCache, ctx: &DecoderContext, mb_xy: usize, idx8: usize) {
+    let base_part = idx8 << 2;
+    for p in 0..4 {
+        let part_idx = base_part + p;
+        let scan4 = SCAN4[part_idx];
+        let c = CACHE30_SCAN_IDX[part_idx];
+        for list in 0..2 {
+            if list == 0 {
+                cache.mv[0][c] = [ctx.mv[(mb_xy * 16 + scan4) * 2], ctx.mv[(mb_xy * 16 + scan4) * 2 + 1]];
+                cache.ref_idx[0][c] = ctx.ref_idx[mb_xy * 16 + scan4];
+            } else {
+                cache.mv[1][c] = [ctx.mv_l1[(mb_xy * 16 + scan4) * 2], ctx.mv_l1[(mb_xy * 16 + scan4) * 2 + 1]];
+                cache.ref_idx[1][c] = ctx.ref_idx_l1[mb_xy * 16 + scan4];
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

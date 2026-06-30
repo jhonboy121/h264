@@ -65,6 +65,47 @@ fn base_mc(pic: &mut Picture, ref_pic: &Picture, mb_x: usize, mb_y: usize, pos: 
     mc_chroma(&mut pic.v[dst_c..], cs, &ref_pic.v, src_c, cs, cmv, cdim);
 }
 
+/// Motion-compensate one `dim` luma block (+ chroma) from `ref_pic` at
+/// MB-relative offset `(dx, dy)` into the destination buffers (`dst_*`), which
+/// may be the current picture or a temporary bi-prediction scratch buffer.
+/// Mirrors `BaseMC` (the MV clip + source addressing are identical to
+/// [`base_mc`]).
+#[allow(clippy::too_many_arguments)]
+fn mc_to(
+    ref_pic: &Picture,
+    mb_x: usize,
+    mb_y: usize,
+    dx: usize,
+    dy: usize,
+    mv: [i16; 2],
+    dim: Dim,
+    dst_y: &mut [u8],
+    dys: usize,
+    dst_u: &mut [u8],
+    dst_v: &mut [u8],
+    dcs: usize,
+) {
+    let (w, h) = (dim.w, dim.h);
+    let pic_w = ref_pic.width as i32;
+    let pic_h = ref_pic.height as i32;
+    let abs_x = ((mb_x * 16 + dx) as i32) << 2;
+    let abs_y = ((mb_y * 16 + dy) as i32) << 2;
+    let pad = PADDING as i32;
+    let full_mvx = (abs_x + mv[0] as i32).clamp((-pad + 2) << 2, (pic_w + pad - 19) << 2);
+    let full_mvy = (abs_y + mv[1] as i32).clamp((-pad + 2) << 2, (pic_h + pad - 19) << 2);
+
+    let ls = ref_pic.luma_stride;
+    let src_l = (ref_pic.luma_origin() as i32 + (full_mvx >> 2) + (full_mvy >> 2) * ls as i32) as usize;
+    mc_luma(dst_y, dys, &ref_pic.y, src_l, ls, Mv { x: full_mvx as i16, y: full_mvy as i16 }, Dim { w, h });
+
+    let cs = ref_pic.chroma_stride;
+    let src_c = (ref_pic.chroma_origin() as i32 + (full_mvx >> 3) + (full_mvy >> 3) * cs as i32) as usize;
+    let cmv = Mv { x: full_mvx as i16, y: full_mvy as i16 };
+    let cdim = Dim { w: w / 2, h: h / 2 };
+    mc_chroma(dst_u, dcs, &ref_pic.u, src_c, cs, cmv, cdim);
+    mc_chroma(dst_v, dcs, &ref_pic.v, src_c, cs, cmv, cdim);
+}
+
 #[inline]
 fn block16(coeffs: &[i16; 384], base: usize) -> [i16; 16] {
     let mut b = [0i16; 16];
@@ -146,11 +187,19 @@ pub fn recon_inter_mb(
         _ => unreachable!("recon_inter_mb called on an intra macroblock"),
     }
 
-    // ---- Residual add ----
+    add_inter_residual(ctx, mb_xy, coeffs);
+}
+
+/// Add the dequantised inter residual (luma 4x4 + chroma DC/AC) to the
+/// motion-compensated prediction. Shared by the P and B inter paths.
+pub(super) fn add_inter_residual(ctx: &mut DecoderContext, mb_xy: usize, coeffs: &[i16; 384]) {
     let cbp_c = ctx.cbp[mb_xy] >> 4;
     if ctx.cbp[mb_xy] == 0 {
-        return; // P_Skip or cbp == 0: MC only.
+        return; // skip / cbp == 0: MC only.
     }
+    let mb_width = ctx.mb_width;
+    let mb_x = mb_xy % mb_width;
+    let mb_y = mb_xy / mb_width;
     let mut nzc_luma = [0i8; 16];
     nzc_luma.copy_from_slice(ctx.nzc_luma_mb(mb_xy));
     let mut nzc_chroma = [0i8; 8];
@@ -180,6 +229,130 @@ pub fn recon_inter_mb(
                     idct4x4_add(&mut plane[off..], cstride, &block16(coeffs, base));
                 }
             }
+        }
+    }
+}
+
+/// One B macroblock MC partition (luma pixel rect, MB-relative).
+struct BPart {
+    dx: usize,
+    dy: usize,
+    w: usize,
+    h: usize,
+}
+
+/// Enumerate the motion-compensation partitions of a B macroblock from its
+/// type + sub_mb_type (geometry only; list usage is read per-partition).
+fn b_partitions(ctx: &DecoderContext, mb_xy: usize) -> alloc::vec::Vec<BPart> {
+    use alloc::vec::Vec;
+    let mut parts: Vec<BPart> = Vec::new();
+    match ctx.mb_type[mb_xy] {
+        MbType::BSkip | MbType::BDirect16x16 | MbType::B16x16 => {
+            parts.push(BPart { dx: 0, dy: 0, w: 16, h: 16 });
+        }
+        MbType::B16x8 => {
+            parts.push(BPart { dx: 0, dy: 0, w: 16, h: 8 });
+            parts.push(BPart { dx: 0, dy: 8, w: 16, h: 8 });
+        }
+        MbType::B8x16 => {
+            parts.push(BPart { dx: 0, dy: 0, w: 8, h: 16 });
+            parts.push(BPart { dx: 8, dy: 0, w: 8, h: 16 });
+        }
+        MbType::B8x8 => {
+            for i in 0..4 {
+                let blk8x = (i & 1) * 8;
+                let blk8y = (i >> 1) * 8;
+                match ctx.sub_mb_type[mb_xy * 4 + i] {
+                    SubMbType::P8x8 => parts.push(BPart { dx: blk8x, dy: blk8y, w: 8, h: 8 }),
+                    SubMbType::P8x4 => {
+                        parts.push(BPart { dx: blk8x, dy: blk8y, w: 8, h: 4 });
+                        parts.push(BPart { dx: blk8x, dy: blk8y + 4, w: 8, h: 4 });
+                    }
+                    SubMbType::P4x8 => {
+                        parts.push(BPart { dx: blk8x, dy: blk8y, w: 4, h: 8 });
+                        parts.push(BPart { dx: blk8x + 4, dy: blk8y, w: 4, h: 8 });
+                    }
+                    SubMbType::P4x4 => {
+                        for j in 0..4 {
+                            parts.push(BPart {
+                                dx: blk8x + (j & 1) * 4,
+                                dy: blk8y + (j >> 1) * 4,
+                                w: 4,
+                                h: 4,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        _ => unreachable!("recon_b_mb on a non-B macroblock"),
+    }
+    parts
+}
+
+/// Reconstruct a B-slice inter macroblock: bi/uni motion-compensation from the
+/// list-0 and list-1 reference pictures (default `(p0+p1+1)>>1` bi-averaging),
+/// then add the residual (`GetInterBPred` + `BiPrediction`).
+pub fn recon_b_mb(
+    ctx: &mut DecoderContext,
+    mb_xy: usize,
+    coeffs: &[i16; 384],
+    ref_pics: [&[&Picture]; 2],
+) {
+    let mb_width = ctx.mb_width;
+    let mb_x = mb_xy % mb_width;
+    let mb_y = mb_xy / mb_width;
+    let parts = b_partitions(ctx, mb_xy);
+
+    for p in parts {
+        let rep = (p.dy / 4) * 4 + (p.dx / 4);
+        let r0 = ctx.ref_idx[mb_xy * 16 + rep];
+        let r1 = ctx.ref_idx_l1[mb_xy * 16 + rep];
+        let mv0 = [ctx.mv[(mb_xy * 16 + rep) * 2], ctx.mv[(mb_xy * 16 + rep) * 2 + 1]];
+        let mv1 = [ctx.mv_l1[(mb_xy * 16 + rep) * 2], ctx.mv_l1[(mb_xy * 16 + rep) * 2 + 1]];
+        let l0 = r0 >= 0;
+        let l1 = r1 >= 0;
+        let dim = Dim { w: p.w, h: p.h };
+
+        let ls = ctx.picture.luma_stride;
+        let cs = ctx.picture.chroma_stride;
+        let y_off = ctx.picture.luma_mb_offset(mb_x, mb_y) + p.dy * ls + p.dx;
+        let c_off = ctx.picture.chroma_mb_offset(mb_x, mb_y) + (p.dy / 2) * cs + (p.dx / 2);
+
+        if l0 && l1 {
+            // List-0 prediction into the picture, list-1 into a scratch buffer.
+            let ref0 = ref_pics[0][r0 as usize];
+            let ref1 = ref_pics[1][r1 as usize];
+            {
+                let pic = &mut ctx.picture;
+                mc_to(ref0, mb_x, mb_y, p.dx, p.dy, mv0, dim, &mut pic.y[y_off..], ls, &mut pic.u[c_off..], &mut pic.v[c_off..], cs);
+            }
+            let mut ty = [0u8; 256];
+            let mut tu = [0u8; 64];
+            let mut tv = [0u8; 64];
+            mc_to(ref1, mb_x, mb_y, p.dx, p.dy, mv1, dim, &mut ty, 16, &mut tu, &mut tv, 8);
+            let pic = &mut ctx.picture;
+            avg_into(&mut pic.y, y_off, ls, &ty, 16, dim);
+            avg_into(&mut pic.u, c_off, cs, &tu, 8, Dim { w: p.w / 2, h: p.h / 2 });
+            avg_into(&mut pic.v, c_off, cs, &tv, 8, Dim { w: p.w / 2, h: p.h / 2 });
+        } else {
+            let (rp, mv) = if l0 { (ref_pics[0][r0 as usize], mv0) } else { (ref_pics[1][r1 as usize], mv1) };
+            let pic = &mut ctx.picture;
+            mc_to(rp, mb_x, mb_y, p.dx, p.dy, mv, dim, &mut pic.y[y_off..], ls, &mut pic.u[c_off..], &mut pic.v[c_off..], cs);
+        }
+    }
+
+    add_inter_residual(ctx, mb_xy, coeffs);
+}
+
+/// `(dst + src + 1) >> 1` averaging of a temp block (tight `src_stride`) into the
+/// destination plane in place (`BiPrediction`).
+fn avg_into(dst: &mut [u8], dst_off: usize, dst_stride: usize, src: &[u8], src_stride: usize, dim: Dim) {
+    for i in 0..dim.h {
+        for j in 0..dim.w {
+            let d = dst[dst_off + i * dst_stride + j] as i32;
+            let s = src[i * src_stride + j] as i32;
+            dst[dst_off + i * dst_stride + j] = ((d + s + 1) >> 1) as u8;
         }
     }
 }

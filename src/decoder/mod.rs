@@ -3,6 +3,7 @@
 //! See `docs/REFERENCE_MAP.md` for the C→Rust mapping. Built up across phases
 //! P2 (parsing) and P3 (reconstruction).
 
+pub mod bdirect;
 pub mod cabac;
 pub mod cabac_mb;
 pub mod cabac_tables;
