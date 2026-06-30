@@ -155,6 +155,21 @@ pub fn parse_intra_mb_cavlc(
     last_mb_qp: &mut i32,
     coeffs: &mut [i16; 384],
 ) -> Result<()> {
+    let ui_mb_type = bs.read_ue()?;
+    parse_intra_mb_core(bs, ctx, mb_xy, pps, last_mb_qp, coeffs, ui_mb_type)
+}
+
+/// Body of intra-MB parse with `ui_mb_type` already read (so the P-slice path
+/// can hand in the value after its `-5` adjustment).
+pub(super) fn parse_intra_mb_core(
+    bs: &mut BitReader<'_>,
+    ctx: &mut DecoderContext,
+    mb_xy: usize,
+    pps: &Pps,
+    last_mb_qp: &mut i32,
+    coeffs: &mut [i16; 384],
+    ui_mb_type: u32,
+) -> Result<()> {
     let neigh = ctx.neighbors(mb_xy);
     let left = NeighborSnap::from_ctx(ctx, neigh.left, neigh.left_xy);
     let top = NeighborSnap::from_ctx(ctx, neigh.top, neigh.top_xy);
@@ -170,7 +185,6 @@ pub fn parse_intra_mb_cavlc(
     let mut chroma_mode;
     let cbp: u8;
 
-    let ui_mb_type = bs.read_ue()?;
     if ui_mb_type > 25 {
         return Err(DecodeError::InvalidSyntax("intra mb_type"));
     }
@@ -263,6 +277,15 @@ pub fn parse_intra_mb_cavlc(
     ctx.nzc_chroma[mb_xy * 8..mb_xy * 8 + 8].copy_from_slice(&cur_nzc_chroma);
     ctx.i4_best_mode[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(&best_mode);
     ctx.i4_final_mode[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(&final_mode);
+
+    // Intra MBs carry no list-0 motion; mark blocks as not-in-list so that
+    // neighbouring inter MBs see `REF_NOT_IN_LIST` and zero MVs.
+    for b in 0..16 {
+        ctx.ref_idx[mb_xy * 16 + b] = -1;
+        ctx.ref_pic_id[mb_xy * 16 + b] = -1;
+        ctx.mv[(mb_xy * 16 + b) * 2] = 0;
+        ctx.mv[(mb_xy * 16 + b) * 2 + 1] = 0;
+    }
 
     Ok(())
 }
@@ -658,6 +681,459 @@ fn chroma_dc_idct(block: &mut [i16]) {
     block[x] = (e + b2) as i16;
     block[s] = (a2 - c2) as i16;
     block[s1] = (e - b2) as i16;
+}
+
+// ===================== P-slice (inter) macroblock parse =====================
+
+use super::context::SubMbType;
+use super::mv_pred::{
+    pred_inter16x8, pred_inter8x16, pred_mv, pred_p_skip_mv, REF_NOT_AVAIL, REF_NOT_IN_LIST, SCAN4,
+};
+
+// g_kuiInterCbpTable.
+#[rustfmt::skip]
+const INTER_CBP_TABLE: [u8; 48] = [
+    0, 16,  1,  2,  4,  8, 32,  3,  5, 10, 12, 15, 47,  7, 11, 13,
+    14,  6,  9, 31, 35, 37, 42, 44, 33, 34, 36, 40, 39, 43, 45, 46,
+    17, 18, 20, 24, 19, 21, 26, 28, 23, 27, 29, 30, 22, 25, 38, 41,
+];
+
+/// The 30-entry list-0 neighbour MV / ref-index cache (`WelsFillCacheInter`).
+struct InterCache {
+    mv: [[i16; 2]; 30],
+    ref_idx: [i8; 30],
+}
+
+impl InterCache {
+    /// Build the neighbour cache for `mb_xy` from the surrounding decoded MBs.
+    fn build(ctx: &DecoderContext, mb_xy: usize) -> Self {
+        let mb_width = ctx.mb_width;
+        let mb_x = mb_xy % mb_width;
+        let mb_y = mb_xy / mb_width;
+        let cur = ctx.slice_idc[mb_xy];
+
+        let avail = |cond: bool, xy: usize| -> bool { cond && ctx.slice_idc[xy] == cur };
+        let left = mb_x != 0 && avail(true, mb_xy - 1);
+        let top = mb_y != 0 && avail(true, mb_xy - mb_width);
+        let left_top = mb_x != 0 && mb_y != 0 && avail(true, mb_xy.wrapping_sub(mb_width + 1));
+        let right_top =
+            mb_x != mb_width - 1 && mb_y != 0 && avail(true, mb_xy + 1 - mb_width);
+
+        let left_xy = mb_xy.wrapping_sub(1);
+        let top_xy = mb_xy.wrapping_sub(mb_width);
+        let left_top_xy = mb_xy.wrapping_sub(mb_width + 1);
+        let right_top_xy = mb_xy + 1 - mb_width;
+
+        let mut mv = [[0i16; 2]; 30];
+        let mut ref_idx = [REF_NOT_AVAIL; 30];
+
+        let mv_of = |xy: usize, b: usize| -> [i16; 2] {
+            let base = (xy * 16 + b) * 2;
+            [ctx.mv[base], ctx.mv[base + 1]]
+        };
+        let ref_of = |xy: usize, b: usize| -> i8 { ctx.ref_idx[xy * 16 + b] };
+
+        // Left column (cache 6,12,18,24 <- neighbour blocks 3,7,11,15).
+        if left && ctx.mb_type[left_xy].is_inter() {
+            for (k, &b) in [3usize, 7, 11, 15].iter().enumerate() {
+                let c = [6, 12, 18, 24][k];
+                mv[c] = mv_of(left_xy, b);
+                ref_idx[c] = ref_of(left_xy, b);
+            }
+        } else {
+            let r = if left { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+            for &c in &[6usize, 12, 18, 24] {
+                ref_idx[c] = r;
+            }
+        }
+        // Left-top (cache 0 <- block 15).
+        if left_top && ctx.mb_type[left_top_xy].is_inter() {
+            mv[0] = mv_of(left_top_xy, 15);
+            ref_idx[0] = ref_of(left_top_xy, 15);
+        } else {
+            ref_idx[0] = if left_top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+        }
+        // Top row (cache 1,2,3,4 <- blocks 12,13,14,15).
+        if top && ctx.mb_type[top_xy].is_inter() {
+            for (k, &b) in [12usize, 13, 14, 15].iter().enumerate() {
+                let c = 1 + k;
+                mv[c] = mv_of(top_xy, b);
+                ref_idx[c] = ref_of(top_xy, b);
+            }
+        } else {
+            let r = if top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+            for c in 1..=4 {
+                ref_idx[c] = r;
+            }
+        }
+        // Right-top (cache 5 <- block 12).
+        if right_top && ctx.mb_type[right_top_xy].is_inter() {
+            mv[5] = mv_of(right_top_xy, 12);
+            ref_idx[5] = ref_of(right_top_xy, 12);
+        } else {
+            ref_idx[5] = if right_top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+        }
+        // Interior right-edge cells: always unavailable / zero.
+        for &c in &[9usize, 11, 17, 21, 23] {
+            ref_idx[c] = REF_NOT_AVAIL;
+            mv[c] = [0, 0];
+        }
+
+        InterCache { mv, ref_idx }
+    }
+}
+
+/// Store one motion vector + reference index into both the current MB's per-4x4
+/// raster arrays (in `ctx`) and the neighbour cache, over a `w`x`h` block of
+/// 4x4 cells anchored at raster index `scan4` / cache index `cache`.
+#[allow(clippy::too_many_arguments)]
+fn store_block(
+    ctx: &mut DecoderContext,
+    cache: &mut InterCache,
+    mb_xy: usize,
+    scan4: usize,
+    cache_idx: usize,
+    mv: [i16; 2],
+    iref: i8,
+    ref_pic_id: i32,
+    w: usize,
+    h: usize,
+) {
+    for by in 0..h {
+        for bx in 0..w {
+            let raster = scan4 + by * 4 + bx;
+            let base = (mb_xy * 16 + raster) * 2;
+            ctx.mv[base] = mv[0];
+            ctx.mv[base + 1] = mv[1];
+            ctx.ref_idx[mb_xy * 16 + raster] = iref;
+            ctx.ref_pic_id[mb_xy * 16 + raster] = ref_pic_id;
+            let c = cache_idx + by * 6 + bx;
+            cache.mv[c] = mv;
+            cache.ref_idx[c] = iref;
+        }
+    }
+}
+
+/// Parse one P-slice macroblock (CAVLC). Handles `mb_skip_run`, the inter
+/// partition kinds, intra MBs appearing in P slices, cbp and residuals.
+///
+/// `skip_run` carries `pSlice->iMbSkipRun` across MBs (-1 == "read a fresh
+/// run"). `ref_pic_ids` maps slice-local list-0 ref indices to a stable
+/// reference-picture identity for the deblocker; its length is the active
+/// list-0 reference count.
+#[allow(clippy::too_many_arguments)]
+pub fn parse_p_mb_cavlc(
+    bs: &mut BitReader<'_>,
+    ctx: &mut DecoderContext,
+    mb_xy: usize,
+    pps: &Pps,
+    last_mb_qp: &mut i32,
+    skip_run: &mut i32,
+    ref_pic_ids: &[i32],
+    coeffs: &mut [i16; 384],
+) -> Result<()> {
+    let ref_count = ref_pic_ids.len();
+
+    if *skip_run == -1 {
+        *skip_run = bs.read_ue()? as i32;
+    }
+    let old = *skip_run;
+    *skip_run -= 1;
+    if old != 0 {
+        // P_Skip macroblock.
+        let mv = pred_p_skip_mv(ctx, mb_xy);
+        let ref_pic_id = if ref_count > 0 { ref_pic_ids[0] } else { -1 };
+        for raster in 0..16 {
+            let base = (mb_xy * 16 + raster) * 2;
+            ctx.mv[base] = mv[0];
+            ctx.mv[base + 1] = mv[1];
+            ctx.ref_idx[mb_xy * 16 + raster] = 0;
+            ctx.ref_pic_id[mb_xy * 16 + raster] = ref_pic_id;
+        }
+        let luma_qp = *last_mb_qp;
+        commit_inter_meta(ctx, mb_xy, MbType::PSkip, 0, luma_qp, pps, &[0; 16], &[0; 8]);
+        return Ok(());
+    }
+
+    let ui_mb_type = bs.read_ue()?;
+    if ui_mb_type < 5 {
+        parse_inter_mb(bs, ctx, mb_xy, pps, last_mb_qp, ui_mb_type, ref_pic_ids, coeffs)
+    } else {
+        // Intra MB inside a P slice: reuse the intra core with the -5 offset.
+        parse_intra_mb_core(bs, ctx, mb_xy, pps, last_mb_qp, coeffs, ui_mb_type - 5)
+    }
+}
+
+/// Commit per-MB inter metadata (type/cbp/qp/nzc) into `ctx`.
+fn commit_inter_meta(
+    ctx: &mut DecoderContext,
+    mb_xy: usize,
+    mb_type: MbType,
+    cbp: u8,
+    luma_qp: i32,
+    pps: &Pps,
+    nzc_luma: &[i8; 16],
+    nzc_chroma: &[i8; 8],
+) {
+    let chroma_qp = [
+        CHROMA_QP_TABLE[clip3(luma_qp + pps.chroma_qp_index_offset[0], 0, 51) as usize] as i8,
+        CHROMA_QP_TABLE[clip3(luma_qp + pps.chroma_qp_index_offset[1], 0, 51) as usize] as i8,
+    ];
+    ctx.mb_type[mb_xy] = mb_type;
+    ctx.cbp[mb_xy] = cbp;
+    ctx.luma_qp[mb_xy] = luma_qp as i8;
+    ctx.chroma_qp[mb_xy * 2] = chroma_qp[0];
+    ctx.chroma_qp[mb_xy * 2 + 1] = chroma_qp[1];
+    ctx.nzc_luma[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(nzc_luma);
+    ctx.nzc_chroma[mb_xy * 8..mb_xy * 8 + 8].copy_from_slice(nzc_chroma);
+}
+
+/// Parse a genuine inter macroblock (`ui_mb_type` 0..4): motion then residual.
+#[allow(clippy::too_many_arguments)]
+fn parse_inter_mb(
+    bs: &mut BitReader<'_>,
+    ctx: &mut DecoderContext,
+    mb_xy: usize,
+    pps: &Pps,
+    last_mb_qp: &mut i32,
+    ui_mb_type: u32,
+    ref_pic_ids: &[i32],
+    coeffs: &mut [i16; 384],
+) -> Result<()> {
+    let mb_type = match ui_mb_type {
+        0 => MbType::Inter16x16,
+        1 => MbType::Inter16x8,
+        2 => MbType::Inter8x16,
+        3 => MbType::Inter8x8,
+        _ => MbType::Inter8x8Ref0,
+    };
+    let ref_count = ref_pic_ids.len();
+    let mut cache = InterCache::build(ctx, mb_xy);
+
+    parse_inter_motion(bs, ctx, &mut cache, mb_xy, mb_type, ref_count, ref_pic_ids)?;
+
+    // coded_block_pattern (inter mapping).
+    let ui_cbp = bs.read_ue()?;
+    if ui_cbp > 47 {
+        return Err(DecodeError::InvalidSyntax("inter cbp"));
+    }
+    let cbp = INTER_CBP_TABLE[ui_cbp as usize];
+    let cbp_l = cbp & 0x0f;
+    let cbp_c = cbp >> 4;
+
+    // QP / residual.
+    let luma_qp: i32;
+    let mut cur_nzc_luma = [0i8; 16];
+    let mut cur_nzc_chroma = [0i8; 8];
+    if cbp != 0 {
+        coeffs.iter_mut().for_each(|c| *c = 0);
+        let qp_delta = bs.read_se()?;
+        if !(-26..=25).contains(&qp_delta) {
+            return Err(DecodeError::InvalidSyntax("mb_qp_delta"));
+        }
+        luma_qp = (*last_mb_qp + qp_delta + 52) % 52;
+        *last_mb_qp = luma_qp;
+
+        let neigh = ctx.neighbors(mb_xy);
+        let left = NeighborSnap::from_ctx(ctx, neigh.left, neigh.left_xy);
+        let top = NeighborSnap::from_ctx(ctx, neigh.top, neigh.top_xy);
+        let chroma_qp = [
+            CHROMA_QP_TABLE[clip3(luma_qp + pps.chroma_qp_index_offset[0], 0, 51) as usize] as i32,
+            CHROMA_QP_TABLE[clip3(luma_qp + pps.chroma_qp_index_offset[1], 0, 51) as usize] as i32,
+        ];
+        parse_residuals(
+            bs, mb_type, cbp_l, cbp_c, luma_qp, &chroma_qp, &left, &top, &mut cur_nzc_luma,
+            &mut cur_nzc_chroma, coeffs,
+        )?;
+    } else {
+        luma_qp = *last_mb_qp;
+    }
+
+    commit_inter_meta(ctx, mb_xy, mb_type, cbp, luma_qp, pps, &cur_nzc_luma, &cur_nzc_chroma);
+    Ok(())
+}
+
+/// Parse `ref_idx_l0` (te) + `mvd_l0` (se×2) for each partition, reconstruct the
+/// MV via the predictor, and store into `ctx` + the neighbour cache.
+/// (`ParseInterInfo`).
+fn parse_inter_motion(
+    bs: &mut BitReader<'_>,
+    ctx: &mut DecoderContext,
+    cache: &mut InterCache,
+    mb_xy: usize,
+    mb_type: MbType,
+    ref_count: usize,
+    ref_pic_ids: &[i32],
+) -> Result<()> {
+    let read_ref = |bs: &mut BitReader<'_>| -> Result<i8> {
+        let v = bs.read_te(ref_count as u32)?;
+        if v as usize >= ref_count {
+            return Err(DecodeError::InvalidSyntax("ref_idx_l0"));
+        }
+        Ok(v as i8)
+    };
+    let read_mvd = |bs: &mut BitReader<'_>| -> Result<[i16; 2]> {
+        let x = bs.read_se()? as i16;
+        let y = bs.read_se()? as i16;
+        Ok([x, y])
+    };
+
+    match mb_type {
+        MbType::Inter16x16 => {
+            let iref = read_ref(bs)?;
+            let mvp = pred_mv(&cache.mv, &cache.ref_idx, 0, 4, iref);
+            let mvd = read_mvd(bs)?;
+            let mv = [mvp[0] + mvd[0], mvp[1] + mvd[1]];
+            store_block(ctx, cache, mb_xy, 0, 0, mv, iref, ref_pic_ids[iref as usize], 4, 4);
+        }
+        MbType::Inter16x8 => {
+            let r = [read_ref(bs)?, read_ref(bs)?];
+            for i in 0..2 {
+                let part_idx = i << 3;
+                let mvp = pred_inter16x8(&cache.mv, &cache.ref_idx, part_idx, r[i]);
+                let mvd = read_mvd(bs)?;
+                let mv = [mvp[0] + mvd[0], mvp[1] + mvd[1]];
+                update_p16x8(ctx, cache, mb_xy, part_idx, mv, r[i], ref_pic_ids[r[i] as usize]);
+            }
+        }
+        MbType::Inter8x16 => {
+            let r = [read_ref(bs)?, read_ref(bs)?];
+            for i in 0..2 {
+                let part_idx = i << 2;
+                let mvp = pred_inter8x16(&cache.mv, &cache.ref_idx, part_idx, r[i]);
+                let mvd = read_mvd(bs)?;
+                let mv = [mvp[0] + mvd[0], mvp[1] + mvd[1]];
+                update_p8x16(ctx, cache, mb_xy, part_idx, mv, r[i], ref_pic_ids[r[i] as usize]);
+            }
+        }
+        MbType::Inter8x8 | MbType::Inter8x8Ref0 => {
+            let ref0 = mb_type == MbType::Inter8x8Ref0;
+            let eff_ref_count = if ref0 { 1 } else { ref_count };
+            let mut subs = [SubMbType::P8x8; 4];
+            for s in subs.iter_mut() {
+                let st = bs.read_ue()?;
+                if st >= 4 {
+                    return Err(DecodeError::InvalidSyntax("sub_mb_type"));
+                }
+                *s = match st {
+                    0 => SubMbType::P8x8,
+                    1 => SubMbType::P8x4,
+                    2 => SubMbType::P4x8,
+                    _ => SubMbType::P4x4,
+                };
+            }
+            ctx.sub_mb_type[mb_xy * 4..mb_xy * 4 + 4].copy_from_slice(&subs);
+
+            // ref_idx for each 8x8.
+            let mut iref = [0i8; 4];
+            if !ref0 {
+                for r in iref.iter_mut() {
+                    let v = bs.read_te(eff_ref_count as u32)?;
+                    if v as usize >= eff_ref_count {
+                        return Err(DecodeError::InvalidSyntax("ref_idx_l0 8x8"));
+                    }
+                    *r = v as i8;
+                }
+            }
+
+            for i in 0..4 {
+                let i_idx = i << 2; // block-scan index of the 8x8's top-left
+                let scan4_8 = SCAN4[i_idx];
+                let cache8 = CACHE30_SCAN_IDX[i_idx];
+                let ref_pic = ref_pic_ids[iref[i] as usize];
+                // Reference index fills the whole 8x8 (cache + ctx) up front.
+                cache.ref_idx[cache8] = iref[i];
+                cache.ref_idx[cache8 + 1] = iref[i];
+                cache.ref_idx[cache8 + 6] = iref[i];
+                cache.ref_idx[cache8 + 7] = iref[i];
+                for &raster in &[scan4_8, scan4_8 + 1, scan4_8 + 4, scan4_8 + 5] {
+                    ctx.ref_idx[mb_xy * 16 + raster] = iref[i];
+                    ctx.ref_pic_id[mb_xy * 16 + raster] = ref_pic;
+                }
+
+                let (part_count, part_w) = subs[i].part_info();
+                for j in 0..part_count {
+                    let part_idx = i_idx + j * part_w;
+                    let scan4 = SCAN4[part_idx];
+                    let cache_idx = CACHE30_SCAN_IDX[part_idx];
+                    let mvp = pred_mv(&cache.mv, &cache.ref_idx, part_idx, part_w, iref[i]);
+                    let x = bs.read_se()? as i16;
+                    let y = bs.read_se()? as i16;
+                    let mv = [mvp[0] + x, mvp[1] + y];
+                    let (w, h) = match subs[i] {
+                        SubMbType::P8x8 => (2, 2),
+                        SubMbType::P8x4 => (2, 1),
+                        SubMbType::P4x8 => (1, 2),
+                        SubMbType::P4x4 => (1, 1),
+                    };
+                    store_mv_only(ctx, cache, mb_xy, scan4, cache_idx, mv, w, h);
+                }
+            }
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+/// Store an MV (no ref) across a `w`x`h` 4x4 block (`ctx` + cache).
+fn store_mv_only(
+    ctx: &mut DecoderContext,
+    cache: &mut InterCache,
+    mb_xy: usize,
+    scan4: usize,
+    cache_idx: usize,
+    mv: [i16; 2],
+    w: usize,
+    h: usize,
+) {
+    for by in 0..h {
+        for bx in 0..w {
+            let raster = scan4 + by * 4 + bx;
+            let base = (mb_xy * 16 + raster) * 2;
+            ctx.mv[base] = mv[0];
+            ctx.mv[base + 1] = mv[1];
+            let c = cache_idx + by * 6 + bx;
+            cache.mv[c] = mv;
+        }
+    }
+}
+
+/// `UpdateP16x8MotionInfo` for partition `part_idx` (0 or 8).
+fn update_p16x8(
+    ctx: &mut DecoderContext,
+    cache: &mut InterCache,
+    mb_xy: usize,
+    part_idx: usize,
+    mv: [i16; 2],
+    iref: i8,
+    ref_pic_id: i32,
+) {
+    let mut p = part_idx;
+    for _ in 0..2 {
+        let scan4 = SCAN4[p];
+        let cache_idx = CACHE30_SCAN_IDX[p];
+        store_block(ctx, cache, mb_xy, scan4, cache_idx, mv, iref, ref_pic_id, 2, 2);
+        p += 4;
+    }
+}
+
+/// `UpdateP8x16MotionInfo` for partition `part_idx` (0 or 4).
+fn update_p8x16(
+    ctx: &mut DecoderContext,
+    cache: &mut InterCache,
+    mb_xy: usize,
+    part_idx: usize,
+    mv: [i16; 2],
+    iref: i8,
+    ref_pic_id: i32,
+) {
+    let mut p = part_idx;
+    for _ in 0..2 {
+        let scan4 = SCAN4[p];
+        let cache_idx = CACHE30_SCAN_IDX[p];
+        store_block(ctx, cache, mb_xy, scan4, cache_idx, mv, iref, ref_pic_id, 2, 2);
+        p += 8;
+    }
 }
 
 #[cfg(test)]
