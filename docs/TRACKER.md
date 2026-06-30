@@ -209,3 +209,23 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
 ## Notes / decisions log
 - (P0) Single crate + features chosen over workspace; no_std+alloc; see ARCHITECTURE.md.
 - Oracle build deferred; `brew install meson ninja nasm` when reaching P4.
+
+## P13 — High-profile 8×8 transform / I_8×8 + temporal-direct multi-ref
+- [x] `transform_size_8x8_flag` + I_8×8 intra (CAVLC & CABAC): per-8×8 luma mode
+      parse (prev/rem with neighbour median pred, 8×8 right-top rule), 8×8 luma
+      residual (CAVLC interleaved 4×4→64-coeff zig-zag8×8; CABAC 64-pos sig map),
+      flat 8×8 dequant, `idct8x8` recon, 8×8-transform deblock (skip internal
+      4-sample luma edges, OR the 8×8-block nzc for inter bS). I_8×8 IDR frame
+      bit-exact (CAVLC). 055828a.
+- [x] Inter 8×8 transform (P/B) + temporal-direct multi-ref + weighted prediction
+      (CAVLC): `MapColToList0` (retain colocated L0 ref id + resolved colocated
+      partition mode in DPB), 3-mode (16×16/8×8/4×4) partition selection, B_8×8
+      direct subs via temporal direct (cache ref_idx=-1 so explicit subs exclude
+      them from MV prediction), per-8×8 direct MC, implicit weighted bi-pred
+      (`weighted_bipred_idc==2`), explicit P weighted pred. 0246b3e.
+- CAVLC VID temporal_direct streams: IDR + P + most B frames bit-exact. A residual
+  cross-list deblock discrepancy on direct-skip 8×8-boundary edges (top/bottom 8×8
+  reference different pictures, bS=1, tc0 ±1 on p1/q1) leaves them MISMATCH — the
+  colocated mapping / reorder / MV were all verified against the OpenH264 source.
+- CABAC VID streams: I_8×8 intra parse in place; the B CABAC path (multi-ref
+  ref_idx + temporal direct) is not yet wired → ERROR/UNSUPPORTED.

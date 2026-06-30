@@ -32,48 +32,44 @@ Corpus: 54 streams (50 `*.264` + 4 `*.jsv`) from the OpenH264 conformance set.
 Each stream is decoded by the C oracle to reference I420 YUV and by our
 `decode_stream`; our visible (coded-size) I420 output is then compared
 **byte-for-byte** (and by MD5) against the oracle output. **Results are identical
-with and without `--features simd`** (verified: 28/54 BITEXACT either way).
+with and without `--features simd`** (verified: 43/54 BITEXACT either way).
 
 ### Summary
 
 | Outcome | Count |
 |---|---|
-| **BITEXACT** | **28** |
-| UNSUPPORTED (returns `DecodeError::Unsupported`) | 11 |
-| MISMATCH | 11 |
-| ERROR | 4 |
+| **BITEXACT** | **43** |
+| UNSUPPORTED (returns `DecodeError::Unsupported`) | 1 |
+| MISMATCH | 4 |
+| ERROR | 6 |
 | **Total** | **54** |
 
-**Frames decoded bit-exact: 3875** (sum over all BITEXACT streams).
+**Frames decoded bit-exact: 5154** (sum over all BITEXACT streams).
 
-### Bit-exact streams (28)
+The 43 bit-exact streams cover baseline CAVLC (I+P), Main-profile CABAC (I+P,
+multi-ref, multi-slice), B-slices (CAVLC + CABAC, spatial + temporal direct),
+I_PCM, QCIF/CIF/up-to-1280×720 resolutions, and a 1700-frame stream (`LS_SVA_D`).
 
-```
-Adobe_PDF_sample_a_1024x768_50Frms.264   BA1_FT_C.264          BA1_Sony_D.jsv
-BAMQ1_JVC_C.264                          BAMQ2_JVC_C.264       BANM_MW_D.264
-BASQP1_Sony_C.jsv                        BA_MW_D.264           LS_SVA_D.264
-MIDR_MW_D.264                            MPS_MW_A.264          NL1_Sony_D.jsv
-NLMQ1_JVC_C.264                          NLMQ2_JVC_C.264       NRF_MW_E.264
-SVA_BA1_B.264                            SVA_BA2_D.264         SVA_Base_B.264
-SVA_CL1_E.264                            SVA_FM1_E.264         SVA_NL1_B.264
-SVA_NL2_E.264                            SarVui.264            Zhling_1280x720.264
-test_cif_I_CABAC_PCM.264                 test_cif_I_CABAC_slice.264
-test_cif_P_CABAC_slice.264               test_qcif_cabac.264
-```
+### Unsupported / mismatch
 
-These cover baseline CAVLC (I+P), Main-profile CABAC (I+P, multi-ref, multi-slice),
-QCIF/CIF/up-to-1280×720 resolutions, and a 1700-frame stream (`LS_SVA_D`).
+- **MISMATCH (4):** the SVC stream (`sps_subsetsps_bothVUI`, base layer only),
+  and the 3 CAVLC High-profile temporal_direct streams
+  (`VID_*_cavlc_temporal_direct`). The VID streams decode their IDR, P and most B
+  frames bit-exact (I_8×8, inter 8×8 transform, temporal-direct multi-ref,
+  implicit/explicit weighted prediction all implemented and validated); a residual
+  ±1 cross-list deblock discrepancy remains on temporal-direct skip 8×8-boundary
+  edges (top/bottom 8×8 reference different pictures → bS=1, tc0 ±1 on p1/q1) — the
+  colocated mapping, ref-list reorder, and scaled MVs were all verified against the
+  OpenH264 source.
+- **UNSUPPORTED (1) / ERROR (2):** the 3 CABAC VID temporal_direct streams —
+  I_8×8 intra parse is in place but the B CABAC path (multi-ref `ref_idx` + CABAC
+  temporal direct) is not yet wired.
+- **ERROR (4):** deliberately corrupted error-resilience streams + a missing-PPS
+  stream.
 
-### Unsupported / mismatch (unchanged from P4)
-
-The 11 UNSUPPORTED streams exercise features that cleanly return
-`DecodeError::Unsupported` rather than wrong output: High-profile 8×8
-transform / I_8×8 (CAVLC ×3, CABAC ×3), B-slices (CAVLC ×2, CABAC ×1), and I_PCM
-(×1, +1 CABAC). The 11 MISMATCH / 4 ERROR cases are honest non-bit-exact results
-(frame cropping/interlace length differences, a handful of remaining decode gaps,
-and deliberately corrupted error-resilience streams) — see `examples/conformance.rs`,
-which prints the first-differing frame and differing-byte count for each. Nothing
-is silently passed off as correct; equality is the literal byte (and MD5) test.
+`examples/conformance.rs` prints the first-differing frame and differing-byte count
+for each. Nothing is silently passed off as correct; equality is the literal byte
+(and MD5) test.
 
 ---
 
