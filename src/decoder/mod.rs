@@ -17,6 +17,7 @@ pub mod mv_pred;
 pub mod nal;
 pub mod params;
 pub mod picture;
+pub mod recon_inter;
 pub mod recon_intra;
 pub mod slice_header;
 
