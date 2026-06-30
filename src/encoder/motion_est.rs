@@ -32,6 +32,70 @@ pub struct RefView<'a> {
     pub pic_h: i32,
 }
 
+// --- Self-contained MV prediction (decoder-independent so the encoder feature
+//     builds without the decoder). These must stay bit-identical to
+//     `decoder::mv_pred`; a cross-check test guards that when both are present.
+
+/// `REF_NOT_AVAIL` (-2): neighbour macroblock outside the picture.
+pub const REF_NOT_AVAIL: i8 = -2;
+/// `REF_NOT_IN_LIST` (-1): neighbour is intra (no list-0 reference).
+pub const REF_NOT_IN_LIST: i8 = -1;
+
+/// `g_kuiCache30ScanIdx`: block scan index → position in the 30-entry cache.
+pub const CACHE30_SCAN_IDX: [usize; 16] = [7, 8, 13, 14, 9, 10, 15, 16, 19, 20, 25, 26, 21, 22, 27, 28];
+
+/// `WelsMedian`: median of three.
+#[inline]
+pub fn median(x: i32, y: i32, z: i32) -> i32 {
+    let mn = x.min(y).min(z);
+    let mx = x.max(y).max(z);
+    (x + y + z) - (mn + mx)
+}
+
+/// `PredMv` (spec 8.4.1.3): predict the list-0 MV for a partition rooted at
+/// block-scan index `part_idx` of width `part_width` (4x4 units). Exact copy of
+/// `decoder::mv_pred::pred_mv`.
+pub fn pred_mv(mv: &[[i16; 2]; 30], ref_idx: &[i8; 30], part_idx: usize, part_width: usize, iref: i8) -> [i16; 2] {
+    let left_idx = CACHE30_SCAN_IDX[part_idx] - 1;
+    let top_idx = CACHE30_SCAN_IDX[part_idx] - 6;
+    let right_top_idx = top_idx + part_width;
+    let left_top_idx = top_idx - 1;
+
+    let left_ref = ref_idx[left_idx];
+    let top_ref = ref_idx[top_idx];
+    let right_top_ref = ref_idx[right_top_idx];
+    let left_top_ref = ref_idx[left_top_idx];
+
+    let amv = mv[left_idx];
+    let bmv = mv[top_idx];
+    let mut cmv = mv[right_top_idx];
+    let mut diagonal_ref = right_top_ref;
+    if diagonal_ref == REF_NOT_AVAIL {
+        diagonal_ref = left_top_ref;
+        cmv = mv[left_top_idx];
+    }
+
+    if top_ref == REF_NOT_AVAIL && diagonal_ref == REF_NOT_AVAIL && left_ref >= REF_NOT_IN_LIST {
+        return amv;
+    }
+
+    let match_ref = (iref == left_ref) as i32 + (iref == top_ref) as i32 + (iref == diagonal_ref) as i32;
+    if match_ref == 1 {
+        if iref == left_ref {
+            amv
+        } else if iref == top_ref {
+            bmv
+        } else {
+            cmv
+        }
+    } else {
+        [
+            median(amv[0] as i32, bmv[0] as i32, cmv[0] as i32) as i16,
+            median(amv[1] as i32, bmv[1] as i32, cmv[1] as i32) as i16,
+        ]
+    }
+}
+
 /// Bit length of `ue(code)` (Exp-Golomb).
 #[inline]
 fn ue_bits(code: u32) -> u32 {
@@ -294,6 +358,34 @@ mod tests {
         }
         crate::dsp::expand::expand_plane(&mut plane, stride, PAD as usize, pic_w, pic_h, origin);
         (plane, stride, origin)
+    }
+
+    // Guard: the encoder's self-contained MV predictor must stay bit-identical
+    // to the decoder's (the round-trip depends on it). Only runs when the
+    // decoder is also compiled in.
+    #[cfg(feature = "decoder")]
+    #[test]
+    fn pred_mv_matches_decoder() {
+        use crate::decoder::mv_pred as dec;
+        let mut s = 0x9E37_79B9u32;
+        let mut rng = || {
+            s = s.wrapping_mul(1664525).wrapping_add(1013904223);
+            s
+        };
+        for _ in 0..2000 {
+            let mut mv = [[0i16; 2]; 30];
+            let mut r = [0i8; 30];
+            for j in 0..30 {
+                mv[j] = [(rng() % 512) as i16 - 256, (rng() % 512) as i16 - 256];
+                r[j] = (rng() % 18) as i8 - 2;
+            }
+            let iref = (rng() % 18) as i8 - 2;
+            for &(idx, pw) in &[(0usize, 4usize), (8, 4), (0, 2), (4, 2), (5, 1)] {
+                assert_eq!(pred_mv(&mv, &r, idx, pw, iref), dec::pred_mv(&mv, &r, idx, pw, iref));
+            }
+            assert_eq!(median(1, 2, 3), dec::median(1, 2, 3));
+            assert_eq!((REF_NOT_AVAIL, REF_NOT_IN_LIST), (dec::REF_NOT_AVAIL, dec::REF_NOT_IN_LIST));
+        }
     }
 
     #[test]

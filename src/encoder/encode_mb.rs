@@ -23,7 +23,35 @@ use crate::dsp::transform::{
     quant_four4x4, scan4x4_ac, scan4x4_dcac,
 };
 
+use crate::dsp::mc::{mc_chroma, mc_luma};
+
 use super::cavlc_writer::write_residual_block;
+use super::motion_est::{me_lambda, median, pred_mv, search_mv, RefView, REF_NOT_AVAIL, REF_NOT_IN_LIST};
+
+// g_kuiInterCbpTable: maps the coded_block_pattern ue code -> cbp value (the
+// inverse direction the decoder reads). The encoder needs cbp -> code, derived
+// by inversion in [`inter_cbp_code`].
+#[rustfmt::skip]
+const INTER_CBP_TABLE: [u8; 48] = [
+    0, 16,  1,  2,  4,  8, 32,  3,  5, 10, 12, 15, 47,  7, 11, 13,
+    14,  6,  9, 31, 35, 37, 42, 44, 33, 34, 36, 40, 39, 43, 45, 46,
+    17, 18, 20, 24, 19, 21, 26, 28, 23, 27, 29, 30, 22, 25, 38, 41,
+];
+
+/// Inverse of [`INTER_CBP_TABLE`]: cbp value (0..=47) -> ue code.
+fn inter_cbp_code(cbp: u8) -> u32 {
+    INTER_CBP_TABLE.iter().position(|&v| v == cbp).unwrap() as u32
+}
+
+/// Inter quant rounding offset row: `g_kiQuantInterFF[qp]`. The encoder stores
+/// the intra table (`g_iQuantIntraFF = g_kiQuantInterFF + 6 rows`), so the inter
+/// offset for `qp` is the intra row `qp-6` (a smaller deadzone, as inter uses
+/// `f = 2^qbits/6` vs intra `2^qbits/3`). The rounding only affects which levels
+/// result — any levels round-trip — so the `qp<6` fallback is harmless.
+#[inline]
+fn inter_ff(qp: usize) -> &'static [i16; 8] {
+    &QUANT_INTRA_FF[qp.saturating_sub(6)]
+}
 
 // Block scan index -> raster (bx,by) within the MB (g_kuiMbCountScan4Idx order).
 const BLOCK_BX: [usize; 16] = [0, 1, 0, 1, 2, 3, 2, 3, 0, 1, 0, 1, 2, 3, 2, 3];
@@ -105,13 +133,17 @@ static QUANT_INTRA_FF: [[i16; 8]; 52] = [
     [213,347,213,347,347,533,347,533],[235,373,235,373,373,600,373,600],[277,427,277,427,427,667,427,667],[299,480,299,480,480,767,480,767],
 ];
 
-const BORDER: usize = 16;
+/// Reconstruction-plane border. Matches the decoder's `picture::PADDING` (32)
+/// so the inter motion-compensation clamp + border-extension read exactly the
+/// same samples the decoder will, guaranteeing bit-identical reconstruction.
+const BORDER: usize = 32;
 
 /// Per-frame encoder state: padded reconstruction + source planes plus the
 /// neighbour context (non-zero counts, I4x4 modes, MB types) needed to mirror
 /// the decoder's CAVLC nC prediction and intra-mode prediction.
 pub(crate) struct FrameEnc {
     pub mb_width: usize,
+    mb_height: usize,
     rec_y: Vec<u8>,
     rec_u: Vec<u8>,
     rec_v: Vec<u8>,
@@ -128,6 +160,13 @@ pub(crate) struct FrameEnc {
     nzc_chroma: Vec<i8>, // mb_count * 8
     best_mode: Vec<i8>,  // mb_count * 16 (raster) I4x4 best modes (-1 if not nxn)
     is_nxn: Vec<bool>,   // per MB
+    // --- Inter (P-slice) state ---
+    ref_y: Vec<u8>, // border-extended reference planes (empty for I frames)
+    ref_u: Vec<u8>,
+    ref_v: Vec<u8>,
+    mv: Vec<[i16; 2]>, // mb_count * 16 (raster), signalled list-0 MVs (qpel)
+    ref_idx: Vec<i8>,  // mb_count * 16 (raster); -1 == REF_NOT_IN_LIST (intra)
+    mb_inter: Vec<bool>, // per MB: true if coded as inter (incl. P_Skip)
 }
 
 /// Per-MB scratch holding the chosen encoding (levels to write + reconstruction
@@ -163,6 +202,7 @@ fn nc_average(na: i32, nb: i32) -> i32 {
 }
 
 impl FrameEnc {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mb_width: usize,
         mb_height: usize,
@@ -172,6 +212,9 @@ impl FrameEnc {
         src_v: Vec<u8>,
         src_ystride: usize,
         src_cstride: usize,
+        ref_y: Vec<u8>,
+        ref_u: Vec<u8>,
+        ref_v: Vec<u8>,
     ) -> Self {
         let ystride = mb_width * 16 + 2 * BORDER;
         let cstride = mb_width * 8 + 2 * BORDER;
@@ -180,6 +223,7 @@ impl FrameEnc {
         let mb_count = mb_width * mb_height;
         FrameEnc {
             mb_width,
+            mb_height,
             rec_y: vec![0u8; ylen],
             rec_u: vec![0u8; clen],
             rec_v: vec![0u8; clen],
@@ -195,7 +239,30 @@ impl FrameEnc {
             nzc_chroma: vec![0i8; mb_count * 8],
             best_mode: vec![-1i8; mb_count * 16],
             is_nxn: vec![false; mb_count],
+            ref_y,
+            ref_u,
+            ref_v,
+            mv: vec![[0i16; 2]; mb_count * 16],
+            ref_idx: vec![-1i8; mb_count * 16],
+            mb_inter: vec![false; mb_count],
         }
+    }
+
+    /// Border-extend the reconstructed planes (edge replication, matching the
+    /// decoder's `expand_picture`) and return them for use as the next frame's
+    /// reference. Consumes the frame encoder.
+    pub fn into_reference(mut self) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        use crate::dsp::expand::expand_plane;
+        let lw = self.mb_width * 16;
+        let lh = self.mb_height * 16;
+        let cw = self.mb_width * 8;
+        let ch = self.mb_height * 8;
+        let lo = BORDER * self.ystride + BORDER;
+        let co = BORDER * self.cstride + BORDER;
+        expand_plane(&mut self.rec_y, self.ystride, BORDER, lw, lh, lo);
+        expand_plane(&mut self.rec_u, self.cstride, BORDER, cw, ch, co);
+        expand_plane(&mut self.rec_v, self.cstride, BORDER, cw, ch, co);
+        (self.rec_y, self.rec_u, self.rec_v)
     }
 
     #[inline]
@@ -215,35 +282,47 @@ impl FrameEnc {
         (mb_y * 8) * self.src_cstride + mb_x * 8
     }
 
-    /// Encode one macroblock at (mb_x, mb_y): decide modes, transform/quant,
-    /// reconstruct in place, then write the MB syntax + residual to `bw`.
+    /// Encode one macroblock of an I (intra-only) frame: decide modes,
+    /// transform/quant, reconstruct in place, then write the MB syntax.
     pub fn encode_mb(&mut self, bw: &mut BitWriter, mb_x: usize, mb_y: usize) {
         let mb_xy = mb_y * self.mb_width + mb_x;
+        let left = mb_x > 0;
+        let top = mb_y > 0;
+
+        let mut enc = MbEnc::default();
+        self.intra_encode(mb_x, mb_y, &mut enc);
+        self.commit_intra_context(mb_xy, &enc);
+        self.write_mb_syntax(bw, mb_x, mb_y, left, top, &enc, 0);
+    }
+
+    /// Full intra encode of one MB (luma I16x16-vs-I4x4 decision + chroma),
+    /// reconstructing in place and filling `enc`. Returns the luma residual SATD
+    /// (used by the P-slice mode decision to weigh intra against inter).
+    fn intra_encode(&mut self, mb_x: usize, mb_y: usize, enc: &mut MbEnc) -> i32 {
         let left = mb_x > 0;
         let top = mb_y > 0;
         let left_top = left && top;
         let top_right = top && mb_x + 1 < self.mb_width;
 
-        let mut enc = MbEnc::default();
-
-        // ---- Luma: decide I16x16 vs I4x4 by residual SATD, then reconstruct. ----
-        let cost16 = self.decide_i16(mb_x, mb_y, left, top, left_top, &mut enc);
-        // Snapshot the I16 decision before I4x4 overwrites the rec region.
+        let cost16 = self.decide_i16(mb_x, mb_y, left, top, left_top, enc);
         let i16_base = enc.i16_base_mode;
-        let cost4 = self.encode_i4x4(mb_x, mb_y, left, top, left_top, top_right, &mut enc);
+        let cost4 = self.encode_i4x4(mb_x, mb_y, left, top, left_top, top_right, enc);
 
-        if cost4 < cost16 {
+        let luma_cost = if cost4 < cost16 {
             enc.is_i16 = false;
+            cost4
         } else {
-            // Re-run the I16x16 path to populate levels + reconstruct.
-            self.encode_i16x16(mb_x, mb_y, left, top, left_top, i16_base, &mut enc);
+            self.encode_i16x16(mb_x, mb_y, left, top, left_top, i16_base, enc);
             enc.is_i16 = true;
-        }
+            cost16
+        };
+        self.encode_chroma(mb_x, mb_y, left, top, left_top, enc);
+        luma_cost
+    }
 
-        // ---- Chroma (independent of the luma kind). ----
-        self.encode_chroma(mb_x, mb_y, left, top, left_top, &mut enc);
-
-        // ---- Commit neighbour context. ----
+    /// Commit an intra MB's neighbour context. Intra MBs carry no list-0 motion,
+    /// so their 4x4 blocks are marked `REF_NOT_IN_LIST` for any inter neighbour.
+    fn commit_intra_context(&mut self, mb_xy: usize, enc: &MbEnc) {
         self.is_nxn[mb_xy] = !enc.is_i16;
         self.nzc_luma[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(&enc.nzc_luma);
         self.nzc_chroma[mb_xy * 8..mb_xy * 8 + 8].copy_from_slice(&enc.nzc_chroma);
@@ -252,9 +331,296 @@ impl FrameEnc {
         } else {
             self.best_mode[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(&enc.i4_best);
         }
+        self.mb_inter[mb_xy] = false;
+        for b in 0..16 {
+            self.ref_idx[mb_xy * 16 + b] = -1;
+            self.mv[mb_xy * 16 + b] = [0, 0];
+        }
+    }
 
-        // ---- Write syntax. ----
-        self.write_mb_syntax(bw, mb_x, mb_y, left, top, &enc);
+    // ===================== Inter (P-slice) =====================
+
+    /// Encode one macroblock of a P slice: choose P_Skip / P_16x16 / intra by an
+    /// RD-ish cost, reconstruct in place, and write the syntax. `pending` carries
+    /// the running `mb_skip_run` (skipped MBs are emitted lazily before the next
+    /// coded MB).
+    pub fn encode_mb_p(&mut self, bw: &mut BitWriter, mb_x: usize, mb_y: usize, pending: &mut u32) {
+        let mb_xy = mb_y * self.mb_width + mb_x;
+        let left = mb_x > 0;
+        let top = mb_y > 0;
+
+        // ---- Inter candidate: predict the MV, search, score. ----
+        let (cmv, cref) = self.build_inter_cache(mb_x, mb_y);
+        let mvp = pred_mv(&cmv, &cref, 0, 4, 0);
+        let me = self.search_inter(mb_x, mb_y, mvp);
+        let skip_mv = self.pred_p_skip(mb_x, mb_y);
+
+        // ---- Intra candidate (reconstructs rec; overwritten if inter wins). ----
+        let mut intra_enc = MbEnc::default();
+        let intra_cost = self.intra_encode(mb_x, mb_y, &mut intra_enc);
+
+        // Bias toward inter when comparable (it codes fewer header bits and keeps
+        // the stream small); intra is only chosen when clearly cheaper.
+        let bias = me_lambda(self.qp) * 24;
+        if me.cost <= intra_cost + bias {
+            let mut enc = MbEnc::default();
+            self.reconstruct_inter(mb_x, mb_y, me.mv, &mut enc);
+            let cbp = (enc.cbp_c << 4) | enc.cbp_l;
+            if cbp == 0 && me.mv == skip_mv {
+                // P_Skip: pure MC, no residual, no syntax — extend the run.
+                *pending += 1;
+                self.commit_inter_context(mb_xy, skip_mv, 0, &[0; 16], &[0; 8]);
+                return;
+            }
+            bw.write_ue(*pending);
+            *pending = 0;
+            self.commit_inter_context(mb_xy, me.mv, 0, &enc.nzc_luma, &enc.nzc_chroma);
+            self.write_inter_mb_syntax(bw, mb_x, mb_y, left, top, me.mv, mvp, &enc);
+        } else {
+            bw.write_ue(*pending);
+            *pending = 0;
+            self.commit_intra_context(mb_xy, &intra_enc);
+            // Intra mb_type in a P slice carries the +5 offset.
+            self.write_mb_syntax(bw, mb_x, mb_y, left, top, &intra_enc, 5);
+        }
+    }
+
+    /// Build the 30-entry list-0 neighbour MV / ref-index cache for `(mb_x, mb_y)`
+    /// — the exact mirror of the decoder's `WelsFillCacheInter` (single slice, so
+    /// availability is purely geometric).
+    fn build_inter_cache(&self, mb_x: usize, mb_y: usize) -> ([[i16; 2]; 30], [i8; 30]) {
+        let mb_width = self.mb_width;
+        let mb_xy = mb_y * mb_width + mb_x;
+        let left = mb_x != 0;
+        let top = mb_y != 0;
+        let left_top = mb_x != 0 && mb_y != 0;
+        let right_top = mb_x != mb_width - 1 && mb_y != 0;
+
+        let left_xy = mb_xy.wrapping_sub(1);
+        let top_xy = mb_xy.wrapping_sub(mb_width);
+        let left_top_xy = mb_xy.wrapping_sub(mb_width + 1);
+        let right_top_xy = (mb_xy + 1).wrapping_sub(mb_width);
+
+        let mut mv = [[0i16; 2]; 30];
+        let mut ref_idx = [REF_NOT_AVAIL; 30];
+        let mv_of = |xy: usize, b: usize| self.mv[xy * 16 + b];
+        let ref_of = |xy: usize, b: usize| self.ref_idx[xy * 16 + b];
+
+        if left && self.mb_inter[left_xy] {
+            for (k, &b) in [3usize, 7, 11, 15].iter().enumerate() {
+                let c = [6usize, 12, 18, 24][k];
+                mv[c] = mv_of(left_xy, b);
+                ref_idx[c] = ref_of(left_xy, b);
+            }
+        } else {
+            let r = if left { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+            for &c in &[6usize, 12, 18, 24] {
+                ref_idx[c] = r;
+            }
+        }
+        if left_top && self.mb_inter[left_top_xy] {
+            mv[0] = mv_of(left_top_xy, 15);
+            ref_idx[0] = ref_of(left_top_xy, 15);
+        } else {
+            ref_idx[0] = if left_top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+        }
+        if top && self.mb_inter[top_xy] {
+            for (k, &b) in [12usize, 13, 14, 15].iter().enumerate() {
+                mv[1 + k] = mv_of(top_xy, b);
+                ref_idx[1 + k] = ref_of(top_xy, b);
+            }
+        } else {
+            let r = if top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+            ref_idx[1..=4].fill(r);
+        }
+        if right_top && self.mb_inter[right_top_xy] {
+            mv[5] = mv_of(right_top_xy, 12);
+            ref_idx[5] = ref_of(right_top_xy, 12);
+        } else {
+            ref_idx[5] = if right_top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+        }
+        for &c in &[9usize, 11, 17, 21, 23] {
+            ref_idx[c] = REF_NOT_AVAIL;
+            mv[c] = [0, 0];
+        }
+        (mv, ref_idx)
+    }
+
+    /// `PredPSkipMvFromNeighbor` (encoder mirror) — derive the P_Skip MV.
+    fn pred_p_skip(&self, mb_x: usize, mb_y: usize) -> [i16; 2] {
+        let mb_width = self.mb_width;
+        let mb_xy = mb_y * mb_width + mb_x;
+        let fetch = |avail: bool, xy: usize, b: usize| -> (i8, [i16; 2]) {
+            if avail && self.mb_inter[xy] {
+                (self.ref_idx[xy * 16 + b], self.mv[xy * 16 + b])
+            } else if avail {
+                (REF_NOT_IN_LIST, [0, 0])
+            } else {
+                (REF_NOT_AVAIL, [0, 0])
+            }
+        };
+        let left_a = mb_x != 0;
+        let top_a = mb_y != 0;
+        let lt_a = mb_x != 0 && mb_y != 0;
+        let rt_a = mb_x != mb_width - 1 && mb_y != 0;
+
+        let (lref, lmv) = fetch(left_a, mb_xy.wrapping_sub(1), 3);
+        if lref == REF_NOT_AVAIL || (lref == 0 && lmv == [0, 0]) {
+            return [0, 0];
+        }
+        let (tref, tmv) = fetch(top_a, mb_xy.wrapping_sub(mb_width), 12);
+        if tref == REF_NOT_AVAIL || (tref == 0 && tmv == [0, 0]) {
+            return [0, 0];
+        }
+        let (rtref, rtmv) = fetch(rt_a, (mb_xy + 1).wrapping_sub(mb_width), 12);
+        let (ltref, ltmv) = fetch(lt_a, mb_xy.wrapping_sub(mb_width + 1), 15);
+
+        let mut mvc = rtmv;
+        let mut diag = rtref;
+        if diag == REF_NOT_AVAIL {
+            diag = ltref;
+            mvc = ltmv;
+        }
+        if tref == REF_NOT_AVAIL && diag == REF_NOT_AVAIL && lref >= REF_NOT_IN_LIST {
+            return lmv;
+        }
+        let m = (lref == 0) as i32 + (tref == 0) as i32 + (diag == 0) as i32;
+        if m == 1 {
+            if lref == 0 {
+                lmv
+            } else if tref == 0 {
+                tmv
+            } else {
+                mvc
+            }
+        } else {
+            [
+                median(lmv[0] as i32, tmv[0] as i32, mvc[0] as i32) as i16,
+                median(lmv[1] as i32, tmv[1] as i32, mvc[1] as i32) as i16,
+            ]
+        }
+    }
+
+    /// Motion-search the 16x16 partition against the reference luma plane.
+    fn search_inter(&self, mb_x: usize, mb_y: usize, mvp: [i16; 2]) -> super::motion_est::MeResult {
+        let pic_w = (self.mb_width * 16) as i32;
+        let pic_h = (self.mb_height * 16) as i32;
+        let origin = BORDER * self.ystride + BORDER;
+        let refv = RefView { plane: &self.ref_y, stride: self.ystride, origin, pic_w, pic_h };
+        let px = (mb_x * 16) as i32;
+        let py = (mb_y * 16) as i32;
+        let soff = self.src_y_off(mb_x, mb_y);
+        search_mv(&refv, px, py, &self.src_y, soff, self.src_ystride, 16, 16, mvp, me_lambda(self.qp))
+    }
+
+    /// Motion-compensate a 16x16 luma + 8x8 chroma partition from the reference
+    /// into the rec planes, applying the decoder's `base_mc` clamp (so the
+    /// reconstruction is bit-identical regardless of the chosen MV).
+    fn mc_into_rec(&mut self, mb_x: usize, mb_y: usize, mv: [i16; 2]) {
+        let pad = BORDER as i32;
+        let pic_w = (self.mb_width * 16) as i32;
+        let pic_h = (self.mb_height * 16) as i32;
+        let ls = self.ystride;
+        let origin = BORDER * ls + BORDER;
+        let px = (mb_x * 16) as i32;
+        let py = (mb_y * 16) as i32;
+        let fx = ((px << 2) + mv[0] as i32).clamp((-pad + 2) << 2, (pic_w + pad - 19) << 2);
+        let fy = ((py << 2) + mv[1] as i32).clamp((-pad + 2) << 2, (pic_h + pad - 19) << 2);
+
+        let dst = origin + (py as usize) * ls + px as usize;
+        let src = (origin as i32 + (fx >> 2) + (fy >> 2) * ls as i32) as usize;
+        mc_luma(&mut self.rec_y[dst..], ls, &self.ref_y, src, ls, fx as i16, fy as i16, 16, 16);
+
+        let cs = self.cstride;
+        let corigin = BORDER * cs + BORDER;
+        let cdst = corigin + (mb_y * 8) * cs + mb_x * 8;
+        let csrc = (corigin as i32 + (fx >> 3) + (fy >> 3) * cs as i32) as usize;
+        mc_chroma(&mut self.rec_u[cdst..], cs, &self.ref_u, csrc, cs, fx as i16, fy as i16, 8, 8);
+        mc_chroma(&mut self.rec_v[cdst..], cs, &self.ref_v, csrc, cs, fx as i16, fy as i16, 8, 8);
+    }
+
+    /// Reconstruct an inter 16x16 MB: MC into rec, then forward-transform/quant
+    /// (inter deadzone) + reconstruct the luma + chroma residual in place. Fills
+    /// `enc` with the levels / nzc / cbp needed to write the syntax.
+    fn reconstruct_inter(&mut self, mb_x: usize, mb_y: usize, mv: [i16; 2], enc: &mut MbEnc) {
+        self.mc_into_rec(mb_x, mb_y, mv);
+
+        let off = self.y_off(mb_x, mb_y);
+        let soff = self.src_y_off(mb_x, mb_y);
+        let stride = self.ystride;
+        let qp = self.qp as usize;
+        let mf = &QUANT_MF[qp];
+        let ff = inter_ff(qp);
+        let deq = &G_KUI_DEQUANT_COEFF[qp];
+
+        let mut cbp_l = 0u8;
+        for i in 0..16 {
+            let raster = BLOCK_RASTER[i];
+            let boff = off + BLOCK_BY[i] * 4 * stride + BLOCK_BX[i] * 4;
+            let sboff = soff + BLOCK_BY[i] * 4 * self.src_ystride + BLOCK_BX[i] * 4;
+            let mut dct = [0i16; 16];
+            dct_t4(&mut dct, &self.src_y, sboff, self.src_ystride, &self.rec_y, boff, stride);
+            quant4x4(&mut dct, ff, mf);
+            let mut scanned = [0i16; 16];
+            scan4x4_dcac(&mut scanned, &dct);
+            let nnz = get_none_zero_count(&scanned);
+            enc.luma_levels[i] = scanned;
+            enc.nzc_luma[raster] = nnz as i8;
+            if nnz > 0 {
+                cbp_l |= 1 << (i >> 2);
+                let mut coeffs = [0i16; 16];
+                for s in 0..16 {
+                    let lvl = scanned[s] as i32;
+                    if lvl != 0 {
+                        let j = G_KUI_ZIGZAG_SCAN[s] as usize;
+                        coeffs[j] = (lvl * deq[j & 7] as i32) as i16;
+                    }
+                }
+                idct4x4_add(&mut self.rec_y[boff..], stride, &coeffs);
+            }
+        }
+        enc.cbp_l = cbp_l;
+        enc.is_i16 = false;
+        self.chroma_residual_recon(mb_x, mb_y, true, enc);
+    }
+
+    /// Commit an inter MB's neighbour context (single ref index, uniform MV over
+    /// the 16x16 partition).
+    fn commit_inter_context(&mut self, mb_xy: usize, mv: [i16; 2], iref: i8, nzc_luma: &[i8; 16], nzc_chroma: &[i8; 8]) {
+        self.is_nxn[mb_xy] = false;
+        self.best_mode[mb_xy * 16..mb_xy * 16 + 16].fill(-1);
+        self.nzc_luma[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(nzc_luma);
+        self.nzc_chroma[mb_xy * 8..mb_xy * 8 + 8].copy_from_slice(nzc_chroma);
+        self.mb_inter[mb_xy] = true;
+        for b in 0..16 {
+            self.mv[mb_xy * 16 + b] = mv;
+            self.ref_idx[mb_xy * 16 + b] = iref;
+        }
+    }
+
+    /// Write the syntax of a coded P_L0_16x16 macroblock (mb_type, mvd, cbp,
+    /// residual). `ref_idx_l0` is omitted: single reference -> te(range 1) = 0 bits.
+    fn write_inter_mb_syntax(
+        &self,
+        bw: &mut BitWriter,
+        mb_x: usize,
+        mb_y: usize,
+        left: bool,
+        top: bool,
+        mv: [i16; 2],
+        mvp: [i16; 2],
+        enc: &MbEnc,
+    ) {
+        let mb_xy = mb_y * self.mb_width + mb_x;
+        let cbp = (enc.cbp_c << 4) | enc.cbp_l;
+        bw.write_ue(0); // mb_type = P_L0_16x16
+        bw.write_se((mv[0] - mvp[0]) as i32);
+        bw.write_se((mv[1] - mvp[1]) as i32);
+        bw.write_ue(inter_cbp_code(cbp));
+        if cbp != 0 {
+            bw.write_se(0); // mb_qp_delta (constant QP)
+            self.write_residuals(bw, mb_xy, left, top, enc);
+        }
     }
 
     // ===================== I16x16 =====================
@@ -501,11 +867,24 @@ impl FrameEnc {
         }
         enc.chroma_mode_signaled = best_base;
         let actual = map_chroma_mode(best_base, left, top, left_top).unwrap();
+        // Leave the chosen prediction in the rec planes, then run the shared
+        // residual + reconstruction (intra deadzone).
+        chroma_pred(actual, &mut self.rec_u, coff, cstride);
+        chroma_pred(actual, &mut self.rec_v, coff, cstride);
+        self.chroma_residual_recon(mb_x, mb_y, false, enc);
+    }
 
-        let qp_l = self.qp;
-        let chroma_qp = CHROMA_QP_TABLE[qp_l.clamp(0, 51) as usize] as usize;
+    /// Forward-transform, quantise and reconstruct chroma assuming the chosen
+    /// prediction already sits in the rec planes (so it serves both the intra
+    /// predictors and inter MC). `inter` selects the inter deadzone offset.
+    fn chroma_residual_recon(&mut self, mb_x: usize, mb_y: usize, inter: bool, enc: &mut MbEnc) {
+        let coff = self.c_off(mb_x, mb_y);
+        let scoff = self.src_c_off(mb_x, mb_y);
+        let cstride = self.cstride;
+
+        let chroma_qp = CHROMA_QP_TABLE[self.qp.clamp(0, 51) as usize] as usize;
         let mf = &QUANT_MF[chroma_qp];
-        let ff = &QUANT_INTRA_FF[chroma_qp];
+        let ff: &[i16; 8] = if inter { inter_ff(chroma_qp) } else { &QUANT_INTRA_FF[chroma_qp] };
         let deq = &G_KUI_DEQUANT_COEFF[chroma_qp];
 
         let mut dc_present = false;
@@ -516,9 +895,8 @@ impl FrameEnc {
             } else {
                 (&self.src_v, self.src_cstride, &mut self.rec_v)
             };
-            chroma_pred(actual, rec, coff, cstride);
 
-            // Forward DCT of the four 4x4 chroma blocks.
+            // Forward DCT of the four 4x4 chroma blocks (prediction already in rec).
             let mut res = [0i16; 64];
             dct_four_t4(&mut res, src, scoff, srcs, rec, coff, cstride);
 
@@ -594,18 +972,18 @@ impl FrameEnc {
 
     // ===================== Syntax write =====================
 
-    fn write_mb_syntax(&self, bw: &mut BitWriter, mb_x: usize, mb_y: usize, left: bool, top: bool, enc: &MbEnc) {
+    fn write_mb_syntax(&self, bw: &mut BitWriter, mb_x: usize, mb_y: usize, left: bool, top: bool, enc: &MbEnc, mb_type_offset: u32) {
         let mb_xy = mb_y * self.mb_width + mb_x;
         let cbp = (enc.cbp_c << 4) | enc.cbp_l;
 
         if enc.is_i16 {
-            // mb_type = 1 + base_mode + 4 * cbp_class.
+            // mb_type = 1 + base_mode + 4 * cbp_class (+ offset for P-slice intra).
             let cbp_class = I16_CBP_TABLE.iter().position(|&v| v == cbp).unwrap() as u32;
             let mb_type = 1 + enc.i16_base_mode as u32 + 4 * cbp_class;
-            bw.write_ue(mb_type);
+            bw.write_ue(mb_type + mb_type_offset);
             bw.write_ue(enc.chroma_mode_signaled as u32);
         } else {
-            bw.write_ue(0); // I_NxN
+            bw.write_ue(mb_type_offset); // I_NxN (0, or 5 in a P slice)
             // 16 luma mode signals in scan order.
             self.write_i4_modes(bw, mb_xy, left, top, enc);
             bw.write_ue(enc.chroma_mode_signaled as u32);
