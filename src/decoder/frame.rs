@@ -80,6 +80,9 @@ pub fn decode_intra_frame(annexb: &[u8]) -> Result<Picture, DecodeError> {
     }
     let _ = pps; // resolved above for validation only
 
+    // In-loop deblocking pass over the fully reconstructed picture.
+    super::deblock::deblock_frame(&mut ctx);
+
     Ok(ctx.picture)
 }
 
@@ -131,6 +134,11 @@ fn decode_idr_slice(
     let mut mb_xy = sh.first_mb_in_slice as usize;
     while mb_xy < total_mb {
         ctx.slice_idc[mb_xy] = slice_index;
+        // Per-MB deblock parameters from this slice's header (read by the
+        // post-reconstruction deblocking pass).
+        ctx.deblock_idc[mb_xy] = sh.disable_deblocking_filter_idc as u8;
+        ctx.deblock_alpha_off[mb_xy] = sh.slice_alpha_c0_offset as i8;
+        ctx.deblock_beta_off[mb_xy] = sh.slice_beta_offset as i8;
         coeffs.iter_mut().for_each(|c| *c = 0);
         parse_intra_mb_cavlc(&mut bs, ctx, mb_xy, &pps, &mut last_mb_qp, &mut coeffs)?;
         recon_intra_mb(ctx, mb_xy, &coeffs);

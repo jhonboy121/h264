@@ -66,6 +66,17 @@ pub struct DecoderContext {
     /// Coded block pattern (`cbp_luma | cbp_chroma << 4`).
     pub cbp: Vec<u8>,
     pub luma_qp: Vec<i8>,
+    /// Per-MB chroma QP, 2 per MB (Cb then Cr), derived from luma QP via the
+    /// chroma QP mapping + `chroma_qp_index_offset`. Used by the deblocker.
+    pub chroma_qp: Vec<i8>,
+
+    /// Per-MB `disable_deblocking_filter_idc` from the owning slice header
+    /// (0 = filter all, 1 = off, 2 = off across slice boundaries).
+    pub deblock_idc: Vec<u8>,
+    /// Per-MB `slice_alpha_c0_offset` (already doubled, spec range -12..=12).
+    pub deblock_alpha_off: Vec<i8>,
+    /// Per-MB `slice_beta_offset`.
+    pub deblock_beta_off: Vec<i8>,
 
     /// Per-block `iBestMode` (the pre-adjustment intra4x4 mode used by the
     /// neighbour-mode predictor), 16 entries per MB in raster order.
@@ -103,6 +114,10 @@ impl DecoderContext {
             chroma_mode: vec![0; total_mb],
             cbp: vec![0; total_mb],
             luma_qp: vec![0; total_mb],
+            chroma_qp: vec![0; total_mb * 2],
+            deblock_idc: vec![0; total_mb],
+            deblock_alpha_off: vec![0; total_mb],
+            deblock_beta_off: vec![0; total_mb],
             i4_best_mode: vec![-1; total_mb * 16],
             i4_final_mode: vec![2; total_mb * 16],
             nzc_luma: vec![0; total_mb * 16],

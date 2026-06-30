@@ -257,6 +257,8 @@ pub fn parse_intra_mb_cavlc(
     ctx.chroma_mode[mb_xy] = chroma_mode;
     ctx.cbp[mb_xy] = cbp;
     ctx.luma_qp[mb_xy] = luma_qp as i8;
+    ctx.chroma_qp[mb_xy * 2] = chroma_qp[0] as i8;
+    ctx.chroma_qp[mb_xy * 2 + 1] = chroma_qp[1] as i8;
     ctx.nzc_luma[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(&cur_nzc_luma);
     ctx.nzc_chroma[mb_xy * 8..mb_xy * 8 + 8].copy_from_slice(&cur_nzc_chroma);
     ctx.i4_best_mode[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(&best_mode);
