@@ -267,7 +267,14 @@ fn decode_one_slice(
     while mb_xy < total_mb {
         set_mb_deblock(ctx, mb_xy, sh, slice_index);
         coeffs.iter_mut().for_each(|c| *c = 0);
-        parse_p_mb_cavlc(bs, ctx, mb_xy, pps, &mut last_mb_qp, &mut skip_run, &ref_pic_ids, &mut coeffs)?;
+        parse_p_mb_cavlc(
+            bs,
+            super::mb_parse_cavlc::MbCtx { ctx: &mut *ctx, mb_xy, pps },
+            &mut last_mb_qp,
+            &mut skip_run,
+            &ref_pic_ids,
+            &mut coeffs,
+        )?;
         if ctx.mb_type[mb_xy].is_intra() {
             recon_intra_mb(ctx, mb_xy, &coeffs);
         } else {
@@ -337,12 +344,26 @@ fn decode_one_slice_cabac(
         coeffs.iter_mut().for_each(|c| *c = 0);
         let eos = if sh.slice_type.is_intra() {
             decode_mb_cabac_islice(
-                &mut dec, &mut ctxs, ctx, mb_xy, pps, &mut last_mb_qp, &mut last_delta_qp, &mut coeffs,
+                &mut dec,
+                &mut ctxs,
+                super::mb_parse_cabac::MbCtx { ctx: &mut *ctx, mb_xy, pps },
+                super::mb_parse_cabac::QpState {
+                    last_mb_qp: &mut last_mb_qp,
+                    last_delta_qp: &mut last_delta_qp,
+                },
+                &mut coeffs,
             )?
         } else {
             decode_mb_cabac_pslice(
-                &mut dec, &mut ctxs, ctx, mb_xy, pps, &mut last_mb_qp, &mut last_delta_qp,
-                &ref_pic_ids, &mut coeffs,
+                &mut dec,
+                &mut ctxs,
+                super::mb_parse_cabac::MbCtx { ctx: &mut *ctx, mb_xy, pps },
+                super::mb_parse_cabac::QpState {
+                    last_mb_qp: &mut last_mb_qp,
+                    last_delta_qp: &mut last_delta_qp,
+                },
+                &ref_pic_ids,
+                &mut coeffs,
             )?
         };
         if ctx.mb_type[mb_xy].is_intra() {

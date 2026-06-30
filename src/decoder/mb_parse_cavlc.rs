@@ -26,6 +26,51 @@ use super::params::Pps;
 
 type Result<T> = core::result::Result<T, DecodeError>;
 
+// ---------------------------------------------------------------------------
+// Parameter-bundle structs (keep parse signatures <= 7 args). Each is
+// destructured back into the original locals on the first line(s) of the body,
+// leaving all arithmetic unchanged.
+// ---------------------------------------------------------------------------
+
+/// `ctx` + per-MB location + active PPS.
+pub struct MbCtx<'a> {
+    pub ctx: &'a mut DecoderContext,
+    pub mb_xy: usize,
+    pub pps: &'a Pps,
+}
+
+/// Residual-decode inputs (mb_type, luma/chroma cbp split, qp + chroma qp).
+#[derive(Clone, Copy)]
+struct ResidualParams {
+    mb_type: MbType,
+    cbp_l: u8,
+    cbp_c: u8,
+    luma_qp: i32,
+    chroma_qp: [i32; 2],
+}
+
+/// Left/top neighbour snapshots for nC derivation.
+#[derive(Clone, Copy)]
+struct Neighbours<'a> {
+    left: &'a NeighborSnap,
+    top: &'a NeighborSnap,
+}
+
+/// Mutable per-MB residual outputs (nzc counts).
+struct ResidualOut<'a> {
+    cur_nzc_luma: &'a mut [i8; 16],
+    cur_nzc_chroma: &'a mut [i8; 8],
+}
+
+/// Placement of a `w`x`h` block of 4x4 cells: raster anchor + 30-cache anchor.
+#[derive(Clone, Copy)]
+struct BlockPlace {
+    scan4: usize,
+    cache_idx: usize,
+    w: usize,
+    h: usize,
+}
+
 // --- Per-MB 4x4 block geometry (luma) -------------------------------------
 // Block scan index i (the order residuals are coded, == g_kuiScan8 order) maps
 // to a raster position (bx,by) within the macroblock.
@@ -252,15 +297,9 @@ pub(super) fn parse_intra_mb_core(
     if cbp != 0 || mb_type == MbType::Intra16x16 {
         parse_residuals(
             bs,
-            mb_type,
-            cbp_l,
-            cbp_c,
-            luma_qp,
-            &chroma_qp,
-            &left,
-            &top,
-            &mut cur_nzc_luma,
-            &mut cur_nzc_chroma,
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp },
+            Neighbours { left: &left, top: &top },
+            ResidualOut { cur_nzc_luma: &mut cur_nzc_luma, cur_nzc_chroma: &mut cur_nzc_chroma },
             coeffs,
         )?;
     }
@@ -516,17 +555,14 @@ fn nc_chroma(
 
 fn parse_residuals(
     bs: &mut BitReader<'_>,
-    mb_type: MbType,
-    cbp_l: u8,
-    cbp_c: u8,
-    luma_qp: i32,
-    chroma_qp: &[i32; 2],
-    left: &NeighborSnap,
-    top: &NeighborSnap,
-    cur_nzc_luma: &mut [i8; 16],
-    cur_nzc_chroma: &mut [i8; 8],
+    params: ResidualParams,
+    neigh: Neighbours,
+    out: ResidualOut,
     coeffs: &mut [i16; 384],
 ) -> Result<()> {
+    let ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp } = params;
+    let Neighbours { left, top } = neigh;
+    let ResidualOut { cur_nzc_luma, cur_nzc_chroma } = out;
     let deq_l = &G_KUI_DEQUANT_COEFF[luma_qp as usize];
     let mut out = [0i32; 16];
 
@@ -789,14 +825,12 @@ fn store_block(
     ctx: &mut DecoderContext,
     cache: &mut InterCache,
     mb_xy: usize,
-    scan4: usize,
-    cache_idx: usize,
+    place: BlockPlace,
     mv: [i16; 2],
     iref: i8,
     ref_pic_id: i32,
-    w: usize,
-    h: usize,
 ) {
+    let BlockPlace { scan4, cache_idx, w, h } = place;
     for by in 0..h {
         for bx in 0..w {
             let raster = scan4 + by * 4 + bx;
@@ -821,14 +855,13 @@ fn store_block(
 /// list-0 reference count.
 pub fn parse_p_mb_cavlc(
     bs: &mut BitReader<'_>,
-    ctx: &mut DecoderContext,
-    mb_xy: usize,
-    pps: &Pps,
+    mb: MbCtx,
     last_mb_qp: &mut i32,
     skip_run: &mut i32,
     ref_pic_ids: &[i32],
     coeffs: &mut [i16; 384],
 ) -> Result<()> {
+    let MbCtx { ctx, mb_xy, pps } = mb;
     let ref_count = ref_pic_ids.len();
 
     if *skip_run == -1 {
@@ -848,13 +881,13 @@ pub fn parse_p_mb_cavlc(
             ctx.ref_pic_id[mb_xy * 16 + raster] = ref_pic_id;
         }
         let luma_qp = *last_mb_qp;
-        commit_inter_meta(ctx, mb_xy, MbType::PSkip, 0, luma_qp, pps, &[0; 16], &[0; 8]);
+        commit_inter_meta(MbCtx { ctx, mb_xy, pps }, MbType::PSkip, 0, luma_qp, &[0; 16], &[0; 8]);
         return Ok(());
     }
 
     let ui_mb_type = bs.read_ue()?;
     if ui_mb_type < 5 {
-        parse_inter_mb(bs, ctx, mb_xy, pps, last_mb_qp, ui_mb_type, ref_pic_ids, coeffs)
+        parse_inter_mb(bs, MbCtx { ctx, mb_xy, pps }, last_mb_qp, ui_mb_type, ref_pic_ids, coeffs)
     } else {
         // Intra MB inside a P slice: reuse the intra core with the -5 offset.
         parse_intra_mb_core(bs, ctx, mb_xy, pps, last_mb_qp, coeffs, ui_mb_type - 5)
@@ -863,15 +896,14 @@ pub fn parse_p_mb_cavlc(
 
 /// Commit per-MB inter metadata (type/cbp/qp/nzc) into `ctx`.
 fn commit_inter_meta(
-    ctx: &mut DecoderContext,
-    mb_xy: usize,
+    mb: MbCtx,
     mb_type: MbType,
     cbp: u8,
     luma_qp: i32,
-    pps: &Pps,
     nzc_luma: &[i8; 16],
     nzc_chroma: &[i8; 8],
 ) {
+    let MbCtx { ctx, mb_xy, pps } = mb;
     let chroma_qp = [
         CHROMA_QP_TABLE[clip3(luma_qp + pps.chroma_qp_index_offset[0], 0, 51) as usize] as i8,
         CHROMA_QP_TABLE[clip3(luma_qp + pps.chroma_qp_index_offset[1], 0, 51) as usize] as i8,
@@ -888,14 +920,13 @@ fn commit_inter_meta(
 /// Parse a genuine inter macroblock (`ui_mb_type` 0..4): motion then residual.
 fn parse_inter_mb(
     bs: &mut BitReader<'_>,
-    ctx: &mut DecoderContext,
-    mb_xy: usize,
-    pps: &Pps,
+    mb: MbCtx,
     last_mb_qp: &mut i32,
     ui_mb_type: u32,
     ref_pic_ids: &[i32],
     coeffs: &mut [i16; 384],
 ) -> Result<()> {
+    let MbCtx { ctx, mb_xy, pps } = mb;
     let mb_type = match ui_mb_type {
         0 => MbType::Inter16x16,
         1 => MbType::Inter16x8,
@@ -938,14 +969,24 @@ fn parse_inter_mb(
             CHROMA_QP_TABLE[clip3(luma_qp + pps.chroma_qp_index_offset[1], 0, 51) as usize] as i32,
         ];
         parse_residuals(
-            bs, mb_type, cbp_l, cbp_c, luma_qp, &chroma_qp, &left, &top, &mut cur_nzc_luma,
-            &mut cur_nzc_chroma, coeffs,
+            bs,
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp },
+            Neighbours { left: &left, top: &top },
+            ResidualOut { cur_nzc_luma: &mut cur_nzc_luma, cur_nzc_chroma: &mut cur_nzc_chroma },
+            coeffs,
         )?;
     } else {
         luma_qp = *last_mb_qp;
     }
 
-    commit_inter_meta(ctx, mb_xy, mb_type, cbp, luma_qp, pps, &cur_nzc_luma, &cur_nzc_chroma);
+    commit_inter_meta(
+        MbCtx { ctx, mb_xy, pps },
+        mb_type,
+        cbp,
+        luma_qp,
+        &cur_nzc_luma,
+        &cur_nzc_chroma,
+    );
     Ok(())
 }
 
@@ -980,7 +1021,15 @@ fn parse_inter_motion(
             let mvp = pred_mv(&cache.mv, &cache.ref_idx, 0, 4, iref);
             let mvd = read_mvd(bs)?;
             let mv = [mvp[0] + mvd[0], mvp[1] + mvd[1]];
-            store_block(ctx, cache, mb_xy, 0, 0, mv, iref, ref_pic_ids[iref as usize], 4, 4);
+            store_block(
+                ctx,
+                cache,
+                mb_xy,
+                BlockPlace { scan4: 0, cache_idx: 0, w: 4, h: 4 },
+                mv,
+                iref,
+                ref_pic_ids[iref as usize],
+            );
         }
         MbType::Inter16x8 => {
             let r = [read_ref(bs)?, read_ref(bs)?];
@@ -1062,7 +1111,7 @@ fn parse_inter_motion(
                         SubMbType::P4x8 => (1, 2),
                         SubMbType::P4x4 => (1, 1),
                     };
-                    store_mv_only(ctx, cache, mb_xy, scan4, cache_idx, mv, w, h);
+                    store_mv_only(ctx, cache, mb_xy, BlockPlace { scan4, cache_idx, w, h }, mv);
                 }
             }
         }
@@ -1076,12 +1125,10 @@ fn store_mv_only(
     ctx: &mut DecoderContext,
     cache: &mut InterCache,
     mb_xy: usize,
-    scan4: usize,
-    cache_idx: usize,
+    place: BlockPlace,
     mv: [i16; 2],
-    w: usize,
-    h: usize,
 ) {
+    let BlockPlace { scan4, cache_idx, w, h } = place;
     for by in 0..h {
         for bx in 0..w {
             let raster = scan4 + by * 4 + bx;
@@ -1108,7 +1155,7 @@ fn update_p16x8(
     for _ in 0..2 {
         let scan4 = SCAN4[p];
         let cache_idx = CACHE30_SCAN_IDX[p];
-        store_block(ctx, cache, mb_xy, scan4, cache_idx, mv, iref, ref_pic_id, 2, 2);
+        store_block(ctx, cache, mb_xy, BlockPlace { scan4, cache_idx, w: 2, h: 2 }, mv, iref, ref_pic_id);
         p += 4;
     }
 }
@@ -1127,7 +1174,7 @@ fn update_p8x16(
     for _ in 0..2 {
         let scan4 = SCAN4[p];
         let cache_idx = CACHE30_SCAN_IDX[p];
-        store_block(ctx, cache, mb_xy, scan4, cache_idx, mv, iref, ref_pic_id, 2, 2);
+        store_block(ctx, cache, mb_xy, BlockPlace { scan4, cache_idx, w: 2, h: 2 }, mv, iref, ref_pic_id);
         p += 8;
     }
 }

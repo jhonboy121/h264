@@ -32,6 +32,64 @@ use super::params::Pps;
 
 type Result<T> = core::result::Result<T, DecodeError>;
 
+// ---------------------------------------------------------------------------
+// Parameter-bundle structs (keep parse signatures <= 7 args). Each is
+// destructured back into the original locals on the first line(s) of the body,
+// leaving all arithmetic unchanged.
+// ---------------------------------------------------------------------------
+
+/// `ctx` + per-MB location + active PPS.
+pub struct MbCtx<'a> {
+    pub ctx: &'a mut DecoderContext,
+    pub mb_xy: usize,
+    pub pps: &'a Pps,
+}
+
+/// Running QP predictors carried across MBs (`pSlice->iLastMbQp` + last delta).
+pub struct QpState<'a> {
+    pub last_mb_qp: &'a mut i32,
+    pub last_delta_qp: &'a mut i32,
+}
+
+/// Residual-decode inputs (mb_type, luma/chroma cbp split, qp + chroma qp).
+#[derive(Clone, Copy)]
+struct ResidualParams {
+    mb_type: MbType,
+    cbp_l: u8,
+    cbp_c: u8,
+    luma_qp: i32,
+    chroma_qp: [i32; 2],
+}
+
+/// Mutable per-MB residual outputs (nzc counts + cbf-dc bitmask).
+struct ResidualOut<'a> {
+    cur_nzc_luma: &'a mut [i8; 16],
+    cur_nzc_chroma: &'a mut [i8; 8],
+    cur_cbf_dc: &'a mut u16,
+}
+
+/// Read-only neighbour snapshot + reference-picture identities for inter parse.
+#[derive(Clone, Copy)]
+struct InterRefs<'a> {
+    n: &'a Neigh,
+    ref_pic_ids: &'a [i32],
+}
+
+/// Mutable inter motion working state (neighbour cache + raster ref indices).
+struct MotionState<'a> {
+    cache: &'a mut InterCacheC,
+    cur_ref: &'a mut [i8; 16],
+}
+
+/// Placement of a `w`x`h` block of 4x4 cells: raster anchor + 30-cache anchor.
+#[derive(Clone, Copy)]
+struct BlockPlace {
+    scan4: usize,
+    cache_idx: usize,
+    w: usize,
+    h: usize,
+}
+
 // --- CABAC context base offsets (`NEW_CTX_OFFSET_*`,
 // reference/codec/decoder/core/inc/decoder_context.h). ---
 const NEW_CTX_OFFSET_MB_TYPE_I: usize = 3;
@@ -426,16 +484,12 @@ fn parse_residuals_cabac(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
     n: &Neigh,
-    mb_type: MbType,
-    cbp_l: u8,
-    cbp_c: u8,
-    luma_qp: i32,
-    chroma_qp: &[i32; 2],
-    cur_nzc_luma: &mut [i8; 16],
-    cur_nzc_chroma: &mut [i8; 8],
-    cur_cbf_dc: &mut u16,
+    params: ResidualParams,
+    out: ResidualOut,
     coeffs: &mut [i16; 384],
 ) {
+    let ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp } = params;
+    let ResidualOut { cur_nzc_luma, cur_nzc_chroma, cur_cbf_dc } = out;
     let mut cache = [0i16; 48];
     fill_nzc_cache(&mut cache, n);
     let cur_intra = mb_type.is_intra();
@@ -576,16 +630,14 @@ fn parse_residuals_cabac(
 pub fn decode_mb_cabac_islice(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
-    ctx: &mut DecoderContext,
-    mb_xy: usize,
-    pps: &Pps,
-    last_mb_qp: &mut i32,
-    last_delta_qp: &mut i32,
+    mb: MbCtx,
+    qp: QpState,
     coeffs: &mut [i16; 384],
 ) -> Result<bool> {
+    let MbCtx { ctx, mb_xy, pps } = mb;
     let n = Neigh::build(ctx, mb_xy);
     let ui_mb_type = parse_mb_type_i(dec, ctxs, &n);
-    decode_intra_mb_body(dec, ctxs, ctx, mb_xy, pps, last_mb_qp, last_delta_qp, coeffs, &n, ui_mb_type)?;
+    decode_intra_mb_body(dec, ctxs, MbCtx { ctx, mb_xy, pps }, qp, coeffs, &n, ui_mb_type)?;
     Ok(parse_end_of_slice(dec))
 }
 
@@ -594,15 +646,14 @@ pub fn decode_mb_cabac_islice(
 fn decode_intra_mb_body(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
-    ctx: &mut DecoderContext,
-    mb_xy: usize,
-    pps: &Pps,
-    last_mb_qp: &mut i32,
-    last_delta_qp: &mut i32,
+    mb: MbCtx,
+    qp: QpState,
     coeffs: &mut [i16; 384],
     n: &Neigh,
     ui_mb_type: u32,
 ) -> Result<()> {
+    let MbCtx { ctx, mb_xy, pps } = mb;
+    let QpState { last_mb_qp, last_delta_qp } = qp;
     if ui_mb_type == 25 {
         return Err(DecodeError::Unsupported("I_PCM (CABAC)"));
     }
@@ -670,8 +721,16 @@ fn decode_intra_mb_body(
     if cbp != 0 || mb_type == MbType::Intra16x16 {
         coeffs.iter_mut().for_each(|c| *c = 0);
         parse_residuals_cabac(
-            dec, ctxs, n, mb_type, cbp_l, cbp_c, luma_qp, &chroma_qp, &mut cur_nzc_luma,
-            &mut cur_nzc_chroma, &mut cur_cbf_dc, coeffs,
+            dec,
+            ctxs,
+            n,
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp },
+            ResidualOut {
+                cur_nzc_luma: &mut cur_nzc_luma,
+                cur_nzc_chroma: &mut cur_nzc_chroma,
+                cur_cbf_dc: &mut cur_cbf_dc,
+            },
+            coeffs,
         );
     }
 
@@ -1009,28 +1068,35 @@ fn parse_mvd(
 pub fn decode_mb_cabac_pslice(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
-    ctx: &mut DecoderContext,
-    mb_xy: usize,
-    pps: &Pps,
-    last_mb_qp: &mut i32,
-    last_delta_qp: &mut i32,
+    mb: MbCtx,
+    qp: QpState,
     ref_pic_ids: &[i32],
     coeffs: &mut [i16; 384],
 ) -> Result<bool> {
+    let MbCtx { ctx, mb_xy, pps } = mb;
     let n = Neigh::build(ctx, mb_xy);
     let ref_count = ref_pic_ids.len();
 
     if !parse_skip_flag(dec, ctxs, &n) {
         let ui_mb_type = parse_mb_type_p(dec, ctxs)?;
         if ui_mb_type < 5 {
-            parse_inter_mb_cabac(dec, ctxs, ctx, mb_xy, pps, last_mb_qp, last_delta_qp, ui_mb_type, ref_pic_ids, &n, coeffs)?;
+            parse_inter_mb_cabac(
+                dec,
+                ctxs,
+                MbCtx { ctx, mb_xy, pps },
+                qp,
+                ui_mb_type,
+                InterRefs { n: &n, ref_pic_ids },
+                coeffs,
+            )?;
         } else if ui_mb_type == 30 {
             return Err(DecodeError::Unsupported("I_PCM (CABAC P)"));
         } else {
-            decode_intra_mb_body(dec, ctxs, ctx, mb_xy, pps, last_mb_qp, last_delta_qp, coeffs, &n, ui_mb_type - 5)?;
+            decode_intra_mb_body(dec, ctxs, MbCtx { ctx, mb_xy, pps }, qp, coeffs, &n, ui_mb_type - 5)?;
         }
     } else {
         // P_Skip.
+        let QpState { last_mb_qp, last_delta_qp } = qp;
         let mv = pred_p_skip_mv(ctx, mb_xy);
         let ref_pic_id = if ref_count > 0 { ref_pic_ids[0] } else { -1 };
         for raster in 0..16 {
@@ -1042,22 +1108,28 @@ pub fn decode_mb_cabac_pslice(
         }
         let luma_qp = *last_mb_qp;
         *last_delta_qp = 0;
-        commit_inter_meta(ctx, mb_xy, MbType::PSkip, 0, luma_qp, pps, &[0; 16], &[0; 8]);
+        commit_inter_meta(
+            MbCtx { ctx: &mut *ctx, mb_xy, pps },
+            MbType::PSkip,
+            0,
+            luma_qp,
+            &[0; 16],
+            &[0; 8],
+        );
         ctx.cbf_dc[mb_xy] = 0;
     }
     Ok(parse_end_of_slice(dec))
 }
 
 fn commit_inter_meta(
-    ctx: &mut DecoderContext,
-    mb_xy: usize,
+    mb: MbCtx,
     mb_type: MbType,
     cbp: u8,
     luma_qp: i32,
-    pps: &Pps,
     nzc_luma: &[i8; 16],
     nzc_chroma: &[i8; 8],
 ) {
+    let MbCtx { ctx, mb_xy, pps } = mb;
     let chroma_qp = [
         CHROMA_QP_TABLE[clip3(luma_qp + pps.chroma_qp_index_offset[0], 0, 51) as usize] as i8,
         CHROMA_QP_TABLE[clip3(luma_qp + pps.chroma_qp_index_offset[1], 0, 51) as usize] as i8,
@@ -1074,16 +1146,15 @@ fn commit_inter_meta(
 fn parse_inter_mb_cabac(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
-    ctx: &mut DecoderContext,
-    mb_xy: usize,
-    pps: &Pps,
-    last_mb_qp: &mut i32,
-    last_delta_qp: &mut i32,
+    mb: MbCtx,
+    qp: QpState,
     ui_mb_type: u32,
-    ref_pic_ids: &[i32],
-    n: &Neigh,
+    refs: InterRefs,
     coeffs: &mut [i16; 384],
 ) -> Result<()> {
+    let MbCtx { ctx, mb_xy, pps } = mb;
+    let QpState { last_mb_qp, last_delta_qp } = qp;
+    let InterRefs { n, ref_pic_ids } = refs;
     let mb_type = match ui_mb_type {
         0 => MbType::Inter16x16,
         1 => MbType::Inter16x8,
@@ -1096,7 +1167,15 @@ fn parse_inter_mb_cabac(
     // current-MB ref index (raster) used by ref-idx ctx derivation.
     let mut cur_ref = [-1i8; 16];
 
-    parse_inter_motion_cabac(dec, ctxs, ctx, &mut cache, &mut cur_ref, mb_xy, mb_type, ref_count, ref_pic_ids, n)?;
+    parse_inter_motion_cabac(
+        dec,
+        ctxs,
+        MbCtx { ctx: &mut *ctx, mb_xy, pps },
+        MotionState { cache: &mut cache, cur_ref: &mut cur_ref },
+        mb_type,
+        ref_count,
+        refs,
+    )?;
 
     let cbp_v = parse_cbp(dec, ctxs, n);
     let cbp = cbp_v as u8;
@@ -1120,14 +1199,29 @@ fn parse_inter_mb_cabac(
             CHROMA_QP_TABLE[clip3(luma_qp + pps.chroma_qp_index_offset[1], 0, 51) as usize] as i32,
         ];
         parse_residuals_cabac(
-            dec, ctxs, n, mb_type, cbp_l, cbp_c, luma_qp, &chroma_qp, &mut cur_nzc_luma,
-            &mut cur_nzc_chroma, &mut cur_cbf_dc, coeffs,
+            dec,
+            ctxs,
+            n,
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp },
+            ResidualOut {
+                cur_nzc_luma: &mut cur_nzc_luma,
+                cur_nzc_chroma: &mut cur_nzc_chroma,
+                cur_cbf_dc: &mut cur_cbf_dc,
+            },
+            coeffs,
         );
     } else {
         *last_delta_qp = 0;
         luma_qp = *last_mb_qp;
     }
-    commit_inter_meta(ctx, mb_xy, mb_type, cbp, luma_qp, pps, &cur_nzc_luma, &cur_nzc_chroma);
+    commit_inter_meta(
+        MbCtx { ctx: &mut *ctx, mb_xy, pps },
+        mb_type,
+        cbp,
+        luma_qp,
+        &cur_nzc_luma,
+        &cur_nzc_chroma,
+    );
     ctx.cbf_dc[mb_xy] = cur_cbf_dc;
     Ok(())
 }
@@ -1135,31 +1229,54 @@ fn parse_inter_mb_cabac(
 fn parse_inter_motion_cabac(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
-    ctx: &mut DecoderContext,
-    cache: &mut InterCacheC,
-    cur_ref: &mut [i8; 16],
-    mb_xy: usize,
+    mb: MbCtx,
+    motion: MotionState,
     mb_type: MbType,
     ref_count: usize,
-    ref_pic_ids: &[i32],
-    n: &Neigh,
+    refs: InterRefs,
 ) -> Result<()> {
+    let MbCtx { ctx, mb_xy, pps: _ } = mb;
+    let MotionState { cache, cur_ref } = motion;
+    let InterRefs { n, ref_pic_ids } = refs;
     match mb_type {
         MbType::Inter16x16 => {
             let iref = parse_ref_idx(dec, ctxs, cache, cur_ref, n, 0, ref_count) as i8;
-            store_ref_block(ctx, cache, cur_ref, mb_xy, 0, CACHE30_SCAN_IDX[0], iref, ref_pic_ids[iref as usize], 4, 4);
+            store_ref_block(
+                ctx,
+                cache,
+                cur_ref,
+                mb_xy,
+                BlockPlace { scan4: 0, cache_idx: CACHE30_SCAN_IDX[0], w: 4, h: 4 },
+                iref,
+                ref_pic_ids[iref as usize],
+            );
             let mvp = pred_mv(&cache.mv, &cache.ref_idx, 0, 4, iref);
             let mx = parse_mvd(dec, ctxs, cache, 0, 0);
             let my = parse_mvd(dec, ctxs, cache, 0, 1);
             let mv = [mvp[0] + mx, mvp[1] + my];
-            store_mvmvd_block(ctx, cache, mb_xy, 0, CACHE30_SCAN_IDX[0], mv, [mx, my], 4, 4);
+            store_mvmvd_block(
+                ctx,
+                cache,
+                mb_xy,
+                BlockPlace { scan4: 0, cache_idx: CACHE30_SCAN_IDX[0], w: 4, h: 4 },
+                mv,
+                [mx, my],
+            );
         }
         MbType::Inter16x8 => {
             let mut r = [0i8; 2];
             for i in 0..2 {
                 let part = i << 3;
                 r[i] = parse_ref_idx(dec, ctxs, cache, cur_ref, n, part, ref_count) as i8;
-                store_ref_block(ctx, cache, cur_ref, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], r[i], ref_pic_ids[r[i] as usize], 4, 2);
+                store_ref_block(
+                    ctx,
+                    cache,
+                    cur_ref,
+                    mb_xy,
+                    BlockPlace { scan4: SCAN4[part], cache_idx: CACHE30_SCAN_IDX[part], w: 4, h: 2 },
+                    r[i],
+                    ref_pic_ids[r[i] as usize],
+                );
             }
             for (i, &ri) in r.iter().enumerate() {
                 let part = i << 3;
@@ -1167,7 +1284,14 @@ fn parse_inter_motion_cabac(
                 let mx = parse_mvd(dec, ctxs, cache, part, 0);
                 let my = parse_mvd(dec, ctxs, cache, part, 1);
                 let mv = [mvp[0] + mx, mvp[1] + my];
-                store_mvmvd_block(ctx, cache, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], mv, [mx, my], 4, 2);
+                store_mvmvd_block(
+                    ctx,
+                    cache,
+                    mb_xy,
+                    BlockPlace { scan4: SCAN4[part], cache_idx: CACHE30_SCAN_IDX[part], w: 4, h: 2 },
+                    mv,
+                    [mx, my],
+                );
             }
         }
         MbType::Inter8x16 => {
@@ -1175,7 +1299,15 @@ fn parse_inter_motion_cabac(
             for i in 0..2 {
                 let part = i << 2;
                 r[i] = parse_ref_idx(dec, ctxs, cache, cur_ref, n, part, ref_count) as i8;
-                store_ref_block(ctx, cache, cur_ref, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], r[i], ref_pic_ids[r[i] as usize], 2, 4);
+                store_ref_block(
+                    ctx,
+                    cache,
+                    cur_ref,
+                    mb_xy,
+                    BlockPlace { scan4: SCAN4[part], cache_idx: CACHE30_SCAN_IDX[part], w: 2, h: 4 },
+                    r[i],
+                    ref_pic_ids[r[i] as usize],
+                );
             }
             for (i, &ri) in r.iter().enumerate() {
                 let part = i << 2;
@@ -1183,7 +1315,14 @@ fn parse_inter_motion_cabac(
                 let mx = parse_mvd(dec, ctxs, cache, part, 0);
                 let my = parse_mvd(dec, ctxs, cache, part, 1);
                 let mv = [mvp[0] + mx, mvp[1] + my];
-                store_mvmvd_block(ctx, cache, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], mv, [mx, my], 2, 4);
+                store_mvmvd_block(
+                    ctx,
+                    cache,
+                    mb_xy,
+                    BlockPlace { scan4: SCAN4[part], cache_idx: CACHE30_SCAN_IDX[part], w: 2, h: 4 },
+                    mv,
+                    [mx, my],
+                );
             }
         }
         MbType::Inter8x8 | MbType::Inter8x8Ref0 => {
@@ -1236,7 +1375,14 @@ fn parse_inter_motion_cabac(
                     let mx = parse_mvd(dec, ctxs, cache, part, 0);
                     let my = parse_mvd(dec, ctxs, cache, part, 1);
                     let mv = [mvp[0] + mx, mvp[1] + my];
-                    store_mvmvd_block(ctx, cache, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], mv, [mx, my], w, h);
+                    store_mvmvd_block(
+                        ctx,
+                        cache,
+                        mb_xy,
+                        BlockPlace { scan4: SCAN4[part], cache_idx: CACHE30_SCAN_IDX[part], w, h },
+                        mv,
+                        [mx, my],
+                    );
                 }
             }
         }
@@ -1252,13 +1398,11 @@ fn store_ref_block(
     cache: &mut InterCacheC,
     cur_ref: &mut [i8; 16],
     mb_xy: usize,
-    scan4: usize,
-    cache_idx: usize,
+    place: BlockPlace,
     iref: i8,
     ref_pic: i32,
-    w: usize,
-    h: usize,
 ) {
+    let BlockPlace { scan4, cache_idx, w, h } = place;
     for by in 0..h {
         for bx in 0..w {
             let raster = scan4 + by * 4 + bx;
@@ -1276,13 +1420,11 @@ fn store_mvmvd_block(
     ctx: &mut DecoderContext,
     cache: &mut InterCacheC,
     mb_xy: usize,
-    scan4: usize,
-    cache_idx: usize,
+    place: BlockPlace,
     mv: [i16; 2],
     mvd: [i16; 2],
-    w: usize,
-    h: usize,
 ) {
+    let BlockPlace { scan4, cache_idx, w, h } = place;
     for by in 0..h {
         for bx in 0..w {
             let raster = scan4 + by * 4 + bx;
