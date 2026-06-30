@@ -388,9 +388,10 @@ fn parse_delta_qp(dec: &mut CabacDecoder, ctxs: &mut CabacContexts, last_delta_q
     let ctx_inc = (*last_delta_qp != 0) as usize;
     let mut delta = 0i32;
     if dec.decode_decision(ctxs.ctx(base + ctx_inc)) != 0 {
-        let mut code = decode_unary(dec, ctxs, base + 2, base + 3) + 1;
-        code += 1;
-        delta = (code as i32) >> 1;
+        // `uiCode = unary + 1`; magnitude is `(uiCode + 1) >> 1`, sign from the
+        // parity of `uiCode` itself (negative when even). Mirrors the C exactly.
+        let code = decode_unary(dec, ctxs, base + 2, base + 3) + 1;
+        delta = ((code + 1) as i32) >> 1;
         if (code & 1) == 0 {
             delta = -delta;
         }
@@ -857,6 +858,47 @@ fn parse_transform_size_8x8(
     dec.decode_decision(ctxs.ctx(base + ctx_inc)) != 0
 }
 
+/// `transform_size_8x8_flag` for an inter MB (CABAC). Mirrors the CAVLC
+/// `parse_inter_t8_flag` presence condition (16x16/16x8/8x16, or an 8x8 MB whose
+/// every sub-partition is 8x8) gated on `cbp_l != 0` and the PPS 8x8 mode, but
+/// reads the flag through `ParseTransformSize8x8FlagCabac`.
+#[allow(clippy::too_many_arguments)]
+fn parse_inter_t8_flag_cabac(
+    dec: &mut CabacDecoder,
+    ctxs: &mut CabacContexts,
+    ctx: &DecoderContext,
+    n: &Neigh,
+    mb_xy: usize,
+    mb_type: MbType,
+    cbp_l: u8,
+    pps: &Pps,
+) -> bool {
+    if !pps.transform_8x8_mode_flag || cbp_l == 0 {
+        return false;
+    }
+    let no_sub_lt_8x8 = match mb_type {
+        MbType::Inter8x8 | MbType::Inter8x8Ref0 | MbType::B8x8 => {
+            (0..4).all(|i| ctx.sub_mb_type[mb_xy * 4 + i] == SubMbType::P8x8)
+        }
+        _ => false,
+    };
+    let big_part = matches!(
+        mb_type,
+        MbType::Inter16x16
+            | MbType::Inter16x8
+            | MbType::Inter8x16
+            | MbType::B16x16
+            | MbType::B16x8
+            | MbType::B8x16
+            | MbType::BDirect16x16
+    );
+    if big_part || no_sub_lt_8x8 {
+        parse_transform_size_8x8(dec, ctxs, n)
+    } else {
+        false
+    }
+}
+
 /// CABAC `ParseIntra4x4Mode`: 16 luma modes (each via
 /// `ParseIntraPredModeLuma`) + the chroma mode. Mirrors the CAVLC
 /// `parse_intra4x4`, swapping the bit reads for CABAC. Returns the checked
@@ -1254,6 +1296,7 @@ pub fn decode_mb_cabac_pslice(
     let MbCtx { ctx, mb_xy, pps } = mb;
     let n = Neigh::build(ctx, mb_xy, pps.constrained_intra_pred_flag);
     let ref_count = ref_pic_ids.len();
+    ctx.transform_8x8[mb_xy] = false;
 
     if !parse_skip_flag(dec, ctxs, &n) {
         let ui_mb_type = parse_mb_type_p(dec, ctxs)?;
@@ -1360,6 +1403,8 @@ fn parse_inter_mb_cabac(
     let cbp_l = cbp & 0x0f;
     let cbp_c = cbp >> 4;
 
+    let transform_8x8 = parse_inter_t8_flag_cabac(dec, ctxs, ctx, n, mb_xy, mb_type, cbp_l, pps);
+
     let luma_qp: i32;
     let mut cur_nzc_luma = [0i8; 16];
     let mut cur_nzc_chroma = [0i8; 8];
@@ -1380,7 +1425,7 @@ fn parse_inter_mb_cabac(
             dec,
             ctxs,
             n,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8: false },
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 },
             ResidualOut {
                 cur_nzc_luma: &mut cur_nzc_luma,
                 cur_nzc_chroma: &mut cur_nzc_chroma,
@@ -1401,6 +1446,7 @@ fn parse_inter_mb_cabac(
         &cur_nzc_chroma,
     );
     ctx.cbf_dc[mb_xy] = cur_cbf_dc;
+    ctx.transform_8x8[mb_xy] = transform_8x8;
     Ok(())
 }
 
@@ -1725,6 +1771,9 @@ struct BInterCacheC {
     mv: [[[i16; 2]; 30]; 2],
     mvd: [[[i16; 2]; 30]; 2],
     ref_idx: [[i8; 30]; 2],
+    /// Per-block direct-prediction flag neighbour cache (`WelsFillDirectCacheCabac`),
+    /// not list-specific. Used by `ParseRefIdxCabac` B-slice ctx derivation.
+    direct: [i8; 30],
 }
 
 impl BInterCacheC {
@@ -1809,7 +1858,28 @@ impl BInterCacheC {
                 r[c] = REF_NOT_AVAIL_C;
             }
         }
-        BInterCacheC { mv, mvd, ref_idx }
+
+        // Direct-flag neighbour cache (`WelsFillDirectCacheCabac`): only inter
+        // neighbours contribute; everything else stays 0.
+        let mut direct = [0i8; 30];
+        if left && ctx.mb_type[left_xy].is_inter() {
+            for (k, &b) in [3usize, 7, 11, 15].iter().enumerate() {
+                direct[[6, 12, 18, 24][k]] = ctx.direct[left_xy * 16 + b];
+            }
+        }
+        if left_top && ctx.mb_type[left_top_xy].is_inter() {
+            direct[0] = ctx.direct[left_top_xy * 16 + 15];
+        }
+        if top && ctx.mb_type[top_xy].is_inter() {
+            for (k, &b) in [12usize, 13, 14, 15].iter().enumerate() {
+                direct[1 + k] = ctx.direct[top_xy * 16 + b];
+            }
+        }
+        if right_top && ctx.mb_type[right_top_xy].is_inter() {
+            direct[5] = ctx.direct[right_top_xy * 16 + 12];
+        }
+
+        BInterCacheC { mv, mvd, ref_idx, direct }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1885,15 +1955,69 @@ fn parse_mvd_b(
     val
 }
 
-/// Read one partition's `ref_idx` (CABAC). For active_ref == 1 no bin is coded.
-fn parse_ref_idx_b(dec: &mut CabacDecoder, ctxs: &mut CabacContexts, active_ref: usize) -> Result<i8> {
+/// Read one partition's `ref_idx` (CABAC, `ParseRefIdxCabac` for B). For
+/// `active_ref == 1` no bin is coded. The context increment is derived from the
+/// neighbour reference indices *and* their direct-prediction flags: a neighbour
+/// contributes only if its reference is > 0 and it was not direct-coded.
+#[allow(clippy::too_many_arguments)]
+fn parse_ref_idx_b(
+    dec: &mut CabacDecoder,
+    ctxs: &mut CabacContexts,
+    ctx: &DecoderContext,
+    mb_xy: usize,
+    cache: &BInterCacheC,
+    list: usize,
+    z_index: usize,
+    active_ref: usize,
+    top_avail: bool,
+    left_avail: bool,
+) -> i8 {
     if active_ref == 1 {
-        return Ok(0);
+        return 0;
     }
-    // Multi-ref B ref_idx (with the direct-flag-aware ctx) is not present in the
-    // corpus B streams; bail rather than risk a wrong parse.
-    let _ = (dec, ctxs);
-    Err(DecodeError::Unsupported("B CABAC multi-ref ref_idx"))
+    let c = CACHE30_SCAN_IDX[z_index];
+    let scan = SCAN4[z_index];
+    let ref_cache = &cache.ref_idx[list];
+    let mb_ref = |b: usize| -> i8 {
+        if list == 0 { ctx.ref_idx[mb_xy * 16 + b] } else { ctx.ref_idx_l1[mb_xy * 16 + b] }
+    };
+    let mb_dir = |b: usize| -> i8 { ctx.direct[mb_xy * 16 + b] };
+    // (neighbour_used, neighbour_not_direct) for the A (left) and B (top) sides.
+    let (idx_a, idx_b, ndir_a, ndir_b);
+    if z_index == 0 {
+        idx_b = top_avail && ref_cache[c - 6] > 0;
+        idx_a = left_avail && ref_cache[c - 1] > 0;
+        ndir_b = cache.direct[c - 6] == 0;
+        ndir_a = cache.direct[c - 1] == 0;
+    } else if z_index == 4 {
+        idx_b = top_avail && ref_cache[c - 6] > 0;
+        idx_a = mb_ref(scan - 1) > 0;
+        ndir_b = cache.direct[c - 6] == 0;
+        ndir_a = mb_dir(scan - 1) == 0;
+    } else if z_index == 8 {
+        idx_b = mb_ref(scan - 4) > 0;
+        idx_a = left_avail && ref_cache[c - 1] > 0;
+        ndir_b = mb_dir(scan - 4) == 0;
+        ndir_a = cache.direct[c - 1] == 0;
+    } else {
+        idx_b = mb_ref(scan - 4) > 0;
+        idx_a = mb_ref(scan - 1) > 0;
+        ndir_b = mb_dir(scan - 4) == 0;
+        ndir_a = mb_dir(scan - 1) == 0;
+    }
+    let mut ctx_inc = 0usize;
+    if idx_b && ndir_b {
+        ctx_inc += 2;
+    }
+    if idx_a && ndir_a {
+        ctx_inc += 1;
+    }
+    let base = NEW_CTX_OFFSET_REF_NO;
+    let mut code = dec.decode_decision(ctxs.ctx(base + ctx_inc));
+    if code != 0 {
+        code = decode_unary(dec, ctxs, base + 4, base + 5) + 1;
+    }
+    code as i8
 }
 
 /// Decode one B-slice macroblock (CABAC). Returns `end_of_slice_flag`.
@@ -1907,6 +2031,13 @@ pub fn decode_mb_cabac_bslice(
 ) -> Result<bool> {
     let MbCtx { ctx, mb_xy, pps } = mb;
     let n = Neigh::build(ctx, mb_xy, pps.constrained_intra_pred_flag);
+
+    // `pDirect` reset (decode_slice memset): clear the per-block direct flags for
+    // this MB so a non-direct MB does not inherit stale flags from a prior frame.
+    for d in &mut ctx.direct[mb_xy * 16..mb_xy * 16 + 16] {
+        *d = 0;
+    }
+    ctx.transform_8x8[mb_xy] = false;
 
     if parse_skip_flag_b(dec, ctxs, &n) {
         // B_Skip: direct prediction, no residual.
@@ -1945,13 +2076,15 @@ pub fn decode_mb_cabac_bslice(
         apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true, bref.direct_spatial);
     } else {
         let mut cache = BInterCacheC::build(ctx, mb_xy);
-        parse_b_motion_cabac(dec, ctxs, ctx, &mut cache, mb_xy, ui_mb_type, bref)?;
+        parse_b_motion_cabac(dec, ctxs, ctx, &mut cache, mb_xy, ui_mb_type, bref, &n)?;
     }
 
     let QpState { last_mb_qp, last_delta_qp } = qp;
     let cbp = parse_cbp(dec, ctxs, &n) as u8;
     let cbp_l = cbp & 0x0f;
     let cbp_c = cbp >> 4;
+
+    let transform_8x8 = parse_inter_t8_flag_cabac(dec, ctxs, ctx, &n, mb_xy, mb_type, cbp_l, pps);
 
     let luma_qp: i32;
     let mut cur_nzc_luma = [0i8; 16];
@@ -1973,7 +2106,7 @@ pub fn decode_mb_cabac_bslice(
             dec,
             ctxs,
             &n,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8: false },
+            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 },
             ResidualOut {
                 cur_nzc_luma: &mut cur_nzc_luma,
                 cur_nzc_chroma: &mut cur_nzc_chroma,
@@ -1994,11 +2127,12 @@ pub fn decode_mb_cabac_bslice(
         &cur_nzc_chroma,
     );
     ctx.cbf_dc[mb_xy] = cur_cbf_dc;
+    ctx.transform_8x8[mb_xy] = transform_8x8;
     Ok(parse_end_of_slice(dec))
 }
 
 /// Parse `ref_idx` + `mvd` (CABAC) for the non-direct B partition kinds.
-#[allow(clippy::needless_range_loop)]
+#[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 fn parse_b_motion_cabac(
     dec: &mut CabacDecoder,
     ctxs: &mut CabacContexts,
@@ -2007,6 +2141,7 @@ fn parse_b_motion_cabac(
     mb_xy: usize,
     ui_mb_type: u32,
     bref: &BRefsCabac,
+    n: &Neigh,
 ) -> Result<()> {
     let info = &B_MB_INFO[ui_mb_type as usize];
     match info.shape {
@@ -2014,7 +2149,10 @@ fn parse_b_motion_cabac(
             let mut iref = [0i8; 2];
             for list in 0..2 {
                 if dir_uses(info.dir[0], list) {
-                    iref[list] = parse_ref_idx_b(dec, ctxs, bref.ref_count[list])?;
+                    iref[list] = parse_ref_idx_b(
+                        dec, ctxs, ctx, mb_xy, cache, list, 0, bref.ref_count[list],
+                        n.top_avail, n.left_avail,
+                    );
                 }
             }
             for list in 0..2 {
@@ -2033,10 +2171,31 @@ fn parse_b_motion_cabac(
             let is16x8 = info.shape == BShape::P16x8;
             let (pw, ph) = if is16x8 { (4, 2) } else { (2, 4) };
             let mut iref = [[REF_NOT_IN_LIST_C; 2]; 2];
+            // Parse both partitions' ref_idx, storing each into the per-MB ref
+            // array (`UpdateP16x8/8x16RefIdxCabac`) so the second partition's
+            // ctx derivation sees the first's reference.
             for list in 0..2 {
                 for p in 0..2 {
-                    if dir_uses(info.dir[p], list) {
-                        iref[p][list] = parse_ref_idx_b(dec, ctxs, bref.ref_count[list])?;
+                    let part_idx = if is16x8 { p << 3 } else { p << 2 };
+                    let r = if dir_uses(info.dir[p], list) {
+                        parse_ref_idx_b(
+                            dec, ctxs, ctx, mb_xy, cache, list, part_idx, bref.ref_count[list],
+                            n.top_avail, n.left_avail,
+                        )
+                    } else {
+                        REF_NOT_IN_LIST_C
+                    };
+                    iref[p][list] = r;
+                    let scan4 = SCAN4[part_idx];
+                    for by in 0..ph {
+                        for bx in 0..pw {
+                            let raster = scan4 + by * 4 + bx;
+                            if list == 0 {
+                                ctx.ref_idx[mb_xy * 16 + raster] = r;
+                            } else {
+                                ctx.ref_idx_l1[mb_xy * 16 + raster] = r;
+                            }
+                        }
                     }
                 }
             }
@@ -2063,7 +2222,7 @@ fn parse_b_motion_cabac(
             }
         }
         BShape::P8x8 => {
-            parse_b_8x8_cabac(dec, ctxs, ctx, cache, mb_xy, bref)?;
+            parse_b_8x8_cabac(dec, ctxs, ctx, cache, mb_xy, bref, n)?;
         }
         BShape::Direct => unreachable!(),
     }
@@ -2079,14 +2238,21 @@ fn parse_b_8x8_cabac(
     cache: &mut BInterCacheC,
     mb_xy: usize,
     bref: &BRefsCabac,
+    n: &Neigh,
 ) -> Result<()> {
     let mut subs = [0usize; 4];
     for s in subs.iter_mut() {
         *s = parse_sub_mb_type_b(dec, ctxs) as usize;
     }
 
+    // Direct prediction for direct sub-partitions. Spatial: a single shared
+    // `DirectInfo`; temporal: per-8x8-sub colocated MV scaling.
     let any_direct = subs.iter().any(|&s| B_SUB_INFO[s].direct);
-    let direct = if any_direct { Some(super::bdirect::b_direct_spatial(ctx, mb_xy, true)) } else { None };
+    let direct = if any_direct && bref.direct_spatial {
+        Some(super::bdirect::b_direct_spatial(ctx, mb_xy, true))
+    } else {
+        None
+    };
     let direct_refpic = direct.as_ref().map(|d| {
         [
             if d.iref[0] >= 0 && (d.iref[0] as usize) < bref.ref_pic_ids[0].len() { bref.ref_pic_ids[0][d.iref[0] as usize] } else { -1 },
@@ -2098,8 +2264,12 @@ fn parse_b_8x8_cabac(
         let sinfo = &B_SUB_INFO[s];
         ctx.sub_mb_type[mb_xy * 4 + i] = sinfo.sub;
         if sinfo.direct {
-            let d = direct.as_ref().unwrap();
-            super::bdirect::fill_direct_8x8(ctx, mb_xy, i, 1, 2, d, &bref.col, direct_refpic.unwrap());
+            if bref.direct_spatial {
+                let d = direct.as_ref().unwrap();
+                super::bdirect::fill_direct_8x8(ctx, mb_xy, i, 1, 2, d, &bref.col, direct_refpic.unwrap());
+            } else {
+                super::bdirect::b_direct_temporal_sub(ctx, mb_xy, i, &bref.col);
+            }
             // sync cache (mv/ref) for this 8x8.
             let base_part = i << 2;
             for p in 0..4 {
@@ -2119,12 +2289,21 @@ fn parse_b_8x8_cabac(
         for (i, &s) in subs.iter().enumerate() {
             let sinfo = &B_SUB_INFO[s];
             if sinfo.direct {
-                if let Some(d) = &direct {
+                if bref.direct_spatial {
+                    let d = direct.as_ref().unwrap();
                     irefs[i] = d.iref[list];
                     set_8x8_ref_ctx(ctx, mb_xy, i, list, d.iref[list], direct_refpic.unwrap()[list]);
+                } else {
+                    // Temporal: the neighbour-prediction cache treats a direct
+                    // sub-partition as not-in-list (the C leaves `ref_idx_list`
+                    // at its -1 init); `ctx` keeps the real ref for recon/deblock.
+                    irefs[i] = REF_NOT_IN_LIST_C;
                 }
             } else if dir_uses(sinfo.dir, list) {
-                let r = parse_ref_idx_b(dec, ctxs, bref.ref_count[list])?;
+                let r = parse_ref_idx_b(
+                    dec, ctxs, ctx, mb_xy, cache, list, i << 2, bref.ref_count[list],
+                    n.top_avail, n.left_avail,
+                );
                 irefs[i] = r;
                 set_8x8_ref_ctx(ctx, mb_xy, i, list, r, bref.ref_pic_ids[list][r as usize]);
             } else {

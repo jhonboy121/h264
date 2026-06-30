@@ -39,9 +39,8 @@ with and without `--features simd`** (verified: 46/54 BITEXACT either way).
 | Outcome | Count |
 |---|---|
 | **BITEXACT** | **46** |
-| UNSUPPORTED (returns `DecodeError::Unsupported`) | 1 |
-| MISMATCH | 1 |
-| ERROR | 6 |
+| MISMATCH | 4 |
+| ERROR | 4 |
 | **Total** | **54** |
 
 **Frames decoded bit-exact: 5659** (sum over all BITEXACT streams).
@@ -52,12 +51,13 @@ High-profile I_8×8 + inter 8×8 transform + temporal/spatial-direct multi-ref
 (the 3 `VID_*_cavlc_temporal_direct` streams at 1280×544 / 1280×720 / 1920×1080),
 I_PCM, QCIF/CIF/up-to-1080p resolutions, and a 1700-frame stream (`LS_SVA_D`).
 
-### Unsupported / mismatch
+### Mismatch / error
 
-- **MISMATCH (1):** the SVC stream (`sps_subsetsps_bothVUI`, base layer only).
-- **UNSUPPORTED (1) / ERROR (2):** the 3 CABAC VID temporal_direct streams —
-  I_8×8 intra parse is in place but the B CABAC path (multi-ref `ref_idx` + CABAC
-  temporal direct) is not yet wired.
+- **MISMATCH (4):** the SVC stream (`sps_subsetsps_bothVUI`, base layer only) and the
+  3 CABAC VID temporal_direct streams. The CABAC VID streams now decode fully (B
+  multi-ref `ParseRefIdxCabac`, B temporal-direct 8×8, inter `transform_size_8x8_flag`,
+  and a `mb_qp_delta` sign fix are wired — TRACKER.md P15); their I-frame is bit-exact
+  but a localized inter-frame recon divergence remains.
 - **ERROR (4):** deliberately corrupted error-resilience streams + a missing-PPS
   stream.
 

@@ -98,10 +98,15 @@ P12/P13/P14. All 3 CAVLC High-profile `VID_*_cavlc_temporal_direct` streams
 (1280×544 / 1280×720 / 1920×1080) are now bit-exact. **46/54 conformance streams
 are bit-exact.**
 
-**Decoder (still deferred):** the CABAC B-slice multi-ref / temporal-direct path
-(3 High-profile CABAC streams), FMO/ASO, error concealment, monochrome / non-4:2:0
-/ >8-bit. (Guarded behind clean `DecodeError::Unsupported` where they would change
-the bit parse.)
+The 3 High-profile `VID_*_cabac_temporal_direct` streams now **decode fully** (CABAC
+B multi-ref `ParseRefIdxCabac`, B temporal-direct 8×8, inter `transform_size_8x8_flag`,
+and a `mb_qp_delta` sign fix are wired — see `TRACKER.md` P15). Their I-frame is
+bit-exact but they are still `MISMATCH` (a localized inter-frame recon divergence
+remains unresolved); they no longer count as `UNSUPPORTED`.
+
+**Decoder (still deferred):** FMO/ASO, error concealment, monochrome / non-4:2:0
+/ >8-bit, SVC scalable extension. (Guarded behind clean `DecodeError::Unsupported`
+where they would change the bit parse.)
 
 **Encoder:** sub-16×16 inter partitions, multiple reference frames, B-frames,
 CABAC encoding, rate control. (Fixed-QP baseline IPPP works and round-trips

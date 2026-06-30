@@ -251,3 +251,33 @@ to dump per-MB bS / per-block ref+MV and a per-decode-frame recon checksum):
       the MB and lost the per-8×8 variation; now branch on `!direct_8x8` (the resolved
       mode, same predicate the temporal path uses), filling per-8×8 colZero.
 - CABAC VID streams untouched (separate B-CABAC-multiref work) → still ERROR/UNSUPPORTED.
+
+## P15 — CABAC VID temporal-direct: parse wired, I-frame bit-exact (46/54, in progress)
+The three `VID_*_cabac_temporal_direct` streams now **decode fully** (151/300/54 frames)
+where before they hit `UNSUPPORTED("B CABAC multi-ref ref_idx")` / a P-frame desync. The
+I-frame and a subset of inter frames are bit-exact; the streams are still `MISMATCH`
+(not yet fully bit-exact). Work done, all verified against an instrumented OpenH264 oracle
+(per-MB mb_type / ref_idx ctxInc / dequantised-coeff / MV traces):
+- [x] **`mb_qp_delta` sign bug** (`mb_parse_cabac.rs parse_delta_qp`) — the dominant fix.
+      The C maps `uiCode = unary+1`, magnitude `(uiCode+1)>>1`, sign from the parity of
+      `uiCode` (negative when even). Our code did `code = unary+2` and used *that* for both
+      magnitude and parity, flipping the sign of **every** non-zero `mb_qp_delta`. Latent
+      because the previously bit-exact CABAC clips use constant QP; the first non-zero
+      delta (I-frame MB 7 here) mis-set QP, mis-scaling all subsequent dequant. Fixing it
+      made the I-frame bit-exact (entropy was already in sync — QP only affects dequant).
+- [x] **CABAC inter `transform_size_8x8_flag`** (`parse_inter_t8_flag_cabac`, wired into
+      the P and B inter paths) — was hard-coded `transform_8x8: false`, so High-profile
+      inter MBs desynced the residual parse. Mirrors the CAVLC presence condition
+      (16x16/16x8/8x16, or 8x8 with all-8x8 subparts, `cbp_l != 0`, PPS 8x8 mode).
+- [x] **B multi-ref `ParseRefIdxCabac`** (`parse_ref_idx_b`) — implements the B-slice ctx
+      derivation (neighbour `ref_idx > 0` AND not direct-coded), with a per-block `direct`
+      neighbour cache (`WelsFillDirectCacheCabac`) and per-MB `pDirect` reset; removes the
+      `UNSUPPORTED` guard. Per-partition ref now stored into the per-MB ref array between
+      partitions so the next partition's ctx sees it.
+- [x] **B temporal-direct 8x8 (CABAC)** — `parse_b_8x8_cabac` now branches spatial vs
+      temporal (`b_direct_temporal_sub`) like the CAVLC path, instead of always spatial.
+- Remaining: a localized inter-frame recon divergence (P/B) that grows over the GOP.
+      Sampled MBs (e.g. P poc8 MB119: type/qp/cbp/t8/coeffs/MVs) all match the oracle, and
+      the recon primitives (idct8x8, MC, dequant) are individually bit-exact, so the root
+      cause is not yet isolated; the shared recon is validated by the bit-exact CAVLC VID
+      streams. Not faked — honest 46/54.
