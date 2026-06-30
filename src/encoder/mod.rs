@@ -13,6 +13,7 @@ mod encode_mb;
 
 pub mod cavlc_writer;
 pub mod intra_pred;
+pub mod motion_est;
 pub mod nal_encap;
 pub mod paraset;
 
