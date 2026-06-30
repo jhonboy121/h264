@@ -60,7 +60,11 @@ named_sad!(sad16x16, 16, 16, "Port of `WelsSampleSad16x16_c`.");
 /// The caller must ensure `o2 >= st2 + 1` so the up/left neighbours are in
 /// bounds (the motion-vector clamp guarantees this in the encoder).
 #[inline]
-pub fn sad_four(s1: &[u8], o1: usize, st1: usize, s2: &[u8], o2: usize, st2: usize, w: usize, h: usize) -> [u32; 4] {
+pub fn sad_four(s1: crate::dsp::Blk, s2: crate::dsp::Blk, dim: crate::dsp::Dim) -> [u32; 4] {
+    let (o1, st1) = (s1.off, s1.stride);
+    let (o2, st2) = (s2.off, s2.stride);
+    let (s1, s2) = (s1.data, s2.data);
+    let (w, h) = (dim.w, dim.h);
     [
         sad(&s1[o1..], st1, &s2[o2 - st2..], st2, w, h),
         sad(&s1[o1..], st1, &s2[o2 + st2..], st2, w, h),
@@ -134,7 +138,11 @@ mod tests {
         // Centre the candidate one row/col in so the up/left neighbours are valid.
         let (o1, o2) = (0usize, st2 + 1);
         for (w, h) in [(4, 4), (8, 4), (4, 8), (8, 8), (16, 8), (8, 16), (16, 16)] {
-            let got = sad_four(&a, o1, st1, &b, o2, st2, w, h);
+            let got = sad_four(
+                crate::dsp::Blk { data: &a, off: o1, stride: st1 },
+                crate::dsp::Blk { data: &b, off: o2, stride: st2 },
+                crate::dsp::Dim { w, h },
+            );
             let want = [
                 sad_ref(&a[o1..], st1, &b[o2 - st2..], st2, w, h),
                 sad_ref(&a[o1..], st1, &b[o2 + st2..], st2, w, h),
