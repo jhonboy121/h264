@@ -10,6 +10,7 @@
 //!
 //! Usage: `cargo run --release --example bench_encode`
 //! (Add `--features simd` to exercise the SIMD SAD/MC kernels the encoder uses.)
+#![allow(unused_assignments)] // bench loop reassigns the byte tally each rep
 
 use std::time::Instant;
 
@@ -88,7 +89,7 @@ fn main() {
         for intra in [true, false] {
             // Measure encode of the whole sequence, auto-scaled.
             let mut times = Vec::new();
-            let mut au_total;
+            let mut au_total = 0usize;
             let start = Instant::now();
             let mut reps = 0u32;
             loop {
