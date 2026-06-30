@@ -204,6 +204,35 @@ pub fn parse_intra_mb_cavlc(
     parse_intra_mb_core(bs, ctx, mb_xy, pps, last_mb_qp, coeffs, ui_mb_type)
 }
 
+/// Apply `constrained_intra_pred_flag`: a neighbouring macroblock that is not
+/// intra-coded is unavailable for intra prediction (spec 8.3). Returns the
+/// availability with inter neighbours masked out; a no-op when `constrained`
+/// is false or in I slices (all neighbours intra).
+pub(super) fn constrain_intra_avail(
+    ctx: &DecoderContext,
+    mb_xy: usize,
+    mut n: NeighborAvail,
+    constrained: bool,
+) -> NeighborAvail {
+    if !constrained {
+        return n;
+    }
+    let mb_width = ctx.mb_width;
+    if n.left && !ctx.mb_type[n.left_xy].is_intra() {
+        n.left = false;
+    }
+    if n.top && !ctx.mb_type[n.top_xy].is_intra() {
+        n.top = false;
+    }
+    if n.top_left && !ctx.mb_type[mb_xy - mb_width - 1].is_intra() {
+        n.top_left = false;
+    }
+    if n.top_right && !ctx.mb_type[mb_xy - mb_width + 1].is_intra() {
+        n.top_right = false;
+    }
+    n
+}
+
 /// Body of intra-MB parse with `ui_mb_type` already read (so the P-slice path
 /// can hand in the value after its `-5` adjustment).
 pub(super) fn parse_intra_mb_core(
@@ -216,8 +245,16 @@ pub(super) fn parse_intra_mb_core(
     ui_mb_type: u32,
 ) -> Result<()> {
     let neigh = ctx.neighbors(mb_xy);
+    // Geometric snapshots: used for residual non-zero-count (nC) derivation,
+    // which is NOT affected by constrained_intra_pred.
     let left = NeighborSnap::from_ctx(ctx, neigh.left, neigh.left_xy);
     let top = NeighborSnap::from_ctx(ctx, neigh.top, neigh.top_xy);
+    // Constrained availability for intra prediction: with
+    // constrained_intra_pred_flag, inter-coded neighbours are unavailable
+    // (spec 8.3.x / WelsFillCache*Constrain1*).
+    let neigh_c = constrain_intra_avail(ctx, mb_xy, neigh, pps.constrained_intra_pred_flag);
+    let left_c = NeighborSnap::from_ctx(ctx, neigh_c.left, neigh.left_xy);
+    let top_c = NeighborSnap::from_ctx(ctx, neigh_c.top, neigh.top_xy);
 
     // Current-MB block state, accumulated locally then written back to ctx.
     let mut cur_nzc_luma = [0i8; 16];
@@ -247,7 +284,7 @@ pub(super) fn parse_intra_mb_core(
         }
         mb_type = MbType::Intra4x4;
         chroma_mode =
-            parse_intra4x4(bs, &neigh, &left, &top, &mut best_mode, &mut final_mode)?;
+            parse_intra4x4(bs, &neigh_c, &left_c, &top_c, &mut best_mode, &mut final_mode)?;
 
         let ui_cbp = bs.read_ue()?;
         if ui_cbp > 47 {
@@ -260,9 +297,9 @@ pub(super) fn parse_intra_mb_core(
         i16_mode = ((ui_mb_type - 1) & 3) as i8;
         cbp = I16_CBP_TABLE[((ui_mb_type - 1) >> 2) as usize];
 
-        let neigh_avail = ((neigh.left as i32) << 2)
-            | ((neigh.top_left as i32) << 1)
-            | (neigh.top as i32);
+        let neigh_avail = ((neigh_c.left as i32) << 2)
+            | ((neigh_c.top_left as i32) << 1)
+            | (neigh_c.top as i32);
         check_intra16x16_mode(neigh_avail, &mut i16_mode)?;
         // intra_chroma_pred_mode
         let cm = bs.read_ue()?;

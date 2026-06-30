@@ -127,6 +127,14 @@ struct Neigh {
     top_avail: bool,
     left_top_avail: bool,
     right_top_avail: bool,
+    /// Availability for intra *prediction* with constrained_intra_pred_flag:
+    /// inter-coded neighbours masked out (spec 8.3). Equal to the plain
+    /// availability when the flag is off. Residual/entropy contexts keep the
+    /// plain availability above.
+    left_avail_intra: bool,
+    top_avail_intra: bool,
+    left_top_avail_intra: bool,
+    right_top_avail_intra: bool,
     left_type: Option<MbType>,
     top_type: Option<MbType>,
     left_cbp: u8,
@@ -149,7 +157,7 @@ struct Neigh {
 }
 
 impl Neigh {
-    fn build(ctx: &DecoderContext, mb_xy: usize) -> Self {
+    fn build(ctx: &DecoderContext, mb_xy: usize, constrained: bool) -> Self {
         let na = ctx.neighbors(mb_xy);
         let mb_x = mb_xy % ctx.mb_width;
         let cur = ctx.slice_idc[mb_xy];
@@ -157,6 +165,15 @@ impl Neigh {
         let right_top_avail = mb_xy >= ctx.mb_width
             && mb_x != ctx.mb_width - 1
             && ctx.slice_idc[mb_xy - ctx.mb_width + 1] == cur;
+
+        // Constrained-intra availability: mask inter-coded neighbours.
+        let intra_ok = |avail: bool, xy: usize| avail && (!constrained || ctx.mb_type[xy].is_intra());
+        let left_avail_intra = intra_ok(na.left, na.left_xy);
+        let top_avail_intra = intra_ok(na.top, na.top_xy);
+        let left_top_avail_intra = na.top_left
+            && (!constrained || ctx.mb_type[mb_xy - ctx.mb_width - 1].is_intra());
+        let right_top_avail_intra = right_top_avail
+            && (!constrained || ctx.mb_type[mb_xy - ctx.mb_width + 1].is_intra());
 
         type SnapResult = ([i8; 16], [i8; 8], [i8; 16], bool, i8, u8, u16, MbType, bool);
         let snap = |avail: bool, xy: usize| -> SnapResult {
@@ -182,6 +199,10 @@ impl Neigh {
             top_avail: na.top,
             left_top_avail: na.top_left,
             right_top_avail,
+            left_avail_intra,
+            top_avail_intra,
+            left_top_avail_intra,
+            right_top_avail_intra,
             left_type: if na.left { Some(ltype) } else { None },
             top_type: if na.top { Some(ttype) } else { None },
             left_cbp: lcbp,
@@ -635,7 +656,7 @@ pub fn decode_mb_cabac_islice(
     coeffs: &mut [i16; 384],
 ) -> Result<bool> {
     let MbCtx { ctx, mb_xy, pps } = mb;
-    let n = Neigh::build(ctx, mb_xy);
+    let n = Neigh::build(ctx, mb_xy, pps.constrained_intra_pred_flag);
     let ui_mb_type = parse_mb_type_i(dec, ctxs, &n);
     decode_intra_mb_body(dec, ctxs, MbCtx { ctx, mb_xy, pps }, qp, coeffs, &n, ui_mb_type)?;
     Ok(parse_end_of_slice(dec))
@@ -688,9 +709,9 @@ fn decode_intra_mb_body(
         mb_type = MbType::Intra16x16;
         i16_mode = ((ui_mb_type - 1) & 3) as i8;
         cbp = I16_CBP_TABLE[((ui_mb_type - 1) >> 2) as usize];
-        let neigh_avail = ((n.left_avail as i32) << 2)
-            | ((n.left_top_avail as i32) << 1)
-            | (n.top_avail as i32);
+        let neigh_avail = ((n.left_avail_intra as i32) << 2)
+            | ((n.left_top_avail_intra as i32) << 1)
+            | (n.top_avail_intra as i32);
         check_intra16x16_mode(neigh_avail, &mut i16_mode)?;
         let cm = parse_ipr_chroma(dec, ctxs, n);
         chroma_mode = cm as i8;
@@ -784,38 +805,38 @@ fn parse_intra4x4_cabac(
     best_mode: &mut [i8; 16],
     final_mode: &mut [i8; 16],
 ) -> Result<i8> {
-    let top_modes: [i8; 4] = if n.top_avail && n.top_is_nxn {
+    let top_modes: [i8; 4] = if n.top_avail_intra && n.top_is_nxn {
         [n.top_best[12], n.top_best[13], n.top_best[14], n.top_best[15]]
-    } else if n.top_avail {
+    } else if n.top_avail_intra {
         [2; 4]
     } else {
         [-1; 4]
     };
-    let left_modes: [i8; 4] = if n.left_avail && n.left_is_nxn {
+    let left_modes: [i8; 4] = if n.left_avail_intra && n.left_is_nxn {
         [n.left_best[3], n.left_best[7], n.left_best[11], n.left_best[15]]
-    } else if n.left_avail {
+    } else if n.left_avail_intra {
         [2; 4]
     } else {
         [-1; 4]
     };
 
     let mut sample_avail = [0i32; 30];
-    if n.left_avail {
+    if n.left_avail_intra {
         sample_avail[6] = 1;
         sample_avail[12] = 1;
         sample_avail[18] = 1;
         sample_avail[24] = 1;
     }
-    if n.left_top_avail {
+    if n.left_top_avail_intra {
         sample_avail[0] = 1;
     }
-    if n.top_avail {
+    if n.top_avail_intra {
         sample_avail[1] = 1;
         sample_avail[2] = 1;
         sample_avail[3] = 1;
         sample_avail[4] = 1;
     }
-    if n.right_top_avail {
+    if n.right_top_avail_intra {
         sample_avail[5] = 1;
     }
 
@@ -1074,7 +1095,7 @@ pub fn decode_mb_cabac_pslice(
     coeffs: &mut [i16; 384],
 ) -> Result<bool> {
     let MbCtx { ctx, mb_xy, pps } = mb;
-    let n = Neigh::build(ctx, mb_xy);
+    let n = Neigh::build(ctx, mb_xy, pps.constrained_intra_pred_flag);
     let ref_count = ref_pic_ids.len();
 
     if !parse_skip_flag(dec, ctxs, &n) {
