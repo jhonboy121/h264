@@ -34,7 +34,7 @@ tables → dsp/tables.rs, and the luma/chroma DC dequant-IDCT (decode_slice.cpp:
 - [⏸] `dsp/expand.rs` — DEFERRED to P3 (coupled to padded Plane buffer)
 - [ ] `dsp/tables.rs` — dequant/scan tables — moved to P2 (needed by CAVLC residual)
 
-## P2 — Decoder parsing 🚧
+## P2 — Decoder parsing ✅ (parsing primitives; MB-level syntax → P3)
 - [x] `decoder/nal.rs` — Annex-B framing, NAL header, EPB strip (4 tests)
 - [x] `decoder/params.rs` — SPS/PPS+VUI parse, validated on real fixtures (5 tests, fc0985f)
       · BANM 176x144, BA1 352x288, SVA 176x144. HRD not stored (Unsupported). 
@@ -49,14 +49,24 @@ tables → dsp/tables.rs, and the luma/chroma DC dequant-IDCT (decode_slice.cpp:
   folds into P3 decode loop (needs mb_cache). residual_block_cavlc fills out_level in
   scan order; P3 maps zigzag→raster + dequant.
 
-## P3 — Decoder reconstruction ⬜
-- [ ] `decoder/mv_pred.rs` · anchor `DecUT_PredMv.cpp`
-- [ ] `decoder/recon.rs` — MB reconstruct (intra+inter+residual)
-- [ ] `decoder/dpb.rs`, `decoder/ref_pic.rs` — DPB + ref mgmt
-- [ ] `decoder/fmo.rs` — FMO
-- [ ] `decoder/decode_slice.rs` — slice/MB decode loop
-- [ ] in-loop deblock integration
-- [ ] `decoder/error_conceal.rs`
+## P3 — Decoder reconstruction 🚧  (integration phase — shared DecoderContext)
+Strategy: build the shared backbone types first, then layer decode paths. Order:
+- [ ] **P3a baseline I-frame (CAVLC) MVP** — the smallest end-to-end:
+      `decoder/picture.rs` (Plane/Picture YUV420 + PADDING border, alloc-once),
+      `decoder/context.rs` (DecoderContext: SPS/PPS maps, cur pic, per-MB arrays
+      mb_type/intra_modes/cbp/qp/nnz, mb_cache+neighbor avail, sized from SPS),
+      `decoder/mb_parse_cavlc.rs` (I-slice mb_type, intra16x16/4x4 pred modes w/
+      neighbor pred, chroma mode, cbp, mb_qp_delta, residual→zigzag→raster+dequant),
+      `decoder/recon_intra.rs` (neighbor sample setup + dsp::intra_pred + idct add;
+      luma/chroma DC dequant-IDCT from decode_slice.cpp:246/359),
+      `decoder/decode_slice.rs` (MB loop). Test: decode 1st IDR of BANM_MW_D.264.
+- [ ] **P3b deblock integration** — boundary strength + dsp::deblock (DecUT_Deblock).
+- [ ] **P3c P-slice** — `mv_pred.rs` (anchor `DecUT_PredMv.cpp`), inter mb parse
+      (mb_type/sub_mb/ref_idx/mvd), MC reconstruct (dsp::mc), skip.
+- [ ] **P3d DPB/POC/ref-list** — `dpb.rs`,`ref_pic.rs` (POC types, ref list init, MMCO).
+- [ ] **P3e CABAC MB syntax** — the deferred mb_type/mvd/cbp/intra-mode/skip CABAC decoders.
+- [ ] **P3f FMO** (`fmo.rs`), **error concealment** (`error_conceal.rs`) — lower priority.
+- [ ] `dsp/expand.rs` border padding (deferred from P1) — needed by MC ref reads.
 
 ## P4 — Decoder API + conformance ⬜
 - [ ] `src/api.rs` Decoder facade, `src/formats/` YUV→RGB
