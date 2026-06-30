@@ -94,6 +94,10 @@ struct CurPic {
     ctx: DecoderContext,
     frame_num: i32,
     is_ref: bool,
+    is_idr: bool,
+    /// `dec_ref_pic_marking` from the first slice of this picture (reference
+    /// pictures only), driving sliding-window vs adaptive (MMCO) marking.
+    marking: Option<super::slice_header::RefPicMarking>,
     slice_index: i32,
     region: VisibleRegion,
 }
@@ -177,6 +181,8 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
                 ctx: DecoderContext::new(Vec::new(), Vec::new(), mb_width, mb_height),
                 frame_num: sh.frame_num as i32,
                 is_ref: nal.ref_idc != 0,
+                is_idr,
+                marking: sh.dec_ref_pic_marking.clone(),
                 slice_index: 0,
                 region: region_from_sps(&sps),
             });
@@ -214,7 +220,15 @@ fn finalize_into(mut c: CurPic, dpb: &mut Dpb, next_id: &mut i32) -> Frame {
         let pic = c.ctx.picture;
         let id = *next_id;
         *next_id += 1;
-        dpb.add_short_term(pic.clone(), c.frame_num, id);
+        let (lt_flag, adaptive, mmco) = match &c.marking {
+            Some(m) => (
+                m.long_term_reference_flag,
+                m.adaptive_ref_pic_marking_mode_flag,
+                m.mmco.as_slice(),
+            ),
+            None => (false, false, &[][..]),
+        };
+        dpb.mark_and_insert(pic.clone(), c.frame_num, id, c.is_idr, lt_flag, adaptive, mmco);
         Frame::new(pic, region)
     } else {
         Frame::new(c.ctx.picture, region)
@@ -253,9 +267,14 @@ fn decode_one_slice(
         return Err(DecodeError::Unsupported("B slice"));
     }
 
-    // Build the default P list-0 reference list for this slice.
-    let list = dpb.p_ref_list(sh.frame_num as i32);
-    let ref_count = (sh.num_ref_idx_active[0] as usize).min(list.len());
+    // Build the P list-0 reference list for this slice (default order with any
+    // ref_pic_list_modification applied).
+    let list = dpb.p_ref_list(
+        sh.frame_num as i32,
+        sh.num_ref_idx_active[0] as usize,
+        &sh.ref_pic_list_reordering.list[0],
+    );
+    let ref_count = list.len();
     if ref_count == 0 {
         return Err(DecodeError::InvalidSyntax("P slice with no references"));
     }
@@ -325,8 +344,12 @@ fn decode_one_slice_cabac(
 
     // Reference list (P slices only).
     let (ref_pic_ids, ref_pics): (Vec<i32>, Vec<&Picture>) = if sh.slice_type.is_p() {
-        let list = dpb.p_ref_list(sh.frame_num as i32);
-        let ref_count = (sh.num_ref_idx_active[0] as usize).min(list.len());
+        let list = dpb.p_ref_list(
+            sh.frame_num as i32,
+            sh.num_ref_idx_active[0] as usize,
+            &sh.ref_pic_list_reordering.list[0],
+        );
+        let ref_count = list.len();
         if ref_count == 0 {
             return Err(DecodeError::InvalidSyntax("P slice with no references"));
         }
@@ -540,6 +563,8 @@ impl StreamDecoder {
                 ),
                 frame_num: sh.frame_num as i32,
                 is_ref: nal.ref_idc != 0,
+                is_idr,
+                marking: sh.dec_ref_pic_marking.clone(),
                 slice_index: 0,
                 region: region_from_sps(&sps),
             });
