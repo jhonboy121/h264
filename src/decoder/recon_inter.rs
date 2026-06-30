@@ -11,7 +11,7 @@ use crate::dsp::transform::{idct4x4_add, idct8x8_add};
 use crate::dsp::{Dim, Mv};
 
 use super::context::{DecoderContext, MbType, SubMbType};
-use super::picture::{Picture, PADDING};
+use super::picture::{PADDING, Picture};
 
 const BLOCK_RASTER: [usize; 16] = [0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15];
 const BLOCK_BX: [usize; 16] = [0, 1, 0, 1, 2, 3, 2, 3, 0, 1, 0, 1, 2, 3, 2, 3];
@@ -27,7 +27,15 @@ struct PartPos {
 /// `BaseMC`: clip the full-pel MV into the padded reference, then motion
 /// compensate one `dim` luma block (+ `dim/2` chroma) from `ref_pic`
 /// into the current picture at MB-relative offset `(pos.dx, pos.dy)` luma pixels.
-fn base_mc(pic: &mut Picture, ref_pic: &Picture, mb_x: usize, mb_y: usize, pos: PartPos, mv: [i16; 2], dim: Dim) {
+fn base_mc(
+    pic: &mut Picture,
+    ref_pic: &Picture,
+    mb_x: usize,
+    mb_y: usize,
+    pos: PartPos,
+    mv: [i16; 2],
+    dim: Dim,
+) {
     let PartPos { dx, dy } = pos;
     let (w, h) = (dim.w, dim.h);
     let pic_w = pic.width as i32;
@@ -41,14 +49,18 @@ fn base_mc(pic: &mut Picture, ref_pic: &Picture, mb_x: usize, mb_y: usize, pos: 
     // Luma.
     let ls = pic.luma_stride;
     let dst_l = pic.luma_origin() + (mb_y * 16 + dy) * ls + (mb_x * 16 + dx);
-    let src_l = (ref_pic.luma_origin() as i32 + (full_mvx >> 2) + (full_mvy >> 2) * ls as i32) as usize;
+    let src_l =
+        (ref_pic.luma_origin() as i32 + (full_mvx >> 2) + (full_mvy >> 2) * ls as i32) as usize;
     mc_luma(
         &mut pic.y[dst_l..],
         ls,
         &ref_pic.y,
         src_l,
         ls,
-        Mv { x: full_mvx as i16, y: full_mvy as i16 },
+        Mv {
+            x: full_mvx as i16,
+            y: full_mvy as i16,
+        },
         Dim { w, h },
     );
 
@@ -57,9 +69,13 @@ fn base_mc(pic: &mut Picture, ref_pic: &Picture, mb_x: usize, mb_y: usize, pos: 
     let cdx = dx / 2;
     let cdy = dy / 2;
     let dst_c = pic.chroma_origin() + (mb_y * 8 + cdy) * cs + (mb_x * 8 + cdx);
-    let src_c = (ref_pic.chroma_origin() as i32 + (full_mvx >> 3) + (full_mvy >> 3) * cs as i32) as usize;
+    let src_c =
+        (ref_pic.chroma_origin() as i32 + (full_mvx >> 3) + (full_mvy >> 3) * cs as i32) as usize;
     let (cw, ch) = (w / 2, h / 2);
-    let cmv = Mv { x: full_mvx as i16, y: full_mvy as i16 };
+    let cmv = Mv {
+        x: full_mvx as i16,
+        y: full_mvy as i16,
+    };
     let cdim = Dim { w: cw, h: ch };
     mc_chroma(&mut pic.u[dst_c..], cs, &ref_pic.u, src_c, cs, cmv, cdim);
     mc_chroma(&mut pic.v[dst_c..], cs, &ref_pic.v, src_c, cs, cmv, cdim);
@@ -92,7 +108,13 @@ struct DstPlanes<'a> {
 /// [`base_mc`]).
 fn mc_to(ref_pic: &Picture, pos: McPos, mv: [i16; 2], dim: Dim, dst: DstPlanes<'_>) {
     let McPos { mb_x, mb_y, dx, dy } = pos;
-    let DstPlanes { y: dst_y, ys: dys, u: dst_u, v: dst_v, cs: dcs } = dst;
+    let DstPlanes {
+        y: dst_y,
+        ys: dys,
+        u: dst_u,
+        v: dst_v,
+        cs: dcs,
+    } = dst;
     let (w, h) = (dim.w, dim.h);
     let pic_w = ref_pic.width as i32;
     let pic_h = ref_pic.height as i32;
@@ -103,12 +125,28 @@ fn mc_to(ref_pic: &Picture, pos: McPos, mv: [i16; 2], dim: Dim, dst: DstPlanes<'
     let full_mvy = (abs_y + mv[1] as i32).clamp((-pad + 2) << 2, (pic_h + pad - 19) << 2);
 
     let ls = ref_pic.luma_stride;
-    let src_l = (ref_pic.luma_origin() as i32 + (full_mvx >> 2) + (full_mvy >> 2) * ls as i32) as usize;
-    mc_luma(dst_y, dys, &ref_pic.y, src_l, ls, Mv { x: full_mvx as i16, y: full_mvy as i16 }, Dim { w, h });
+    let src_l =
+        (ref_pic.luma_origin() as i32 + (full_mvx >> 2) + (full_mvy >> 2) * ls as i32) as usize;
+    mc_luma(
+        dst_y,
+        dys,
+        &ref_pic.y,
+        src_l,
+        ls,
+        Mv {
+            x: full_mvx as i16,
+            y: full_mvy as i16,
+        },
+        Dim { w, h },
+    );
 
     let cs = ref_pic.chroma_stride;
-    let src_c = (ref_pic.chroma_origin() as i32 + (full_mvx >> 3) + (full_mvy >> 3) * cs as i32) as usize;
-    let cmv = Mv { x: full_mvx as i16, y: full_mvy as i16 };
+    let src_c =
+        (ref_pic.chroma_origin() as i32 + (full_mvx >> 3) + (full_mvy >> 3) * cs as i32) as usize;
+    let cmv = Mv {
+        x: full_mvx as i16,
+        y: full_mvy as i16,
+    };
     let cdim = Dim { w: w / 2, h: h / 2 };
     mc_chroma(dst_u, dcs, &ref_pic.u, src_c, cs, cmv, cdim);
     mc_chroma(dst_v, dcs, &ref_pic.v, src_c, cs, cmv, cdim);
@@ -170,8 +208,16 @@ fn apply_p_weight(ctx: &mut DecoderContext, mb_xy: usize, pw: &PWeight) {
         if r < 0 {
             continue;
         }
-        let (lw, lo) = pw.lw.get(r as usize).copied().unwrap_or((1 << pw.luma_denom, 0));
-        let cw = pw.cw.get(r as usize).copied().unwrap_or([(1 << pw.chroma_denom, 0); 2]);
+        let (lw, lo) = pw
+            .lw
+            .get(r as usize)
+            .copied()
+            .unwrap_or((1 << pw.luma_denom, 0));
+        let cw = pw
+            .cw
+            .get(r as usize)
+            .copied()
+            .unwrap_or([(1 << pw.chroma_denom, 0); 2]);
         let lbase = y_off + by8 * 8 * ls + bx8 * 8;
         for i in 0..8 {
             for j in 0..8 {
@@ -221,15 +267,55 @@ pub fn recon_inter_mb(
     // ---- Motion compensation ----
     match mb_type {
         MbType::Inter16x16 | MbType::PSkip => {
-            base_mc(&mut ctx.picture, rp(ref_idx[0]), mb_x, mb_y, PartPos { dx: 0, dy: 0 }, mv[0], Dim { w: 16, h: 16 });
+            base_mc(
+                &mut ctx.picture,
+                rp(ref_idx[0]),
+                mb_x,
+                mb_y,
+                PartPos { dx: 0, dy: 0 },
+                mv[0],
+                Dim { w: 16, h: 16 },
+            );
         }
         MbType::Inter16x8 => {
-            base_mc(&mut ctx.picture, rp(ref_idx[0]), mb_x, mb_y, PartPos { dx: 0, dy: 0 }, mv[0], Dim { w: 16, h: 8 });
-            base_mc(&mut ctx.picture, rp(ref_idx[8]), mb_x, mb_y, PartPos { dx: 0, dy: 8 }, mv[8], Dim { w: 16, h: 8 });
+            base_mc(
+                &mut ctx.picture,
+                rp(ref_idx[0]),
+                mb_x,
+                mb_y,
+                PartPos { dx: 0, dy: 0 },
+                mv[0],
+                Dim { w: 16, h: 8 },
+            );
+            base_mc(
+                &mut ctx.picture,
+                rp(ref_idx[8]),
+                mb_x,
+                mb_y,
+                PartPos { dx: 0, dy: 8 },
+                mv[8],
+                Dim { w: 16, h: 8 },
+            );
         }
         MbType::Inter8x16 => {
-            base_mc(&mut ctx.picture, rp(ref_idx[0]), mb_x, mb_y, PartPos { dx: 0, dy: 0 }, mv[0], Dim { w: 8, h: 16 });
-            base_mc(&mut ctx.picture, rp(ref_idx[2]), mb_x, mb_y, PartPos { dx: 8, dy: 0 }, mv[2], Dim { w: 8, h: 16 });
+            base_mc(
+                &mut ctx.picture,
+                rp(ref_idx[0]),
+                mb_x,
+                mb_y,
+                PartPos { dx: 0, dy: 0 },
+                mv[0],
+                Dim { w: 8, h: 16 },
+            );
+            base_mc(
+                &mut ctx.picture,
+                rp(ref_idx[2]),
+                mb_x,
+                mb_y,
+                PartPos { dx: 8, dy: 0 },
+                mv[2],
+                Dim { w: 8, h: 16 },
+            );
         }
         MbType::Inter8x8 | MbType::Inter8x8Ref0 => {
             for (i, &sub) in subs.iter().enumerate() {
@@ -239,15 +325,70 @@ pub fn recon_inter_mb(
                 let r = rp(ref_idx[i_idx]);
                 match sub {
                     SubMbType::P8x8 => {
-                        base_mc(&mut ctx.picture, r, mb_x, mb_y, PartPos { dx: blk8x, dy: blk8y }, mv[i_idx], Dim { w: 8, h: 8 });
+                        base_mc(
+                            &mut ctx.picture,
+                            r,
+                            mb_x,
+                            mb_y,
+                            PartPos {
+                                dx: blk8x,
+                                dy: blk8y,
+                            },
+                            mv[i_idx],
+                            Dim { w: 8, h: 8 },
+                        );
                     }
                     SubMbType::P8x4 => {
-                        base_mc(&mut ctx.picture, r, mb_x, mb_y, PartPos { dx: blk8x, dy: blk8y }, mv[i_idx], Dim { w: 8, h: 4 });
-                        base_mc(&mut ctx.picture, r, mb_x, mb_y, PartPos { dx: blk8x, dy: blk8y + 4 }, mv[i_idx + 4], Dim { w: 8, h: 4 });
+                        base_mc(
+                            &mut ctx.picture,
+                            r,
+                            mb_x,
+                            mb_y,
+                            PartPos {
+                                dx: blk8x,
+                                dy: blk8y,
+                            },
+                            mv[i_idx],
+                            Dim { w: 8, h: 4 },
+                        );
+                        base_mc(
+                            &mut ctx.picture,
+                            r,
+                            mb_x,
+                            mb_y,
+                            PartPos {
+                                dx: blk8x,
+                                dy: blk8y + 4,
+                            },
+                            mv[i_idx + 4],
+                            Dim { w: 8, h: 4 },
+                        );
                     }
                     SubMbType::P4x8 => {
-                        base_mc(&mut ctx.picture, r, mb_x, mb_y, PartPos { dx: blk8x, dy: blk8y }, mv[i_idx], Dim { w: 4, h: 8 });
-                        base_mc(&mut ctx.picture, r, mb_x, mb_y, PartPos { dx: blk8x + 4, dy: blk8y }, mv[i_idx + 1], Dim { w: 4, h: 8 });
+                        base_mc(
+                            &mut ctx.picture,
+                            r,
+                            mb_x,
+                            mb_y,
+                            PartPos {
+                                dx: blk8x,
+                                dy: blk8y,
+                            },
+                            mv[i_idx],
+                            Dim { w: 4, h: 8 },
+                        );
+                        base_mc(
+                            &mut ctx.picture,
+                            r,
+                            mb_x,
+                            mb_y,
+                            PartPos {
+                                dx: blk8x + 4,
+                                dy: blk8y,
+                            },
+                            mv[i_idx + 1],
+                            Dim { w: 4, h: 8 },
+                        );
                     }
                     SubMbType::P4x4 => {
                         for j in 0..4 {
@@ -255,8 +396,16 @@ pub fn recon_inter_mb(
                             let b4x = (j & 1) << 2;
                             let b4y = (j >> 1) << 2;
                             base_mc(
-                                &mut ctx.picture, r, mb_x, mb_y, PartPos { dx: blk8x + b4x, dy: blk8y + b4y },
-                                mv[i_idx + j_idx], Dim { w: 4, h: 4 },
+                                &mut ctx.picture,
+                                r,
+                                mb_x,
+                                mb_y,
+                                PartPos {
+                                    dx: blk8x + b4x,
+                                    dy: blk8y + b4y,
+                                },
+                                mv[i_idx + j_idx],
+                                Dim { w: 4, h: 4 },
                             );
                         }
                     }
@@ -350,36 +499,102 @@ fn b_partitions(ctx: &DecoderContext, mb_xy: usize) -> alloc::vec::Vec<BPart> {
     let mut parts: Vec<BPart> = Vec::new();
     match ctx.mb_type[mb_xy] {
         MbType::B16x16 => {
-            parts.push(BPart { dx: 0, dy: 0, w: 16, h: 16, quirk: -1 });
+            parts.push(BPart {
+                dx: 0,
+                dy: 0,
+                w: 16,
+                h: 16,
+                quirk: -1,
+            });
         }
         MbType::BSkip | MbType::BDirect16x16 => {
             // Direct MBs carry per-8x8 (or per-4x4) motion; MC each 8x8 from its
             // own block MV (uniform-MV direct reduces to the same result).
             for i in 0..4 {
-                parts.push(BPart { dx: (i & 1) * 8, dy: (i >> 1) * 8, w: 8, h: 8, quirk: -1 });
+                parts.push(BPart {
+                    dx: (i & 1) * 8,
+                    dy: (i >> 1) * 8,
+                    w: 8,
+                    h: 8,
+                    quirk: -1,
+                });
             }
         }
         MbType::B16x8 => {
-            parts.push(BPart { dx: 0, dy: 0, w: 16, h: 8, quirk: 0 });
-            parts.push(BPart { dx: 0, dy: 8, w: 16, h: 8, quirk: 1 });
+            parts.push(BPart {
+                dx: 0,
+                dy: 0,
+                w: 16,
+                h: 8,
+                quirk: 0,
+            });
+            parts.push(BPart {
+                dx: 0,
+                dy: 8,
+                w: 16,
+                h: 8,
+                quirk: 1,
+            });
         }
         MbType::B8x16 => {
-            parts.push(BPart { dx: 0, dy: 0, w: 8, h: 16, quirk: 0 });
-            parts.push(BPart { dx: 8, dy: 0, w: 8, h: 16, quirk: 1 });
+            parts.push(BPart {
+                dx: 0,
+                dy: 0,
+                w: 8,
+                h: 16,
+                quirk: 0,
+            });
+            parts.push(BPart {
+                dx: 8,
+                dy: 0,
+                w: 8,
+                h: 16,
+                quirk: 1,
+            });
         }
         MbType::B8x8 => {
             for i in 0..4 {
                 let blk8x = (i & 1) * 8;
                 let blk8y = (i >> 1) * 8;
                 match ctx.sub_mb_type[mb_xy * 4 + i] {
-                    SubMbType::P8x8 => parts.push(BPart { dx: blk8x, dy: blk8y, w: 8, h: 8, quirk: -1 }),
+                    SubMbType::P8x8 => parts.push(BPart {
+                        dx: blk8x,
+                        dy: blk8y,
+                        w: 8,
+                        h: 8,
+                        quirk: -1,
+                    }),
                     SubMbType::P8x4 => {
-                        parts.push(BPart { dx: blk8x, dy: blk8y, w: 8, h: 4, quirk: -1 });
-                        parts.push(BPart { dx: blk8x, dy: blk8y + 4, w: 8, h: 4, quirk: -1 });
+                        parts.push(BPart {
+                            dx: blk8x,
+                            dy: blk8y,
+                            w: 8,
+                            h: 4,
+                            quirk: -1,
+                        });
+                        parts.push(BPart {
+                            dx: blk8x,
+                            dy: blk8y + 4,
+                            w: 8,
+                            h: 4,
+                            quirk: -1,
+                        });
                     }
                     SubMbType::P4x8 => {
-                        parts.push(BPart { dx: blk8x, dy: blk8y, w: 4, h: 8, quirk: -1 });
-                        parts.push(BPart { dx: blk8x + 4, dy: blk8y, w: 4, h: 8, quirk: -1 });
+                        parts.push(BPart {
+                            dx: blk8x,
+                            dy: blk8y,
+                            w: 4,
+                            h: 8,
+                            quirk: -1,
+                        });
+                        parts.push(BPart {
+                            dx: blk8x + 4,
+                            dy: blk8y,
+                            w: 4,
+                            h: 8,
+                            quirk: -1,
+                        });
                     }
                     SubMbType::P4x4 => {
                         for j in 0..4 {
@@ -436,8 +651,14 @@ pub fn recon_b_mb(
         let rep = (p.dy / 4) * 4 + (p.dx / 4);
         let r0 = ctx.ref_idx[mb_xy * 16 + rep];
         let r1 = ctx.ref_idx_l1[mb_xy * 16 + rep];
-        let mv0 = [ctx.mv[(mb_xy * 16 + rep) * 2], ctx.mv[(mb_xy * 16 + rep) * 2 + 1]];
-        let mv1 = [ctx.mv_l1[(mb_xy * 16 + rep) * 2], ctx.mv_l1[(mb_xy * 16 + rep) * 2 + 1]];
+        let mv0 = [
+            ctx.mv[(mb_xy * 16 + rep) * 2],
+            ctx.mv[(mb_xy * 16 + rep) * 2 + 1],
+        ];
+        let mv1 = [
+            ctx.mv_l1[(mb_xy * 16 + rep) * 2],
+            ctx.mv_l1[(mb_xy * 16 + rep) * 2 + 1],
+        ];
         let mut l0 = r0 >= 0;
         let mut l1 = r1 >= 0;
         // OpenH264 16x8/8x16 bi quirk: the bi-average is discarded, so a bi
@@ -463,13 +684,50 @@ pub fn recon_b_mb(
             let mut t0y = [0u8; 256];
             let mut t0u = [0u8; 64];
             let mut t0v = [0u8; 64];
-            mc_to(ref0, McPos { mb_x, mb_y, dx: p.dx, dy: p.dy }, mv0, dim, DstPlanes { y: &mut t0y, ys: 16, u: &mut t0u, v: &mut t0v, cs: 8 });
+            mc_to(
+                ref0,
+                McPos {
+                    mb_x,
+                    mb_y,
+                    dx: p.dx,
+                    dy: p.dy,
+                },
+                mv0,
+                dim,
+                DstPlanes {
+                    y: &mut t0y,
+                    ys: 16,
+                    u: &mut t0u,
+                    v: &mut t0v,
+                    cs: 8,
+                },
+            );
             let mut ty = [0u8; 256];
             let mut tu = [0u8; 64];
             let mut tv = [0u8; 64];
-            mc_to(ref1, McPos { mb_x, mb_y, dx: p.dx, dy: p.dy }, mv1, dim, DstPlanes { y: &mut ty, ys: 16, u: &mut tu, v: &mut tv, cs: 8 });
+            mc_to(
+                ref1,
+                McPos {
+                    mb_x,
+                    mb_y,
+                    dx: p.dx,
+                    dy: p.dy,
+                },
+                mv1,
+                dim,
+                DstPlanes {
+                    y: &mut ty,
+                    ys: 16,
+                    u: &mut tu,
+                    v: &mut tv,
+                    cs: 8,
+                },
+            );
             let pic = &mut ctx.picture;
-            let cdim = Dim { w: p.w / 2, h: p.h / 2 };
+            let cdim = Dim {
+                w: p.w / 2,
+                h: p.h / 2,
+            };
             if bi_w.active {
                 // Implicit weighted bi-prediction: (p0*w0 + p1*w1 + 32) >> 6.
                 let w0 = bi_w.w0(r0 as usize, r1 as usize);
@@ -491,23 +749,46 @@ pub fn recon_b_mb(
             } else {
                 for i in 0..dim.h {
                     for j in 0..dim.w {
-                        pic.y[y_off + i * ls + j] = ((t0y[i * 16 + j] as i32 + ty[i * 16 + j] as i32 + 1) >> 1) as u8;
+                        pic.y[y_off + i * ls + j] =
+                            ((t0y[i * 16 + j] as i32 + ty[i * 16 + j] as i32 + 1) >> 1) as u8;
                     }
                 }
                 for i in 0..cdim.h {
                     for j in 0..cdim.w {
-                        pic.u[c_off + i * cs + j] = ((t0u[i * 8 + j] as i32 + tu[i * 8 + j] as i32 + 1) >> 1) as u8;
-                        pic.v[c_off + i * cs + j] = ((t0v[i * 8 + j] as i32 + tv[i * 8 + j] as i32 + 1) >> 1) as u8;
+                        pic.u[c_off + i * cs + j] =
+                            ((t0u[i * 8 + j] as i32 + tu[i * 8 + j] as i32 + 1) >> 1) as u8;
+                        pic.v[c_off + i * cs + j] =
+                            ((t0v[i * 8 + j] as i32 + tv[i * 8 + j] as i32 + 1) >> 1) as u8;
                     }
                 }
             }
         } else {
-            let (rp, mv) = if l0 { (ref_pics[0][r0 as usize], mv0) } else { (ref_pics[1][r1 as usize], mv1) };
+            let (rp, mv) = if l0 {
+                (ref_pics[0][r0 as usize], mv0)
+            } else {
+                (ref_pics[1][r1 as usize], mv1)
+            };
             let pic = &mut ctx.picture;
-            mc_to(rp, McPos { mb_x, mb_y, dx: p.dx, dy: p.dy }, mv, dim, DstPlanes { y: &mut pic.y[y_off..], ys: ls, u: &mut pic.u[c_off..], v: &mut pic.v[c_off..], cs });
+            mc_to(
+                rp,
+                McPos {
+                    mb_x,
+                    mb_y,
+                    dx: p.dx,
+                    dy: p.dy,
+                },
+                mv,
+                dim,
+                DstPlanes {
+                    y: &mut pic.y[y_off..],
+                    ys: ls,
+                    u: &mut pic.u[c_off..],
+                    v: &mut pic.v[c_off..],
+                    cs,
+                },
+            );
         }
     }
 
     add_inter_residual(ctx, mb_xy, coeffs);
 }
-

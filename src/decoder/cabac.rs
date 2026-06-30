@@ -356,9 +356,15 @@ mod tests {
     fn ref_ctx(m: i32, n: i32, qp: i32) -> CabacCtx {
         let pre = (((m * qp) >> 4) + n).clamp(1, 126);
         if pre <= 63 {
-            CabacCtx { state: (63 - pre) as u8, mps: 0 }
+            CabacCtx {
+                state: (63 - pre) as u8,
+                mps: 0,
+            }
         } else {
-            CabacCtx { state: (pre - 64) as u8, mps: 1 }
+            CabacCtx {
+                state: (pre - 64) as u8,
+                mps: 1,
+            }
         }
     }
 

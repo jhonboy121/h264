@@ -22,11 +22,19 @@ impl Default for BitWriter {
 
 impl BitWriter {
     pub fn new() -> Self {
-        Self { out: Vec::new(), cur: 0, nbits: 0 }
+        Self {
+            out: Vec::new(),
+            cur: 0,
+            nbits: 0,
+        }
     }
 
     pub fn with_capacity(cap: usize) -> Self {
-        Self { out: Vec::with_capacity(cap), cur: 0, nbits: 0 }
+        Self {
+            out: Vec::with_capacity(cap),
+            cur: 0,
+            nbits: 0,
+        }
     }
 
     /// Bits written so far.

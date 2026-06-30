@@ -65,7 +65,7 @@ pub fn expand_picture(pic: &mut Picture) {
 #[cfg(all(test, feature = "decoder"))]
 mod tests {
     use super::*;
-    use crate::decoder::picture::{Picture, PADDING};
+    use crate::decoder::picture::{PADDING, Picture};
 
     #[test]
     fn replicates_edges_and_corners() {

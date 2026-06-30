@@ -84,9 +84,9 @@ pub static CTX_OFFSET_ABS: [usize; 11] = [0, 0, 10, 20, 30, 39, 0, 30, 30, 39, 3
 /// `g_kuiIdx2CtxSignificantCoeffFlag8x8` (spec Table 9-43): position ->
 /// `significant_coeff_flag` ctxIdxInc for the 8x8 transform.
 pub static IDX2CTX_SIG_8X8: [usize; 64] = [
-    0, 1, 2, 3, 4, 5, 5, 4, 4, 3, 3, 4, 4, 4, 5, 5, 4, 4, 4, 4, 3, 3, 6, 7, 7, 7, 8, 9, 10, 9, 8, 7,
-    7, 6, 11, 12, 13, 11, 6, 7, 8, 9, 14, 10, 9, 8, 6, 11, 12, 13, 11, 6, 9, 14, 10, 9, 11, 12, 13,
-    11, 14, 10, 12, 14,
+    0, 1, 2, 3, 4, 5, 5, 4, 4, 3, 3, 4, 4, 4, 5, 5, 4, 4, 4, 4, 3, 3, 6, 7, 7, 7, 8, 9, 10, 9, 8,
+    7, 7, 6, 11, 12, 13, 11, 6, 7, 8, 9, 14, 10, 9, 8, 6, 11, 12, 13, 11, 6, 9, 14, 10, 9, 11, 12,
+    13, 11, 14, 10, 12, 14,
 ];
 
 /// `g_kuiIdx2CtxLastSignificantCoeffFlag8x8` (spec Table 9-43): position ->
@@ -145,10 +145,16 @@ fn significant_map(
     out: &mut [i32],
 ) -> i32 {
     let is_8x8 = res_property == LUMA_DC_AC_8;
-    let map_base =
-        (if is_8x8 { NEW_CTX_OFFSET_MAP_8X8 } else { NEW_CTX_OFFSET_MAP }) + CTX_OFFSET_MAP[res_property];
-    let last_base = (if is_8x8 { NEW_CTX_OFFSET_LAST_8X8 } else { NEW_CTX_OFFSET_LAST })
-        + CTX_OFFSET_LAST[res_property];
+    let map_base = (if is_8x8 {
+        NEW_CTX_OFFSET_MAP_8X8
+    } else {
+        NEW_CTX_OFFSET_MAP
+    }) + CTX_OFFSET_MAP[res_property];
+    let last_base = (if is_8x8 {
+        NEW_CTX_OFFSET_LAST_8X8
+    } else {
+        NEW_CTX_OFFSET_LAST
+    }) + CTX_OFFSET_LAST[res_property];
     let i1 = MAX_POS[res_property] as usize;
     let mut coeff_num = 0;
 
@@ -186,10 +192,16 @@ fn significant_coeff(
     out: &mut [i32],
 ) {
     let is_8x8 = res_property == LUMA_DC_AC_8;
-    let one_base =
-        (if is_8x8 { NEW_CTX_OFFSET_ONE_8X8 } else { NEW_CTX_OFFSET_ONE }) + CTX_OFFSET_ONE[res_property];
-    let abs_base =
-        (if is_8x8 { NEW_CTX_OFFSET_ABS_8X8 } else { NEW_CTX_OFFSET_ABS }) + CTX_OFFSET_ABS[res_property];
+    let one_base = (if is_8x8 {
+        NEW_CTX_OFFSET_ONE_8X8
+    } else {
+        NEW_CTX_OFFSET_ONE
+    }) + CTX_OFFSET_ONE[res_property];
+    let abs_base = (if is_8x8 {
+        NEW_CTX_OFFSET_ABS_8X8
+    } else {
+        NEW_CTX_OFFSET_ABS
+    }) + CTX_OFFSET_ABS[res_property];
     let max_type = MAX_C2[res_property];
     let max_pos = MAX_POS[res_property] as usize;
 
@@ -314,10 +326,16 @@ mod tests {
 
         fn significant_map(&self, res: usize, out: &mut [i32]) -> i32 {
             let is_8x8 = res == LUMA_DC_AC_8;
-            let map_base = (if is_8x8 { NEW_CTX_OFFSET_MAP_8X8 } else { NEW_CTX_OFFSET_MAP })
-                + CTX_OFFSET_MAP[res];
-            let last_base = (if is_8x8 { NEW_CTX_OFFSET_LAST_8X8 } else { NEW_CTX_OFFSET_LAST })
-                + CTX_OFFSET_LAST[res];
+            let map_base = (if is_8x8 {
+                NEW_CTX_OFFSET_MAP_8X8
+            } else {
+                NEW_CTX_OFFSET_MAP
+            }) + CTX_OFFSET_MAP[res];
+            let last_base = (if is_8x8 {
+                NEW_CTX_OFFSET_LAST_8X8
+            } else {
+                NEW_CTX_OFFSET_LAST
+            }) + CTX_OFFSET_LAST[res];
             let i1 = MAX_POS[res] as usize;
             let mut coeff_num = 0;
             for i in 0..i1 {
@@ -339,10 +357,16 @@ mod tests {
 
         fn significant_coeff(&self, res: usize, out: &mut [i32]) {
             let is_8x8 = res == LUMA_DC_AC_8;
-            let one_base = (if is_8x8 { NEW_CTX_OFFSET_ONE_8X8 } else { NEW_CTX_OFFSET_ONE })
-                + CTX_OFFSET_ONE[res];
-            let abs_base = (if is_8x8 { NEW_CTX_OFFSET_ABS_8X8 } else { NEW_CTX_OFFSET_ABS })
-                + CTX_OFFSET_ABS[res];
+            let one_base = (if is_8x8 {
+                NEW_CTX_OFFSET_ONE_8X8
+            } else {
+                NEW_CTX_OFFSET_ONE
+            }) + CTX_OFFSET_ONE[res];
+            let abs_base = (if is_8x8 {
+                NEW_CTX_OFFSET_ABS_8X8
+            } else {
+                NEW_CTX_OFFSET_ABS
+            }) + CTX_OFFSET_ABS[res];
             let max_type = MAX_C2[res];
             let max_pos = MAX_POS[res] as usize;
             let mut c1: i32 = 1;
@@ -385,10 +409,15 @@ mod tests {
         let mut dec = CabacDecoder::new(&zeros, 0).unwrap();
         let mut got = [0i32; 64];
         let got_count =
-            residual_block_cabac(&mut dec, &mut ctxs, res, max_coeff, &mut got[..max_coeff]).unwrap();
+            residual_block_cabac(&mut dec, &mut ctxs, res, max_coeff, &mut got[..max_coeff])
+                .unwrap();
 
         assert_eq!(got_count, exp_count, "coeff count mismatch res={res}");
-        assert_eq!(&got[..max_coeff], &expect[..max_coeff], "levels mismatch res={res}");
+        assert_eq!(
+            &got[..max_coeff],
+            &expect[..max_coeff],
+            "levels mismatch res={res}"
+        );
     }
 
     #[test]

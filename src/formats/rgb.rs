@@ -40,7 +40,12 @@ pub fn write<S: YUVSource + ?Sized>(src: &S, out: &mut [u8], alpha: bool) {
     let (ys, us, vs) = src.strides();
     let bpp = if alpha { 4 } else { 3 };
     let need = w * h * bpp;
-    assert!(out.len() >= need, "output buffer too small: {} < {}", out.len(), need);
+    assert!(
+        out.len() >= need,
+        "output buffer too small: {} < {}",
+        out.len(),
+        need
+    );
 
     let yp = src.y();
     let up = src.u();
@@ -78,7 +83,11 @@ mod tests {
     }
     impl Solid {
         fn new(y: u8, u: u8, v: u8) -> Self {
-            Solid { yp: vec![y; 4], up: vec![u; 1], vp: vec![v; 1] }
+            Solid {
+                yp: vec![y; 4],
+                up: vec![u; 1],
+                vp: vec![v; 1],
+            }
         }
     }
     impl YUVSource for Solid {
@@ -115,11 +124,20 @@ mod tests {
     fn primaries_round_trip() {
         // JFIF/full-range encodings of the RGB primaries.
         let red = yuv_to_rgb(76, 84, 255);
-        assert!(near(red.0, 255, 3) && near(red.1, 0, 3) && near(red.2, 0, 3), "{red:?}");
+        assert!(
+            near(red.0, 255, 3) && near(red.1, 0, 3) && near(red.2, 0, 3),
+            "{red:?}"
+        );
         let green = yuv_to_rgb(150, 44, 21);
-        assert!(near(green.0, 0, 4) && near(green.1, 255, 4) && near(green.2, 0, 4), "{green:?}");
+        assert!(
+            near(green.0, 0, 4) && near(green.1, 255, 4) && near(green.2, 0, 4),
+            "{green:?}"
+        );
         let blue = yuv_to_rgb(29, 255, 107);
-        assert!(near(blue.0, 0, 3) && near(blue.1, 0, 3) && near(blue.2, 255, 3), "{blue:?}");
+        assert!(
+            near(blue.0, 0, 3) && near(blue.1, 0, 3) && near(blue.2, 255, 3),
+            "{blue:?}"
+        );
     }
 
     #[test]
@@ -132,6 +150,11 @@ mod tests {
 
         let mut rgba = vec![0u8; src.rgba8_len()];
         src.write_rgba8(&mut rgba);
-        assert_eq!(rgba, vec![128, 128, 128, 255, 128, 128, 128, 255, 128, 128, 128, 255, 128, 128, 128, 255]);
+        assert_eq!(
+            rgba,
+            vec![
+                128, 128, 128, 255, 128, 128, 128, 255, 128, 128, 128, 255, 128, 128, 128, 255
+            ]
+        );
     }
 }

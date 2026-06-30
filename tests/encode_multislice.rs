@@ -83,7 +83,11 @@ fn decode_all_planes(stream: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> {
                 }
                 out
             };
-            (pack(f.y(), ys, w, h), pack(f.u(), us, w / 2, h / 2), pack(f.v(), vs, w / 2, h / 2))
+            (
+                pack(f.y(), ys, w, h),
+                pack(f.u(), us, w / 2, h / 2),
+                pack(f.v(), vs, w / 2, h / 2),
+            )
         })
         .collect()
 }
@@ -93,7 +97,12 @@ fn nal_count(au: &[u8]) -> usize {
     h264::nal_units(au).count()
 }
 
-fn encode_seq(frames: &[(Vec<u8>, Vec<u8>, Vec<u8>)], qp: u8, slices: u32, all_intra: bool) -> Vec<Vec<u8>> {
+fn encode_seq(
+    frames: &[(Vec<u8>, Vec<u8>, Vec<u8>)],
+    qp: u8,
+    slices: u32,
+    all_intra: bool,
+) -> Vec<Vec<u8>> {
     let mut enc = h264::encoder::Encoder::new_with_slices(W as u32, H as u32, qp, slices).unwrap();
     frames
         .iter()
@@ -117,18 +126,30 @@ fn multislice_intra_roundtrip_matches_single_slice() {
             let multi = encode_seq(&frames, qp, s, true);
             // Each IDR AU = SPS + PPS + S slice NALs.
             for au in &multi {
-                assert_eq!(nal_count(au), 2 + s as usize, "qp={qp} S={s}: IDR NAL count");
+                assert_eq!(
+                    nal_count(au),
+                    2 + s as usize,
+                    "qp={qp} S={s}: IDR NAL count"
+                );
             }
             // Decode both; PSNR per frame must match within a small tolerance.
             let dref = decode_all_planes(&single.concat());
             let dmul = decode_all_planes(&multi.concat());
             assert_eq!(dref.len(), frames.len());
             assert_eq!(dmul.len(), frames.len());
-            for (k, (src, ((ry, _, _), (my, _, _)))) in frames.iter().zip(dref.iter().zip(dmul.iter())).enumerate() {
+            for (k, (src, ((ry, _, _), (my, _, _)))) in
+                frames.iter().zip(dref.iter().zip(dmul.iter())).enumerate()
+            {
                 let p1 = psnr(&src.0, ry);
                 let pm = psnr(&src.0, my);
-                assert!(pm >= 34.0, "qp={qp} S={s} frame {k}: multi-slice PSNR {pm:.2} too low");
-                assert!((p1 - pm).abs() <= 1.5, "qp={qp} S={s} frame {k}: PSNR drift {p1:.2}->{pm:.2}");
+                assert!(
+                    pm >= 34.0,
+                    "qp={qp} S={s} frame {k}: multi-slice PSNR {pm:.2} too low"
+                );
+                assert!(
+                    (p1 - pm).abs() <= 1.5,
+                    "qp={qp} S={s} frame {k}: PSNR drift {p1:.2}->{pm:.2}"
+                );
             }
             assert!(s <= mb_h, "test S exceeds MB height");
         }
@@ -143,18 +164,30 @@ fn multislice_ippp_roundtrip_matches_single_slice() {
         for &s in &[4u32, 8] {
             let multi = encode_seq(&frames, qp, s, false);
             // IDR AU = SPS + PPS + S slices; each P AU = S slices.
-            assert_eq!(nal_count(&multi[0]), 2 + s as usize, "qp={qp} S={s}: IDR NAL count");
+            assert_eq!(
+                nal_count(&multi[0]),
+                2 + s as usize,
+                "qp={qp} S={s}: IDR NAL count"
+            );
             for au in &multi[1..] {
                 assert_eq!(nal_count(au), s as usize, "qp={qp} S={s}: P NAL count");
             }
             let dref = decode_all_planes(&single.concat());
             let dmul = decode_all_planes(&multi.concat());
             assert_eq!(dmul.len(), frames.len());
-            for (k, (src, ((ry, _, _), (my, _, _)))) in frames.iter().zip(dref.iter().zip(dmul.iter())).enumerate() {
+            for (k, (src, ((ry, _, _), (my, _, _)))) in
+                frames.iter().zip(dref.iter().zip(dmul.iter())).enumerate()
+            {
                 let p1 = psnr(&src.0, ry);
                 let pm = psnr(&src.0, my);
-                assert!(pm >= 32.0, "qp={qp} S={s} frame {k}: multi-slice PSNR {pm:.2} too low");
-                assert!((p1 - pm).abs() <= 2.0, "qp={qp} S={s} frame {k}: PSNR drift {p1:.2}->{pm:.2}");
+                assert!(
+                    pm >= 32.0,
+                    "qp={qp} S={s} frame {k}: multi-slice PSNR {pm:.2} too low"
+                );
+                assert!(
+                    (p1 - pm).abs() <= 2.0,
+                    "qp={qp} S={s} frame {k}: PSNR drift {p1:.2}->{pm:.2}"
+                );
             }
         }
     }

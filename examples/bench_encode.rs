@@ -57,7 +57,8 @@ fn main() {
             let pack = |plane: &[u8], origin: usize, stride: usize, pw: usize, ph: usize| {
                 let mut out = vec![0u8; pw * ph];
                 for j in 0..ph {
-                    out[j * pw..j * pw + pw].copy_from_slice(&plane[origin + j * stride..origin + j * stride + pw]);
+                    out[j * pw..j * pw + pw]
+                        .copy_from_slice(&plane[origin + j * stride..origin + j * stride + pw]);
                 }
                 out
             };
@@ -79,10 +80,11 @@ fn main() {
     println!("encoder DSP: SIMD (SAD/MC NEON)");
     #[cfg(not(feature = "simd"))]
     println!("encoder DSP: scalar");
+    println!("source: BANM {w}x{h}, {n} real frames  |  MB/s = source I420 throughput\n");
     println!(
-        "source: BANM {w}x{h}, {n} real frames  |  MB/s = source I420 throughput\n"
+        "{:<14} {:>6} {:>10} {:>9} {:>9} {:>12}",
+        "MODE", "QP", "ms/frame", "fps", "MB/s", "avg AU bytes"
     );
-    println!("{:<14} {:>6} {:>10} {:>9} {:>9} {:>12}", "MODE", "QP", "ms/frame", "fps", "MB/s", "avg AU bytes");
     println!("{}", "-".repeat(66));
 
     for &qp in &[26u8, 32u8] {

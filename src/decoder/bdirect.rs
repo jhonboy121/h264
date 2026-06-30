@@ -7,7 +7,7 @@
 
 use super::context::DecoderContext;
 use super::dpb::ColMotion;
-use super::mv_pred::{median, REF_NOT_AVAIL, REF_NOT_IN_LIST, SCAN4};
+use super::mv_pred::{REF_NOT_AVAIL, REF_NOT_IN_LIST, SCAN4, median};
 
 /// `WELS_MIN_POSITIVE`: prefer the non-negative value; if both are non-negative
 /// take the minimum.
@@ -125,7 +125,10 @@ fn nb(ctx: &DecoderContext, list: usize, xy: usize, blk: usize) -> ([i16; 2], i8
         )
     } else {
         (
-            [ctx.mv_l1[(xy * 16 + blk) * 2], ctx.mv_l1[(xy * 16 + blk) * 2 + 1]],
+            [
+                ctx.mv_l1[(xy * 16 + blk) * 2],
+                ctx.mv_l1[(xy * 16 + blk) * 2 + 1],
+            ],
             ctx.ref_idx_l1[xy * 16 + blk],
         )
     };
@@ -268,12 +271,26 @@ pub fn b_direct_spatial(ctx: &DecoderContext, mb_xy: usize, cur_is_8x8: bool) ->
         let (mv_c0, ref_c0) = if rt_inter {
             nb(ctx, list, right_top_xy, 12)
         } else {
-            ([0, 0], if right_top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL })
+            (
+                [0, 0],
+                if right_top {
+                    REF_NOT_IN_LIST
+                } else {
+                    REF_NOT_AVAIL
+                },
+            )
         };
         let (mv_d, ref_d) = if lt_inter {
             nb(ctx, list, left_top_xy, 15)
         } else {
-            ([0, 0], if left_top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL })
+            (
+                [0, 0],
+                if left_top {
+                    REF_NOT_IN_LIST
+                } else {
+                    REF_NOT_AVAIL
+                },
+            )
         };
 
         let mut diag = ref_c0;
@@ -286,8 +303,7 @@ pub fn b_direct_spatial(ctx: &DecoderContext, mb_xy: usize, cur_is_8x8: bool) ->
         let ref_temp = min_positive(ref_b, diag);
         let r = min_positive(ref_a, ref_temp);
         if r >= 0 {
-            let match_count =
-                (ref_a == r) as i32 + (ref_b == r) as i32 + (diag == r) as i32;
+            let match_count = (ref_a == r) as i32 + (ref_b == r) as i32 + (diag == r) as i32;
             if match_count == 1 {
                 mvp[list] = if ref_a == r {
                     mv_a
@@ -337,9 +353,7 @@ fn col_zero_mv(info: &DirectInfo, cr: &ColRef, mb: usize, r: usize) -> [[i16; 2]
         return mv;
     }
     let (intra, cref0, cref1, cmv0, cmv1) = cr.at(mb, r);
-    let coloc_zero = !intra
-        && !cr.is_long
-        && (cref0 == 0 || (cref0 < 0 && cref1 == 0));
+    let coloc_zero = !intra && !cr.is_long && (cref0 == 0 || (cref0 < 0 && cref1 == 0));
     if !coloc_zero {
         return mv;
     }
@@ -358,7 +372,14 @@ fn col_zero_mv(info: &DirectInfo, cr: &ColRef, mb: usize, r: usize) -> [[i16; 2]
 
 /// Store a B-direct MV/ref for one 4x4 raster block into `ctx` (both lists).
 #[inline]
-fn store_block(ctx: &mut DecoderContext, mb_xy: usize, r: usize, mv: [[i16; 2]; 2], iref: [i8; 2], ref_pic: [i32; 2]) {
+fn store_block(
+    ctx: &mut DecoderContext,
+    mb_xy: usize,
+    r: usize,
+    mv: [[i16; 2]; 2],
+    iref: [i8; 2],
+    ref_pic: [i32; 2],
+) {
     let b = (mb_xy * 16 + r) * 2;
     ctx.mv[b] = mv[0][0];
     ctx.mv[b + 1] = mv[0][1];
@@ -406,7 +427,11 @@ pub fn fill_direct_8x8(
     cr: &ColRef,
     ref_pic: [i32; 2],
 ) {
-    let Part8x8 { idx8, part_count, part_w } = part;
+    let Part8x8 {
+        idx8,
+        part_count,
+        part_w,
+    } = part;
     let base_part = idx8 << 2;
     for j in 0..part_count {
         let part_idx = base_part + j * part_w;
@@ -422,4 +447,3 @@ pub fn fill_direct_8x8(
         }
     }
 }
-

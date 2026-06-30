@@ -30,8 +30,8 @@ const DEFAULT_ORACLE: &str = "/private/tmp/claude-501/-Users-alfredmathew-code-e
 
 /// Streams to benchmark (all decode bit-exact vs the oracle).
 const STREAMS: &[&str] = &[
-    "BANM_MW_D.264",          // QCIF baseline CAVLC I+P
-    "BA1_FT_C.264",           // QCIF baseline CAVLC, long
+    "BANM_MW_D.264",              // QCIF baseline CAVLC I+P
+    "BA1_FT_C.264",               // QCIF baseline CAVLC, long
     "test_cif_I_CABAC_slice.264", // CIF Main CABAC, all-I
     "test_cif_P_CABAC_slice.264", // CIF Main CABAC, I+P
 ];
@@ -135,7 +135,11 @@ fn main() {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
 
-    let backend = if cfg!(feature = "simd") { "SIMD (NEON)" } else { "SCALAR" };
+    let backend = if cfg!(feature = "simd") {
+        "SIMD (NEON)"
+    } else {
+        "SCALAR"
+    };
     println!("machine: {arch}   build: --release (opt-level=3, lto=thin, codegen-units=1)");
     println!("our decoder: pure-Rust {backend}   |   C h264dec: OpenH264 ARM NEON asm\n");
 
@@ -194,5 +198,7 @@ fn main() {
 
     println!("\nMB/s = decoded I420 output throughput (frames * W * H * 3/2 bytes).");
     println!("C× = our_time / C_time (how many times faster the C NEON build is).");
-    println!("Note: the C number includes process spawn + YUV file write; ours is in-process decode only.");
+    println!(
+        "Note: the C number includes process spawn + YUV file write; ours is in-process decode only."
+    );
 }

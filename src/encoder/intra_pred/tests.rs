@@ -359,7 +359,8 @@ fn chroma_modes_match_reference() {
             chroma_pred_dc(&mut pred, &plane, roff, stride);
             let lk: [i32; 8] = core::array::from_fn(|k| g(k as isize * s - 1));
             let tk: [i32; 8] = core::array::from_fn(|k| g(-s + k as isize));
-            let m1 = ((tk[0] + tk[1] + tk[2] + tk[3] + lk[0] + lk[1] + lk[2] + lk[3] + 4) >> 3) as u8;
+            let m1 =
+                ((tk[0] + tk[1] + tk[2] + tk[3] + lk[0] + lk[1] + lk[2] + lk[3] + 4) >> 3) as u8;
             let sum2 = tk[4] + tk[5] + tk[6] + tk[7];
             let sum3 = lk[4] + lk[5] + lk[6] + lk[7];
             let m2 = ((sum2 + 2) >> 2) as u8;
@@ -455,7 +456,10 @@ fn i16x16_modes_match_reference() {
                 left_sum += g(i * s - 1);
             }
             i16x16_luma_pred_dc(&mut pred, &plane, roff, stride);
-            assert!(pred.iter().all(|&p| p == ((16 + top_sum + left_sum) >> 5) as u8));
+            assert!(
+                pred.iter()
+                    .all(|&p| p == ((16 + top_sum + left_sum) >> 5) as u8)
+            );
             i16x16_luma_pred_dc_top(&mut pred, &plane, roff, stride);
             assert!(pred.iter().all(|&p| p == ((8 + top_sum) >> 4) as u8));
             i16x16_luma_pred_dc_left(&mut pred, &plane, roff, stride);
@@ -488,8 +492,8 @@ fn i16x16_modes_match_reference() {
 // Combined3 cost helpers: argmin / lambda wiring.
 // ===========================================================================
 
-use crate::dsp::sad::{sad16x16, sad8x8};
-use crate::dsp::satd::{satd16x16, satd4x4, satd8x8};
+use crate::dsp::sad::{sad8x8, sad16x16};
+use crate::dsp::satd::{satd4x4, satd8x8, satd16x16};
 
 #[test]
 fn combined3_4x4_matches_recomputed() {
@@ -499,11 +503,23 @@ fn combined3_4x4_matches_recomputed() {
         let (dec, dec_off) = make_plane(&mut r, stride);
         let enc: Vec<u8> = (0..stride * 16).map(|_| r.byte()).collect();
         let enc_off = 0usize;
-        let (l2, l1, l0) = ((r.next() % 200) as i32, (r.next() % 200) as i32, (r.next() % 200) as i32);
+        let (l2, l1, l0) = (
+            (r.next() % 200) as i32,
+            (r.next() % 200) as i32,
+            (r.next() % 200) as i32,
+        );
         let mut dst = [0u8; 16];
         let (cost, mode) = satd_intra_4x4_combined3(
-            Blk { data: &dec, off: dec_off, stride },
-            Blk { data: &enc, off: enc_off, stride },
+            Blk {
+                data: &dec,
+                off: dec_off,
+                stride,
+            },
+            Blk {
+                data: &enc,
+                off: enc_off,
+                stride,
+            },
             &mut dst,
             l2,
             l1,
@@ -546,8 +562,16 @@ fn combined3_16x16_matches_recomputed() {
         let mut dst = [0u8; 256];
 
         for use_sad in [false, true] {
-            let dec_blk = Blk { data: &dec, off: dec_off, stride };
-            let enc_blk = Blk { data: &enc, off: 0, stride };
+            let dec_blk = Blk {
+                data: &dec,
+                off: dec_off,
+                stride,
+            };
+            let enc_blk = Blk {
+                data: &enc,
+                off: 0,
+                stride,
+            };
             let (cost, mode) = if use_sad {
                 sad_intra_16x16_combined3(dec_blk, enc_blk, &mut dst, lambda)
             } else {
@@ -593,14 +617,34 @@ fn combined3_8x8_chroma_matches_recomputed() {
         let mut dst = [0u8; 128];
 
         for use_sad in [false, true] {
-            let dec_cb_blk = Blk { data: &dec_cb, off: off_cb, stride };
-            let enc_cb_blk = Blk { data: &enc_cb, off: 0, stride };
-            let dec_cr_blk = Blk { data: &dec_cr, off: off_cr, stride };
-            let enc_cr_blk = Blk { data: &enc_cr, off: 0, stride };
+            let dec_cb_blk = Blk {
+                data: &dec_cb,
+                off: off_cb,
+                stride,
+            };
+            let enc_cb_blk = Blk {
+                data: &enc_cb,
+                off: 0,
+                stride,
+            };
+            let dec_cr_blk = Blk {
+                data: &dec_cr,
+                off: off_cr,
+                stride,
+            };
+            let enc_cr_blk = Blk {
+                data: &enc_cr,
+                off: 0,
+                stride,
+            };
             let (cost, mode) = if use_sad {
-                sad_intra_8x8_combined3(dec_cb_blk, enc_cb_blk, &mut dst, lambda, dec_cr_blk, enc_cr_blk)
+                sad_intra_8x8_combined3(
+                    dec_cb_blk, enc_cb_blk, &mut dst, lambda, dec_cr_blk, enc_cr_blk,
+                )
             } else {
-                satd_intra_8x8_combined3(dec_cb_blk, enc_cb_blk, &mut dst, lambda, dec_cr_blk, enc_cr_blk)
+                satd_intra_8x8_combined3(
+                    dec_cb_blk, enc_cb_blk, &mut dst, lambda, dec_cr_blk, enc_cr_blk,
+                )
             };
             let m = |a: &[u8], b: &[u8]| -> i32 {
                 if use_sad {

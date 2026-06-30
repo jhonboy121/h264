@@ -131,10 +131,22 @@ fn idct8_1d(p: &[i16; 8], a: &mut [i16; 4], b: &mut [i16; 8]) {
     b[2] = a[1].wrapping_sub(a[2]);
     b[4] = a[1].wrapping_add(a[2]);
     b[6] = a[0].wrapping_sub(a[3]);
-    a[0] = (-p[3]).wrapping_add(p[5]).wrapping_sub(p[7]).wrapping_sub(p[7] >> 1);
-    a[1] = p[1].wrapping_add(p[7]).wrapping_sub(p[3]).wrapping_sub(p[3] >> 1);
-    a[2] = (-p[1]).wrapping_add(p[7]).wrapping_add(p[5]).wrapping_add(p[5] >> 1);
-    a[3] = p[3].wrapping_add(p[5]).wrapping_add(p[1]).wrapping_add(p[1] >> 1);
+    a[0] = (-p[3])
+        .wrapping_add(p[5])
+        .wrapping_sub(p[7])
+        .wrapping_sub(p[7] >> 1);
+    a[1] = p[1]
+        .wrapping_add(p[7])
+        .wrapping_sub(p[3])
+        .wrapping_sub(p[3] >> 1);
+    a[2] = (-p[1])
+        .wrapping_add(p[7])
+        .wrapping_add(p[5])
+        .wrapping_add(p[5] >> 1);
+    a[3] = p[3]
+        .wrapping_add(p[5])
+        .wrapping_add(p[1])
+        .wrapping_add(p[1] >> 1);
     b[1] = a[0].wrapping_add(a[3] >> 2);
     b[3] = a[1].wrapping_add(a[2] >> 2);
     b[5] = a[2].wrapping_sub(a[1] >> 2);
@@ -151,7 +163,15 @@ fn idct8_1d(p: &[i16; 8], a: &mut [i16; 4], b: &mut [i16; 8]) {
 /// `pix1`/`pix2` are the source and prediction planes; `off1`/`off2` the index
 /// of each block's top-left sample and `st1`/`st2` their row strides. The 16
 /// transform coefficients are written to `dct[0..16]` in raster order.
-pub fn dct_t4(dct: &mut [i16], pix1: &[u8], off1: usize, st1: usize, pix2: &[u8], off2: usize, st2: usize) {
+pub fn dct_t4(
+    dct: &mut [i16],
+    pix1: &[u8],
+    off1: usize,
+    st1: usize,
+    pix2: &[u8],
+    off2: usize,
+    st2: usize,
+) {
     let mut data = [0i16; 16];
     let mut p1 = off1;
     let mut p2 = off2;
@@ -186,13 +206,37 @@ pub fn dct_t4(dct: &mut [i16], pix1: &[u8], off1: usize, st1: usize, pix2: &[u8]
 
 /// Forward 4x4 DCT of four sub-blocks (an 8x8 luma area). Port of `WelsDctFourT4_c`.
 /// Writes 4 * 16 coefficients to `dct`, one 16-coeff block per 4x4 sub-block.
-pub fn dct_four_t4(dct: &mut [i16; 64], pix1: &[u8], off1: usize, st1: usize, pix2: &[u8], off2: usize, st2: usize) {
+pub fn dct_four_t4(
+    dct: &mut [i16; 64],
+    pix1: &[u8],
+    off1: usize,
+    st1: usize,
+    pix2: &[u8],
+    off2: usize,
+    st2: usize,
+) {
     let s1x4 = st1 << 2;
     let s2x4 = st2 << 2;
     dct_t4(&mut dct[0..16], pix1, off1, st1, pix2, off2, st2);
     dct_t4(&mut dct[16..32], pix1, off1 + 4, st1, pix2, off2 + 4, st2);
-    dct_t4(&mut dct[32..48], pix1, off1 + s1x4, st1, pix2, off2 + s2x4, st2);
-    dct_t4(&mut dct[48..64], pix1, off1 + s1x4 + 4, st1, pix2, off2 + s2x4 + 4, st2);
+    dct_t4(
+        &mut dct[32..48],
+        pix1,
+        off1 + s1x4,
+        st1,
+        pix2,
+        off2 + s2x4,
+        st2,
+    );
+    dct_t4(
+        &mut dct[48..64],
+        pix1,
+        off1 + s1x4 + 4,
+        st1,
+        pix2,
+        off2 + s2x4 + 4,
+        st2,
+    );
 }
 
 // --- Quantization (`g_kiQuantMF` multiplier `mf` + `g_kiQuantInterFF` offset `ff`) ---
@@ -278,13 +322,22 @@ pub fn hadamard_quant2x2_skip(rs: &[i16], ff: i16, mf: i16) -> i32 {
     let d2 = s1.wrapping_add(s3);
     let d3 = s1.wrapping_sub(s3);
     let abs = |x: i16| (x as i32).abs();
-    ((abs(d0) > threshold) || (abs(d1) > threshold) || (abs(d2) > threshold) || (abs(d3) > threshold)) as i32
+    ((abs(d0) > threshold)
+        || (abs(d1) > threshold)
+        || (abs(d2) > threshold)
+        || (abs(d3) > threshold)) as i32
 }
 
 /// Port of `WelsHadamardQuant2x2_c`: 2x2 Hadamard of the four chroma-DC samples
 /// (at `rs[0]`, `rs[16]`, `rs[32]`, `rs[48]`), zeroing them in `rs`, quantizing
 /// into `dct[0..4]` and `block[0..4]`. Returns the non-zero count.
-pub fn hadamard_quant2x2(rs: &mut [i16], ff: i16, mf: i16, dct: &mut [i16; 4], block: &mut [i16; 4]) -> i32 {
+pub fn hadamard_quant2x2(
+    rs: &mut [i16],
+    ff: i16,
+    mf: i16,
+    dct: &mut [i16; 4],
+    block: &mut [i16; 4],
+) -> i32 {
     let s0 = rs[0].wrapping_add(rs[32]);
     let s1 = rs[0].wrapping_sub(rs[32]);
     let s2 = rs[16].wrapping_add(rs[48]);
@@ -576,7 +629,12 @@ mod tests {
                     pix2[i * FDEC + j] = r.byte();
                 }
             }
-            let sub = [(0, 0), (4, 4), (4 * FENC, 4 * FDEC), (4 * FENC + 4, 4 * FDEC + 4)];
+            let sub = [
+                (0, 0),
+                (4, 4),
+                (4 * FENC, 4 * FDEC),
+                (4 * FENC + 4, 4 * FDEC + 4),
+            ];
             let mut dct = [0i16; 64];
             dct_four_t4(&mut dct, &pix1, 0, FENC, &pix2, 0, FDEC);
             for (k, &(o1, o2)) in sub.iter().enumerate() {
@@ -606,7 +664,12 @@ mod tests {
     #[test]
     fn dct_roundtrip_recovers_residual() {
         // Cf Cf^T = diag(4,10,4,10), so Cf^-1 = Cf^T * diag(1/4,1/10,1/4,1/10).
-        let cf = [[1.0, 1.0, 1.0, 1.0], [2.0, 1.0, -1.0, -2.0], [1.0, -1.0, -1.0, 1.0], [1.0, -2.0, 2.0, -1.0]];
+        let cf = [
+            [1.0, 1.0, 1.0, 1.0],
+            [2.0, 1.0, -1.0, -2.0],
+            [1.0, -1.0, -1.0, 1.0],
+            [1.0, -2.0, 2.0, -1.0],
+        ];
         let dg = [0.25, 0.1, 0.25, 0.1];
         let mut cinv = [[0.0f64; 4]; 4];
         for i in 0..4 {
@@ -698,7 +761,9 @@ mod tests {
     fn hadamard_t4_dc_matches_anchor() {
         let mut r = Lcg(0x0BAD_F00D);
         for _ in 0..200 {
-            let dct: alloc::vec::Vec<i16> = (0..128 * 16).map(|_| (r.next() & 32767) as i16 - 16384).collect();
+            let dct: alloc::vec::Vec<i16> = (0..128 * 16)
+                .map(|_| (r.next() & 32767) as i16 - 16384)
+                .collect();
             let anchor = hadamard_t4_dc_anchor(&dct);
             let mut out = [0i16; 16];
             hadamard_t4_dc(&mut out, &dct);
@@ -802,7 +867,12 @@ mod tests {
         let s1 = rs[0].wrapping_sub(rs[32]);
         let s2 = rs[16].wrapping_add(rs[48]);
         let s3 = rs[16].wrapping_sub(rs[48]);
-        let d = [s0.wrapping_add(s2), s0.wrapping_sub(s2), s1.wrapping_add(s3), s1.wrapping_sub(s3)];
+        let d = [
+            s0.wrapping_add(s2),
+            s0.wrapping_sub(s2),
+            s1.wrapping_add(s3),
+            s1.wrapping_sub(s3),
+        ];
         d.iter().any(|&x| (x as i32).abs() > threshold) as i32
     }
 
@@ -813,12 +883,21 @@ mod tests {
             let rs: [i16; 64] = core::array::from_fn(|_| (r.next() & 32767) as i16 - 16384);
             let ff = (r.next() & 32767) as i16;
             let mf = ((r.next() & 32766) + 1) as i16; // avoid divide-by-zero
-            assert_eq!(hadamard_quant2x2_skip(&rs, ff, mf), hadamard_quant2x2_skip_anchor(&rs, ff, mf));
+            assert_eq!(
+                hadamard_quant2x2_skip(&rs, ff, mf),
+                hadamard_quant2x2_skip_anchor(&rs, ff, mf)
+            );
         }
     }
 
     // Port of `WelsHadamardQuant2x2Anchor`.
-    fn hadamard_quant2x2_anchor(rs: &mut [i16], ff: i16, mf: i16, dct: &mut [i16; 4], block: &mut [i16; 4]) -> i32 {
+    fn hadamard_quant2x2_anchor(
+        rs: &mut [i16],
+        ff: i16,
+        mf: i16,
+        dct: &mut [i16; 4],
+        block: &mut [i16; 4],
+    ) -> i32 {
         let s0 = rs[0].wrapping_add(rs[32]);
         let s1 = rs[0].wrapping_sub(rs[32]);
         let s2 = rs[16].wrapping_add(rs[48]);
@@ -867,16 +946,16 @@ mod tests {
             scan4x4_dcac(&mut lvl, &dct);
             // DcAc / Dc anchor (TestScan_4x4_dcc layout).
             let expect = [
-                dct[0], dct[1], dct[4], dct[8], dct[5], dct[2], dct[3], dct[6], dct[9], dct[12], dct[13], dct[10],
-                dct[7], dct[11], dct[14], dct[15],
+                dct[0], dct[1], dct[4], dct[8], dct[5], dct[2], dct[3], dct[6], dct[9], dct[12],
+                dct[13], dct[10], dct[7], dct[11], dct[14], dct[15],
             ];
             assert_eq!(lvl, expect);
 
             let mut ac = [0i16; 16];
             scan4x4_ac(&mut ac, &dct);
             let expect_ac = [
-                dct[1], dct[4], dct[8], dct[5], dct[2], dct[3], dct[6], dct[9], dct[12], dct[13], dct[10], dct[7],
-                dct[11], dct[14], dct[15], 0,
+                dct[1], dct[4], dct[8], dct[5], dct[2], dct[3], dct[6], dct[9], dct[12], dct[13],
+                dct[10], dct[7], dct[11], dct[14], dct[15], 0,
             ];
             assert_eq!(ac, expect_ac);
         }
@@ -909,13 +988,8 @@ mod tests {
         let mut r = Lcg(0x4242_4242);
         for _ in 0..2000 {
             // Sparse-ish coefficients so runs of zeros occur.
-            let dct: [i16; 16] = core::array::from_fn(|_| {
-                if r.next() & 1 == 0 {
-                    0
-                } else {
-                    r.i16()
-                }
-            });
+            let dct: [i16; 16] =
+                core::array::from_fn(|_| if r.next() & 1 == 0 { 0 } else { r.i16() });
             assert_eq!(calculate_single_ctr4x4(&dct), ctr_ref(&dct));
             assert_eq!(get_none_zero_count(&dct), nnz_ref(&dct));
         }

@@ -394,8 +394,10 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps> {
         }
     }
 
-    let log2_max_frame_num_minus4 =
-        bs.read_ue_max(SPS_LOG2_MAX_FRAME_NUM_MINUS4_MAX, "log2_max_frame_num_minus4")?;
+    let log2_max_frame_num_minus4 = bs.read_ue_max(
+        SPS_LOG2_MAX_FRAME_NUM_MINUS4_MAX,
+        "log2_max_frame_num_minus4",
+    )?;
     sps.log2_max_frame_num = 4 + log2_max_frame_num_minus4;
 
     sps.pic_order_cnt_type = bs.read_ue()?;
@@ -541,7 +543,8 @@ pub fn parse_pps(rbsp: &[u8], sps: Option<&Sps>) -> Result<Pps> {
             6 => {
                 pps.pic_size_in_map_units = 1 + bs.read_ue()?;
                 let bits = ceil_log2(pps.num_slice_groups);
-                pps.slice_group_id.reserve(pps.pic_size_in_map_units as usize);
+                pps.slice_group_id
+                    .reserve(pps.pic_size_in_map_units as usize);
                 for _ in 0..pps.pic_size_in_map_units {
                     pps.slice_group_id.push(bs.read_bits(bits)?);
                 }
@@ -586,11 +589,7 @@ pub fn parse_pps(rbsp: &[u8], sps: Option<&Sps>) -> Result<Pps> {
         if pps.pic_scaling_matrix_present_flag {
             let sps = sps.ok_or(DecodeError::MissingParameterSet)?;
             let num = 6 + if pps.transform_8x8_mode_flag {
-                if sps.chroma_format_idc != 3 {
-                    2
-                } else {
-                    6
-                }
+                if sps.chroma_format_idc != 3 { 2 } else { 6 }
             } else {
                 0
             };
@@ -620,11 +619,7 @@ pub fn parse_pps(rbsp: &[u8], sps: Option<&Sps>) -> Result<Pps> {
 /// `SetScalingListValue`: read one scaling list of `count` entries (16 or 64),
 /// writing them in raster order via the matching zig-zag scan. Returns whether
 /// `use_default_scaling_matrix_flag` was set.
-fn set_scaling_list_value(
-    bs: &mut BitReader<'_>,
-    list: &mut [u8],
-    count: usize,
-) -> Result<bool> {
+fn set_scaling_list_value(bs: &mut BitReader<'_>, list: &mut [u8], count: usize) -> Result<bool> {
     let mut last_scale: i32 = 8;
     let mut next_scale: i32 = 8;
     let mut use_default = false;
@@ -804,13 +799,11 @@ fn parse_vui(bs: &mut BitReader<'_>, vui: &mut Vui) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decoder::nal::{annexb_nal_units, parse_nal, NalUnitType};
+    use crate::decoder::nal::{NalUnitType, annexb_nal_units, parse_nal};
     use alloc::vec::Vec;
 
     fn collect_nals(stream: &[u8]) -> Vec<crate::decoder::nal::NalUnit> {
-        annexb_nal_units(stream)
-            .filter_map(parse_nal)
-            .collect()
+        annexb_nal_units(stream).filter_map(parse_nal).collect()
     }
 
     fn find_sps(stream: &[u8]) -> Sps {

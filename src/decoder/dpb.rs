@@ -434,8 +434,9 @@ impl Dpb {
                 }
                 MMCO_SET_MAX_LONG => {
                     self.max_long_term_frame_idx = e.max_long_term_frame_idx;
-                    self.refs
-                        .retain(|r| !r.is_long_term || r.long_term_frame_idx <= e.max_long_term_frame_idx);
+                    self.refs.retain(|r| {
+                        !r.is_long_term || r.long_term_frame_idx <= e.max_long_term_frame_idx
+                    });
                 }
                 MMCO_RESET => {
                     self.refs.clear();
@@ -477,7 +478,7 @@ impl Dpb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decoder::slice_header::{ReorderEntry, RefListReorder};
+    use crate::decoder::slice_header::{RefListReorder, ReorderEntry};
 
     fn rf(frame_num: i32, id: i32) -> RefFrame {
         RefFrame {
@@ -553,8 +554,16 @@ mod tests {
         let reorder = RefListReorder {
             flag: true,
             entries: alloc::vec![
-                ReorderEntry { modification_of_pic_nums_idc: 0, abs_diff_pic_num_minus1: 2, long_term_pic_num: 0 },
-                ReorderEntry { modification_of_pic_nums_idc: 1, abs_diff_pic_num_minus1: 0, long_term_pic_num: 0 },
+                ReorderEntry {
+                    modification_of_pic_nums_idc: 0,
+                    abs_diff_pic_num_minus1: 2,
+                    long_term_pic_num: 0
+                },
+                ReorderEntry {
+                    modification_of_pic_nums_idc: 1,
+                    abs_diff_pic_num_minus1: 0,
+                    long_term_pic_num: 0
+                },
             ],
         };
         let list = dpb.p_ref_list(3, 3, &reorder);

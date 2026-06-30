@@ -83,7 +83,8 @@ pub(super) const BLOCK_BY: [usize; 16] = [0, 0, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 2,
 
 // g_kuiCache30ScanIdx: block i -> position in the 30-entry (6-wide) sample
 // availability grid used by CheckIntraNxNPredMode.
-pub(super) const CACHE30_SCAN_IDX: [usize; 16] = [7, 8, 13, 14, 9, 10, 15, 16, 19, 20, 25, 26, 21, 22, 27, 28];
+pub(super) const CACHE30_SCAN_IDX: [usize; 16] =
+    [7, 8, 13, 14, 9, 10, 15, 16, 19, 20, 25, 26, 21, 22, 27, 28];
 
 // g_kuiI16CbpTable.
 pub(super) const I16_CBP_TABLE: [u8; 6] = [0, 16, 32, 15, 31, 47];
@@ -186,7 +187,8 @@ impl NeighborSnap {
         };
         s.nzc_luma.copy_from_slice(ctx.nzc_luma_mb(xy));
         s.nzc_chroma.copy_from_slice(ctx.nzc_chroma_mb(xy));
-        s.best_mode.copy_from_slice(&ctx.i4_best_mode[xy * 16..xy * 16 + 16]);
+        s.best_mode
+            .copy_from_slice(&ctx.i4_best_mode[xy * 16..xy * 16 + 16]);
         s
     }
 }
@@ -286,13 +288,25 @@ pub(super) fn parse_intra_mb_core(
         }
         mb_type = MbType::Intra4x4;
         if transform_8x8 {
-            let (cm, avail8) =
-                parse_intra8x8(bs, &neigh_c, &left_c, &top_c, &mut best_mode, &mut final_mode)?;
+            let (cm, avail8) = parse_intra8x8(
+                bs,
+                &neigh_c,
+                &left_c,
+                &top_c,
+                &mut best_mode,
+                &mut final_mode,
+            )?;
             chroma_mode = cm;
             i8_avail = avail8;
         } else {
-            chroma_mode =
-                parse_intra4x4(bs, &neigh_c, &left_c, &top_c, &mut best_mode, &mut final_mode)?;
+            chroma_mode = parse_intra4x4(
+                bs,
+                &neigh_c,
+                &left_c,
+                &top_c,
+                &mut best_mode,
+                &mut final_mode,
+            )?;
         }
 
         let ui_cbp = bs.read_ue()?;
@@ -306,9 +320,8 @@ pub(super) fn parse_intra_mb_core(
         i16_mode = ((ui_mb_type - 1) & 3) as i8;
         cbp = I16_CBP_TABLE[((ui_mb_type - 1) >> 2) as usize];
 
-        let neigh_avail = ((neigh_c.left as i32) << 2)
-            | ((neigh_c.top_left as i32) << 1)
-            | (neigh_c.top as i32);
+        let neigh_avail =
+            ((neigh_c.left as i32) << 2) | ((neigh_c.top_left as i32) << 1) | (neigh_c.top as i32);
         check_intra16x16_mode(neigh_avail, &mut i16_mode)?;
         // intra_chroma_pred_mode
         let cm = bs.read_ue()?;
@@ -343,9 +356,22 @@ pub(super) fn parse_intra_mb_core(
     if cbp != 0 || mb_type == MbType::Intra16x16 {
         parse_residuals(
             bs,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 },
-            Neighbours { left: &left, top: &top },
-            ResidualOut { cur_nzc_luma: &mut cur_nzc_luma, cur_nzc_chroma: &mut cur_nzc_chroma },
+            ResidualParams {
+                mb_type,
+                cbp_l,
+                cbp_c,
+                luma_qp,
+                chroma_qp,
+                transform_8x8,
+            },
+            Neighbours {
+                left: &left,
+                top: &top,
+            },
+            ResidualOut {
+                cur_nzc_luma: &mut cur_nzc_luma,
+                cur_nzc_chroma: &mut cur_nzc_chroma,
+            },
             coeffs,
         )?;
     }
@@ -407,7 +433,11 @@ pub(super) fn commit_pcm_state(ctx: &mut DecoderContext, mb_xy: usize) {
 /// Parse an I_PCM macroblock (CAVLC, spec 7.3.5): byte-align past
 /// `pcm_alignment_zero_bit`, then read 256 luma + 64 Cb + 64 Cr raw samples and
 /// copy them straight into the reconstructed picture.
-fn parse_pcm_mb_cavlc(bs: &mut BitReader<'_>, ctx: &mut DecoderContext, mb_xy: usize) -> Result<()> {
+fn parse_pcm_mb_cavlc(
+    bs: &mut BitReader<'_>,
+    ctx: &mut DecoderContext,
+    mb_xy: usize,
+) -> Result<()> {
     bs.align_to_byte();
     let mut luma = [0u8; 256];
     for s in luma.iter_mut() {
@@ -438,14 +468,24 @@ fn parse_intra4x4(
 ) -> Result<i8> {
     // Neighbour mode cache rows (WelsFillCacheConstrain0IntraNxN).
     let top_modes: [i8; 4] = if top.avail && top.is_nxn {
-        [top.best_mode[12], top.best_mode[13], top.best_mode[14], top.best_mode[15]]
+        [
+            top.best_mode[12],
+            top.best_mode[13],
+            top.best_mode[14],
+            top.best_mode[15],
+        ]
     } else if top.avail {
         [2; 4]
     } else {
         [-1; 4]
     };
     let left_modes: [i8; 4] = if left.avail && left.is_nxn {
-        [left.best_mode[3], left.best_mode[7], left.best_mode[11], left.best_mode[15]]
+        [
+            left.best_mode[3],
+            left.best_mode[7],
+            left.best_mode[11],
+            left.best_mode[15],
+        ]
     } else if left.avail {
         [2; 4]
     } else {
@@ -473,8 +513,7 @@ fn parse_intra4x4(
         sample_avail[5] = 1;
     }
 
-    let chroma_neigh_avail =
-        (sample_avail[6] << 2) | (sample_avail[0] << 1) | sample_avail[1];
+    let chroma_neigh_avail = (sample_avail[6] << 2) | (sample_avail[0] << 1) | sample_avail[1];
 
     for i in 0..16 {
         let raster = BLOCK_RASTER[i];
@@ -482,8 +521,16 @@ fn parse_intra4x4(
         let by = BLOCK_BY[i];
 
         let prev_flag = bs.read_flag()?;
-        let top_mode = if by > 0 { best_mode[(by - 1) * 4 + bx] } else { top_modes[bx] };
-        let left_mode = if bx > 0 { best_mode[by * 4 + bx - 1] } else { left_modes[by] };
+        let top_mode = if by > 0 {
+            best_mode[(by - 1) * 4 + bx]
+        } else {
+            top_modes[bx]
+        };
+        let left_mode = if bx > 0 {
+            best_mode[by * 4 + bx - 1]
+        } else {
+            left_modes[by]
+        };
         let pred_mode = if left_mode == -1 || top_mode == -1 {
             2
         } else {
@@ -527,14 +574,24 @@ fn parse_intra8x8(
     final_mode: &mut [i8; 16],
 ) -> Result<(i8, u8)> {
     let top_modes: [i8; 4] = if top.avail && top.is_nxn {
-        [top.best_mode[12], top.best_mode[13], top.best_mode[14], top.best_mode[15]]
+        [
+            top.best_mode[12],
+            top.best_mode[13],
+            top.best_mode[14],
+            top.best_mode[15],
+        ]
     } else if top.avail {
         [2; 4]
     } else {
         [-1; 4]
     };
     let left_modes: [i8; 4] = if left.avail && left.is_nxn {
-        [left.best_mode[3], left.best_mode[7], left.best_mode[11], left.best_mode[15]]
+        [
+            left.best_mode[3],
+            left.best_mode[7],
+            left.best_mode[11],
+            left.best_mode[15],
+        ]
     } else if left.avail {
         [2; 4]
     } else {
@@ -763,9 +820,19 @@ fn parse_residuals(
     out: ResidualOut,
     coeffs: &mut [i16; 384],
 ) -> Result<()> {
-    let ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 } = params;
+    let ResidualParams {
+        mb_type,
+        cbp_l,
+        cbp_c,
+        luma_qp,
+        chroma_qp,
+        transform_8x8,
+    } = params;
     let Neighbours { left, top } = neigh;
-    let ResidualOut { cur_nzc_luma, cur_nzc_chroma } = out;
+    let ResidualOut {
+        cur_nzc_luma,
+        cur_nzc_chroma,
+    } = out;
     let deq_l = &G_KUI_DEQUANT_COEFF[luma_qp as usize];
     let mut out = [0i32; 16];
 
@@ -980,7 +1047,7 @@ pub(super) fn chroma_dc_idct(block: &mut [i16]) {
 
 use super::context::SubMbType;
 use super::mv_pred::{
-    pred_inter16x8, pred_inter8x16, pred_mv, pred_p_skip_mv, REF_NOT_AVAIL, REF_NOT_IN_LIST, SCAN4,
+    REF_NOT_AVAIL, REF_NOT_IN_LIST, SCAN4, pred_inter8x16, pred_inter16x8, pred_mv, pred_p_skip_mv,
 };
 
 // g_kuiInterCbpTable.
@@ -1044,7 +1111,11 @@ impl InterCache {
             mv[0] = mv_of(left_top_xy, 15);
             ref_idx[0] = ref_of(left_top_xy, 15);
         } else {
-            ref_idx[0] = if left_top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+            ref_idx[0] = if left_top {
+                REF_NOT_IN_LIST
+            } else {
+                REF_NOT_AVAIL
+            };
         }
         // Top row (cache 1,2,3,4 <- blocks 12,13,14,15).
         if top && ctx.mb_type[top_xy].is_inter() {
@@ -1064,7 +1135,11 @@ impl InterCache {
             mv[5] = mv_of(right_top_xy, 12);
             ref_idx[5] = ref_of(right_top_xy, 12);
         } else {
-            ref_idx[5] = if right_top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+            ref_idx[5] = if right_top {
+                REF_NOT_IN_LIST
+            } else {
+                REF_NOT_AVAIL
+            };
         }
         // Interior right-edge cells: always unavailable / zero.
         for &c in &[9usize, 11, 17, 21, 23] {
@@ -1088,7 +1163,12 @@ fn store_block(
     iref: i8,
     ref_pic_id: i32,
 ) {
-    let BlockPlace { scan4, cache_idx, w, h } = place;
+    let BlockPlace {
+        scan4,
+        cache_idx,
+        w,
+        h,
+    } = place;
     for by in 0..h {
         for bx in 0..w {
             let raster = scan4 + by * 4 + bx;
@@ -1139,13 +1219,27 @@ pub fn parse_p_mb_cavlc(
             ctx.ref_pic_id[mb_xy * 16 + raster] = ref_pic_id;
         }
         let luma_qp = *last_mb_qp;
-        commit_inter_meta(MbCtx { ctx, mb_xy, pps }, MbType::PSkip, 0, luma_qp, &[0; 16], &[0; 8]);
+        commit_inter_meta(
+            MbCtx { ctx, mb_xy, pps },
+            MbType::PSkip,
+            0,
+            luma_qp,
+            &[0; 16],
+            &[0; 8],
+        );
         return Ok(());
     }
 
     let ui_mb_type = bs.read_ue()?;
     if ui_mb_type < 5 {
-        parse_inter_mb(bs, MbCtx { ctx, mb_xy, pps }, last_mb_qp, ui_mb_type, ref_pic_ids, coeffs)
+        parse_inter_mb(
+            bs,
+            MbCtx { ctx, mb_xy, pps },
+            last_mb_qp,
+            ui_mb_type,
+            ref_pic_ids,
+            coeffs,
+        )
     } else {
         // Intra MB inside a P slice: reuse the intra core with the -5 offset.
         parse_intra_mb_core(bs, ctx, mb_xy, pps, last_mb_qp, coeffs, ui_mb_type - 5)
@@ -1232,9 +1326,22 @@ fn parse_inter_mb(
         ];
         parse_residuals(
             bs,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 },
-            Neighbours { left: &left, top: &top },
-            ResidualOut { cur_nzc_luma: &mut cur_nzc_luma, cur_nzc_chroma: &mut cur_nzc_chroma },
+            ResidualParams {
+                mb_type,
+                cbp_l,
+                cbp_c,
+                luma_qp,
+                chroma_qp,
+                transform_8x8,
+            },
+            Neighbours {
+                left: &left,
+                top: &top,
+            },
+            ResidualOut {
+                cur_nzc_luma: &mut cur_nzc_luma,
+                cur_nzc_chroma: &mut cur_nzc_chroma,
+            },
             coeffs,
         )?;
     } else {
@@ -1325,7 +1432,12 @@ fn parse_inter_motion(
                 ctx,
                 cache,
                 mb_xy,
-                BlockPlace { scan4: 0, cache_idx: 0, w: 4, h: 4 },
+                BlockPlace {
+                    scan4: 0,
+                    cache_idx: 0,
+                    w: 4,
+                    h: 4,
+                },
                 mv,
                 iref,
                 ref_pic_ids[iref as usize],
@@ -1338,7 +1450,15 @@ fn parse_inter_motion(
                 let mvp = pred_inter16x8(&cache.mv, &cache.ref_idx, part_idx, r[i]);
                 let mvd = read_mvd(bs)?;
                 let mv = [mvp[0] + mvd[0], mvp[1] + mvd[1]];
-                update_p16x8(ctx, cache, mb_xy, part_idx, mv, r[i], ref_pic_ids[r[i] as usize]);
+                update_p16x8(
+                    ctx,
+                    cache,
+                    mb_xy,
+                    part_idx,
+                    mv,
+                    r[i],
+                    ref_pic_ids[r[i] as usize],
+                );
             }
         }
         MbType::Inter8x16 => {
@@ -1348,7 +1468,15 @@ fn parse_inter_motion(
                 let mvp = pred_inter8x16(&cache.mv, &cache.ref_idx, part_idx, r[i]);
                 let mvd = read_mvd(bs)?;
                 let mv = [mvp[0] + mvd[0], mvp[1] + mvd[1]];
-                update_p8x16(ctx, cache, mb_xy, part_idx, mv, r[i], ref_pic_ids[r[i] as usize]);
+                update_p8x16(
+                    ctx,
+                    cache,
+                    mb_xy,
+                    part_idx,
+                    mv,
+                    r[i],
+                    ref_pic_ids[r[i] as usize],
+                );
             }
         }
         MbType::Inter8x8 | MbType::Inter8x8Ref0 => {
@@ -1411,7 +1539,18 @@ fn parse_inter_motion(
                         SubMbType::P4x8 => (1, 2),
                         SubMbType::P4x4 => (1, 1),
                     };
-                    store_mv_only(ctx, cache, mb_xy, BlockPlace { scan4, cache_idx, w, h }, mv);
+                    store_mv_only(
+                        ctx,
+                        cache,
+                        mb_xy,
+                        BlockPlace {
+                            scan4,
+                            cache_idx,
+                            w,
+                            h,
+                        },
+                        mv,
+                    );
                 }
             }
         }
@@ -1428,7 +1567,12 @@ fn store_mv_only(
     place: BlockPlace,
     mv: [i16; 2],
 ) {
-    let BlockPlace { scan4, cache_idx, w, h } = place;
+    let BlockPlace {
+        scan4,
+        cache_idx,
+        w,
+        h,
+    } = place;
     for by in 0..h {
         for bx in 0..w {
             let raster = scan4 + by * 4 + bx;
@@ -1455,7 +1599,20 @@ fn update_p16x8(
     for _ in 0..2 {
         let scan4 = SCAN4[p];
         let cache_idx = CACHE30_SCAN_IDX[p];
-        store_block(ctx, cache, mb_xy, BlockPlace { scan4, cache_idx, w: 2, h: 2 }, mv, iref, ref_pic_id);
+        store_block(
+            ctx,
+            cache,
+            mb_xy,
+            BlockPlace {
+                scan4,
+                cache_idx,
+                w: 2,
+                h: 2,
+            },
+            mv,
+            iref,
+            ref_pic_id,
+        );
         p += 4;
     }
 }
@@ -1474,7 +1631,20 @@ fn update_p8x16(
     for _ in 0..2 {
         let scan4 = SCAN4[p];
         let cache_idx = CACHE30_SCAN_IDX[p];
-        store_block(ctx, cache, mb_xy, BlockPlace { scan4, cache_idx, w: 2, h: 2 }, mv, iref, ref_pic_id);
+        store_block(
+            ctx,
+            cache,
+            mb_xy,
+            BlockPlace {
+                scan4,
+                cache_idx,
+                w: 2,
+                h: 2,
+            },
+            mv,
+            iref,
+            ref_pic_id,
+        );
         p += 8;
     }
 }
@@ -1482,7 +1652,8 @@ fn update_p8x16(
 // ===================== B-slice (bi-predictive) macroblock parse =============
 
 use super::bdirect::{
-    b_direct_spatial, b_direct_temporal_sub, fill_direct_16x16, fill_direct_8x8, ColRef, DirectInfo, Part8x8,
+    ColRef, DirectInfo, Part8x8, b_direct_spatial, b_direct_temporal_sub, fill_direct_8x8,
+    fill_direct_16x16,
 };
 
 /// B macroblock partition shape (`g_ksInterBMbTypeInfo` geometry).
@@ -1607,11 +1778,18 @@ impl BInterCache {
                 if list == 0 {
                     [ctx.mv[(xy * 16 + b) * 2], ctx.mv[(xy * 16 + b) * 2 + 1]]
                 } else {
-                    [ctx.mv_l1[(xy * 16 + b) * 2], ctx.mv_l1[(xy * 16 + b) * 2 + 1]]
+                    [
+                        ctx.mv_l1[(xy * 16 + b) * 2],
+                        ctx.mv_l1[(xy * 16 + b) * 2 + 1],
+                    ]
                 }
             };
             let ref_of = |xy: usize, b: usize| -> i8 {
-                if list == 0 { ctx.ref_idx[xy * 16 + b] } else { ctx.ref_idx_l1[xy * 16 + b] }
+                if list == 0 {
+                    ctx.ref_idx[xy * 16 + b]
+                } else {
+                    ctx.ref_idx_l1[xy * 16 + b]
+                }
             };
             let m = &mut mv[list];
             let r = &mut ref_idx[list];
@@ -1633,7 +1811,11 @@ impl BInterCache {
                 m[0] = mv_of(left_top_xy, 15);
                 r[0] = ref_of(left_top_xy, 15);
             } else {
-                r[0] = if left_top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+                r[0] = if left_top {
+                    REF_NOT_IN_LIST
+                } else {
+                    REF_NOT_AVAIL
+                };
             }
             // Top row.
             if top && ctx.mb_type[top_xy].is_inter() {
@@ -1652,7 +1834,11 @@ impl BInterCache {
                 m[5] = mv_of(right_top_xy, 12);
                 r[5] = ref_of(right_top_xy, 12);
             } else {
-                r[5] = if right_top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+                r[5] = if right_top {
+                    REF_NOT_IN_LIST
+                } else {
+                    REF_NOT_AVAIL
+                };
             }
             for &c in &[9usize, 11, 17, 21, 23] {
                 r[c] = REF_NOT_AVAIL;
@@ -1664,8 +1850,18 @@ impl BInterCache {
 
     /// Store one block of motion for `list` into both `ctx` and the cache.
     fn store(&mut self, ctx: &mut DecoderContext, mb_xy: usize, place: BlockPlace, m: Motion) {
-        let BlockPlace { scan4, cache_idx, w, h } = place;
-        let Motion { list, mv, iref, ref_pic } = m;
+        let BlockPlace {
+            scan4,
+            cache_idx,
+            w,
+            h,
+        } = place;
+        let Motion {
+            list,
+            mv,
+            iref,
+            ref_pic,
+        } = m;
         for by in 0..h {
             for bx in 0..w {
                 let raster = scan4 + by * 4 + bx;
@@ -1710,9 +1906,23 @@ pub fn parse_b_mb_cavlc(
     if old != 0 {
         // B_Skip: direct prediction, cbp = 0.
         ctx.mb_type[mb_xy] = MbType::BSkip;
-        apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true, bref.direct_spatial);
+        apply_b_direct(
+            ctx,
+            mb_xy,
+            bref.ref_pic_ids,
+            &bref.col,
+            true,
+            bref.direct_spatial,
+        );
         let luma_qp = *last_mb_qp;
-        commit_inter_meta(MbCtx { ctx, mb_xy, pps }, MbType::BSkip, 0, luma_qp, &[0; 16], &[0; 8]);
+        commit_inter_meta(
+            MbCtx { ctx, mb_xy, pps },
+            MbType::BSkip,
+            0,
+            luma_qp,
+            &[0; 16],
+            &[0; 8],
+        );
         return Ok(());
     }
 
@@ -1737,7 +1947,14 @@ pub fn parse_b_mb_cavlc(
     ctx.mb_type[mb_xy] = mb_type;
 
     if info.shape == BShape::Direct {
-        apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true, bref.direct_spatial);
+        apply_b_direct(
+            ctx,
+            mb_xy,
+            bref.ref_pic_ids,
+            &bref.col,
+            true,
+            bref.direct_spatial,
+        );
     } else {
         let mut cache = BInterCache::build(ctx, mb_xy);
         parse_b_motion(bs, ctx, &mut cache, mb_xy, ui_mb_type, bref)?;
@@ -1775,9 +1992,22 @@ pub fn parse_b_mb_cavlc(
         ];
         parse_residuals(
             bs,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 },
-            Neighbours { left: &left, top: &top },
-            ResidualOut { cur_nzc_luma: &mut cur_nzc_luma, cur_nzc_chroma: &mut cur_nzc_chroma },
+            ResidualParams {
+                mb_type,
+                cbp_l,
+                cbp_c,
+                luma_qp,
+                chroma_qp,
+                transform_8x8,
+            },
+            Neighbours {
+                left: &left,
+                top: &top,
+            },
+            ResidualOut {
+                cur_nzc_luma: &mut cur_nzc_luma,
+                cur_nzc_chroma: &mut cur_nzc_chroma,
+            },
             coeffs,
         )?;
     } else {
@@ -1842,7 +2072,18 @@ pub(super) fn apply_b_direct(
         // Fill each 8x8 with its own colZero (B_8x8 direct, or a 16x16 direct MB
         // resolved to 8x8 by its colocated MB).
         for i in 0..4 {
-            fill_direct_8x8(ctx, mb_xy, Part8x8 { idx8: i, part_count: 1, part_w: 2 }, &info, col, ref_pic);
+            fill_direct_8x8(
+                ctx,
+                mb_xy,
+                Part8x8 {
+                    idx8: i,
+                    part_count: 1,
+                    part_w: 2,
+                },
+                &info,
+                col,
+                ref_pic,
+            );
             ctx.sub_mb_type[mb_xy * 4 + i] = SubMbType::P8x8;
         }
     }
@@ -1881,9 +2122,39 @@ fn parse_b_motion(
                     let dx = bs.read_se()? as i16;
                     let dy = bs.read_se()? as i16;
                     let mv = [mvp[0] + dx, mvp[1] + dy];
-                    cache.store(ctx, mb_xy, BlockPlace { scan4: 0, cache_idx: 0, w: 4, h: 4 }, Motion { list, mv, iref: iref_l, ref_pic: bref.ref_pic_ids[list][iref_l as usize] });
+                    cache.store(
+                        ctx,
+                        mb_xy,
+                        BlockPlace {
+                            scan4: 0,
+                            cache_idx: 0,
+                            w: 4,
+                            h: 4,
+                        },
+                        Motion {
+                            list,
+                            mv,
+                            iref: iref_l,
+                            ref_pic: bref.ref_pic_ids[list][iref_l as usize],
+                        },
+                    );
                 } else {
-                    cache.store(ctx, mb_xy, BlockPlace { scan4: 0, cache_idx: 0, w: 4, h: 4 }, Motion { list, mv: [0, 0], iref: REF_NOT_IN_LIST, ref_pic: -1 });
+                    cache.store(
+                        ctx,
+                        mb_xy,
+                        BlockPlace {
+                            scan4: 0,
+                            cache_idx: 0,
+                            w: 4,
+                            h: 4,
+                        },
+                        Motion {
+                            list,
+                            mv: [0, 0],
+                            iref: REF_NOT_IN_LIST,
+                            ref_pic: -1,
+                        },
+                    );
                 }
             }
         }
@@ -1914,9 +2185,39 @@ fn parse_b_motion(
                         let dx = bs.read_se()? as i16;
                         let dy = bs.read_se()? as i16;
                         let mv = [mvp[0] + dx, mvp[1] + dy];
-                        cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx, w: pw, h: ph }, Motion { list, mv, iref: r, ref_pic: bref.ref_pic_ids[list][r as usize] });
+                        cache.store(
+                            ctx,
+                            mb_xy,
+                            BlockPlace {
+                                scan4,
+                                cache_idx,
+                                w: pw,
+                                h: ph,
+                            },
+                            Motion {
+                                list,
+                                mv,
+                                iref: r,
+                                ref_pic: bref.ref_pic_ids[list][r as usize],
+                            },
+                        );
                     } else {
-                        cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx, w: pw, h: ph }, Motion { list, mv: [0, 0], iref: REF_NOT_IN_LIST, ref_pic: -1 });
+                        cache.store(
+                            ctx,
+                            mb_xy,
+                            BlockPlace {
+                                scan4,
+                                cache_idx,
+                                w: pw,
+                                h: ph,
+                            },
+                            Motion {
+                                list,
+                                mv: [0, 0],
+                                iref: REF_NOT_IN_LIST,
+                                ref_pic: -1,
+                            },
+                        );
                     }
                 }
             }
@@ -1962,8 +2263,16 @@ fn parse_b_8x8(
     };
     let direct_refpic = direct.as_ref().map(|d| {
         [
-            if d.iref[0] >= 0 && (d.iref[0] as usize) < bref.ref_pic_ids[0].len() { bref.ref_pic_ids[0][d.iref[0] as usize] } else { -1 },
-            if d.iref[1] >= 0 && (d.iref[1] as usize) < bref.ref_pic_ids[1].len() { bref.ref_pic_ids[1][d.iref[1] as usize] } else { -1 },
+            if d.iref[0] >= 0 && (d.iref[0] as usize) < bref.ref_pic_ids[0].len() {
+                bref.ref_pic_ids[0][d.iref[0] as usize]
+            } else {
+                -1
+            },
+            if d.iref[1] >= 0 && (d.iref[1] as usize) < bref.ref_pic_ids[1].len() {
+                bref.ref_pic_ids[1][d.iref[1] as usize]
+            } else {
+                -1
+            },
         ]
     });
 
@@ -1974,7 +2283,18 @@ fn parse_b_8x8(
         if sinfo.direct {
             if bref.direct_spatial {
                 let d = direct.as_ref().unwrap();
-                fill_direct_8x8(ctx, mb_xy, Part8x8 { idx8: i, part_count: 1, part_w: 2 }, d, &bref.col, direct_refpic.unwrap());
+                fill_direct_8x8(
+                    ctx,
+                    mb_xy,
+                    Part8x8 {
+                        idx8: i,
+                        part_count: 1,
+                        part_w: 2,
+                    },
+                    d,
+                    &bref.col,
+                    direct_refpic.unwrap(),
+                );
             } else {
                 b_direct_temporal_sub(ctx, mb_xy, i, &bref.col);
             }
@@ -1992,7 +2312,14 @@ fn parse_b_8x8(
                 if bref.direct_spatial {
                     let d = direct.as_ref().unwrap();
                     irefs[i] = d.iref[list];
-                    set_8x8_ref(ctx, mb_xy, i, list, d.iref[list], direct_refpic.unwrap()[list]);
+                    set_8x8_ref(
+                        ctx,
+                        mb_xy,
+                        i,
+                        list,
+                        d.iref[list],
+                        direct_refpic.unwrap()[list],
+                    );
                 } else {
                     // Temporal: the neighbour-prediction cache treats a direct
                     // sub-partition as not-in-list (the C leaves `ref_idx_list`
@@ -2007,7 +2334,14 @@ fn parse_b_8x8(
                     return Err(DecodeError::InvalidSyntax("B 8x8 ref_idx"));
                 }
                 irefs[i] = v as i8;
-                set_8x8_ref(ctx, mb_xy, i, list, v as i8, bref.ref_pic_ids[list][v as usize]);
+                set_8x8_ref(
+                    ctx,
+                    mb_xy,
+                    i,
+                    list,
+                    v as i8,
+                    bref.ref_pic_ids[list][v as usize],
+                );
             } else {
                 set_8x8_ref(ctx, mb_xy, i, list, REF_NOT_IN_LIST, -1);
             }
@@ -2040,13 +2374,53 @@ fn parse_b_8x8(
                     SubMbType::P4x4 => (1, 1),
                 };
                 if uses {
-                    let mvp = pred_mv(&cache.mv[list], &cache.ref_idx[list], part_idx, sinfo.part_w, r);
+                    let mvp = pred_mv(
+                        &cache.mv[list],
+                        &cache.ref_idx[list],
+                        part_idx,
+                        sinfo.part_w,
+                        r,
+                    );
                     let dx = bs.read_se()? as i16;
                     let dy = bs.read_se()? as i16;
                     let mv = [mvp[0] + dx, mvp[1] + dy];
-                    cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx, w, h }, Motion { list, mv, iref: r, ref_pic: if r >= 0 { bref.ref_pic_ids[list][r as usize] } else { -1 } });
+                    cache.store(
+                        ctx,
+                        mb_xy,
+                        BlockPlace {
+                            scan4,
+                            cache_idx,
+                            w,
+                            h,
+                        },
+                        Motion {
+                            list,
+                            mv,
+                            iref: r,
+                            ref_pic: if r >= 0 {
+                                bref.ref_pic_ids[list][r as usize]
+                            } else {
+                                -1
+                            },
+                        },
+                    );
                 } else {
-                    cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx, w, h }, Motion { list, mv: [0, 0], iref: REF_NOT_IN_LIST, ref_pic: -1 });
+                    cache.store(
+                        ctx,
+                        mb_xy,
+                        BlockPlace {
+                            scan4,
+                            cache_idx,
+                            w,
+                            h,
+                        },
+                        Motion {
+                            list,
+                            mv: [0, 0],
+                            iref: REF_NOT_IN_LIST,
+                            ref_pic: -1,
+                        },
+                    );
                 }
             }
         }
@@ -2089,10 +2463,16 @@ fn sync_cache_8x8(cache: &mut BInterCache, ctx: &DecoderContext, mb_xy: usize, i
         let c = CACHE30_SCAN_IDX[part_idx];
         for list in 0..2 {
             if list == 0 {
-                cache.mv[0][c] = [ctx.mv[(mb_xy * 16 + scan4) * 2], ctx.mv[(mb_xy * 16 + scan4) * 2 + 1]];
+                cache.mv[0][c] = [
+                    ctx.mv[(mb_xy * 16 + scan4) * 2],
+                    ctx.mv[(mb_xy * 16 + scan4) * 2 + 1],
+                ];
                 cache.ref_idx[0][c] = ctx.ref_idx[mb_xy * 16 + scan4];
             } else {
-                cache.mv[1][c] = [ctx.mv_l1[(mb_xy * 16 + scan4) * 2], ctx.mv_l1[(mb_xy * 16 + scan4) * 2 + 1]];
+                cache.mv[1][c] = [
+                    ctx.mv_l1[(mb_xy * 16 + scan4) * 2],
+                    ctx.mv_l1[(mb_xy * 16 + scan4) * 2 + 1],
+                ];
                 cache.ref_idx[1][c] = ctx.ref_idx_l1[mb_xy * 16 + scan4];
             }
         }

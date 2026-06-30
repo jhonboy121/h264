@@ -58,7 +58,11 @@ mod tests {
         copy16x16(&mut dst, dst_stride, &src, src_stride);
         for y in 0..16 {
             for x in 0..16 {
-                assert_eq!(dst[y * dst_stride + x], src[y * src_stride + x], "y={y} x={x}");
+                assert_eq!(
+                    dst[y * dst_stride + x],
+                    src[y * src_stride + x],
+                    "y={y} x={x}"
+                );
             }
             // bytes past the copied width must be untouched
             assert_eq!(dst[y * dst_stride + 16], 0xAA);
@@ -79,7 +83,10 @@ mod tests {
             copy_block(&mut b, stride, &src, stride, w, h);
             assert_eq!(a, b);
             // spot check a corner
-            assert_eq!(a[(h - 1) * stride + (w - 1)], src[(h - 1) * stride + (w - 1)]);
+            assert_eq!(
+                a[(h - 1) * stride + (w - 1)],
+                src[(h - 1) * stride + (w - 1)]
+            );
         }
     }
 }

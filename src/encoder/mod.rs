@@ -67,7 +67,12 @@ impl Encoder {
     /// contiguous slices (MB-row bands). `slices` is clamped to `[1, mb_height]`.
     /// Multi-slice streams stay bit-exact through this crate's decoder and are
     /// the unit of parallelism for the `threads`-gated encode paths.
-    pub fn new_with_slices(width: u32, height: u32, qp: u8, slices: u32) -> Result<Self, EncodeError> {
+    pub fn new_with_slices(
+        width: u32,
+        height: u32,
+        qp: u8,
+        slices: u32,
+    ) -> Result<Self, EncodeError> {
         if width == 0 || height == 0 {
             return Err(EncodeError::InvalidConfig("zero dimension"));
         }
@@ -138,7 +143,14 @@ impl Encoder {
         let qp = self.cfg.qp as i32;
 
         // Pad source to MB-aligned planes with edge replication.
-        let (src_y, sy_stride) = pad_plane(y, y_stride, self.width as usize, self.height as usize, mb_width * 16, mb_height * 16);
+        let (src_y, sy_stride) = pad_plane(
+            y,
+            y_stride,
+            self.width as usize,
+            self.height as usize,
+            mb_width * 16,
+            mb_height * 16,
+        );
         let cw = self.width as usize >> 1;
         let ch = self.height as usize >> 1;
         let (src_u, sc_stride) = pad_plane(u, c_stride, cw, ch, mb_width * 8, mb_height * 8);
@@ -151,14 +163,25 @@ impl Encoder {
             None => (&[], &[], &[]),
         };
 
-        let dims = MbDims { width: mb_width, height: mb_height };
+        let dims = MbDims {
+            width: mb_width,
+            height: mb_height,
+        };
         let mut frame = FrameEnc::new(
             dims,
             qp,
-            PlaneRefs { y: &src_y, u: &src_u, v: &src_v },
+            PlaneRefs {
+                y: &src_y,
+                u: &src_u,
+                v: &src_v,
+            },
             sy_stride,
             sc_stride,
-            PlaneRefs { y: ref_y, u: ref_u, v: ref_v },
+            PlaneRefs {
+                y: ref_y,
+                u: ref_u,
+                v: ref_v,
+            },
         );
 
         // IDR access unit (re)transmits the parameter sets ahead of its slices.
@@ -179,13 +202,21 @@ impl Encoder {
             }
             frame.encode_band(&mut bw, first_mb_y, last_mb_y, is_p);
             bw.write_trailing_bits();
-            let (ref_idc, nal_type) = if is_p { (2, NAL_NON_IDR_SLICE) } else { (3, NAL_IDR_SLICE) };
+            let (ref_idc, nal_type) = if is_p {
+                (2, NAL_NON_IDR_SLICE)
+            } else {
+                (3, NAL_IDR_SLICE)
+            };
             append_annexb_nal(&mut out, ref_idc, nal_type, &bw.finish());
         }
 
         // Keep this frame's (border-extended) reconstruction as the next ref.
         let (ry, ru, rv) = frame.into_reference();
-        self.reference = Some(RefPlanes { y: ry, u: ru, v: rv });
+        self.reference = Some(RefPlanes {
+            y: ry,
+            u: ru,
+            v: rv,
+        });
         self.frame_index = self.frame_index.wrapping_add(1);
 
         out
@@ -197,7 +228,9 @@ impl Encoder {
 /// `[(first_mb_y, last_mb_y), ...]` half-open row ranges.
 fn slice_bands(mb_height: usize, slices: u32) -> Vec<(usize, usize)> {
     let s = (slices as usize).clamp(1, mb_height.max(1));
-    (0..s).map(|b| (b * mb_height / s, (b + 1) * mb_height / s)).collect()
+    (0..s)
+        .map(|b| (b * mb_height / s, (b + 1) * mb_height / s))
+        .collect()
 }
 
 /// Write an IDR I-slice header (CAVLC, frame-only) starting at `first_mb`.
@@ -224,7 +257,10 @@ fn write_p_slice_header(bw: &mut BitWriter, cfg: &ParamConfig, frame_index: u32,
     bw.write_ue(5); // slice_type = P (5 -> "all P" form)
     bw.write_ue(0); // pic_parameter_set_id
     bw.write_bits(frame_index % max_fn, cfg.log2_max_frame_num); // frame_num
-    bw.write_bits((frame_index.wrapping_mul(2)) % max_poc, cfg.log2_max_poc_lsb); // poc_lsb
+    bw.write_bits(
+        (frame_index.wrapping_mul(2)) % max_poc,
+        cfg.log2_max_poc_lsb,
+    ); // poc_lsb
     bw.write_flag(false); // num_ref_idx_active_override_flag (use PPS default = 1)
     bw.write_flag(false); // ref_pic_list_modification_flag_l0
     // dec_ref_pic_marking (non-IDR, nal_ref_idc != 0): adaptive flag off.
@@ -254,12 +290,26 @@ impl Encoder {
     /// parallel. The output is **byte-identical** to `encode_frame` — each slice
     /// is fully independent (deblocking off, neighbours gated at the boundary),
     /// so the order of execution cannot change a single bit.
-    pub fn encode_frame_parallel(&mut self, y: &[u8], y_stride: usize, u: &[u8], v: &[u8], c_stride: usize) -> Vec<u8> {
+    pub fn encode_frame_parallel(
+        &mut self,
+        y: &[u8],
+        y_stride: usize,
+        u: &[u8],
+        v: &[u8],
+        c_stride: usize,
+    ) -> Vec<u8> {
         let mb_width = self.cfg.mb_width as usize;
         let mb_height = self.cfg.mb_height as usize;
         let qp = self.cfg.qp as i32;
 
-        let (src_y, sy_stride) = pad_plane(y, y_stride, self.width as usize, self.height as usize, mb_width * 16, mb_height * 16);
+        let (src_y, sy_stride) = pad_plane(
+            y,
+            y_stride,
+            self.width as usize,
+            self.height as usize,
+            mb_width * 16,
+            mb_height * 16,
+        );
         let cw = self.width as usize >> 1;
         let ch = self.height as usize >> 1;
         let (src_u, sc_stride) = pad_plane(u, c_stride, cw, ch, mb_width * 8, mb_height * 8);
@@ -272,21 +322,34 @@ impl Encoder {
             None => (&[], &[], &[]),
         };
 
-        let dims = MbDims { width: mb_width, height: mb_height };
+        let dims = MbDims {
+            width: mb_width,
+            height: mb_height,
+        };
         let job = SliceJob {
             dims,
             qp,
-            src: PlaneRefs { y: &src_y, u: &src_u, v: &src_v },
+            src: PlaneRefs {
+                y: &src_y,
+                u: &src_u,
+                v: &src_v,
+            },
             sy_stride,
             sc_stride,
-            refs: PlaneRefs { y: ref_y, u: ref_u, v: ref_v },
+            refs: PlaneRefs {
+                y: ref_y,
+                u: ref_u,
+                v: ref_v,
+            },
             cfg: self.cfg,
             frame_index: self.frame_index,
             is_p,
         };
         let bands = slice_bands(mb_height, self.slices);
         let nbands = bands.len();
-        let par = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let par = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         let nthreads = nbands.min(par).max(1);
 
         // Encode each band on a worker (contiguous static chunking, so results
@@ -298,11 +361,16 @@ impl Encoder {
                     let lo = w * nbands / nthreads;
                     let hi = (w + 1) * nbands / nthreads;
                     scope.spawn(move || {
-                        (lo..hi).map(|bi| encode_one_band(job, bands[bi])).collect::<Vec<_>>()
+                        (lo..hi)
+                            .map(|bi| encode_one_band(job, bands[bi]))
+                            .collect::<Vec<_>>()
                     })
                 })
                 .collect();
-            handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap())
+                .collect()
         });
 
         // Assemble the access unit in slice order.
@@ -311,7 +379,11 @@ impl Encoder {
             append_annexb_nal(&mut out, 3, NAL_SPS, &paraset::write_sps(&self.cfg));
             append_annexb_nal(&mut out, 3, NAL_PPS, &paraset::write_pps(&self.cfg));
         }
-        let (ref_idc, nal_type) = if is_p { (2, NAL_NON_IDR_SLICE) } else { (3, NAL_IDR_SLICE) };
+        let (ref_idc, nal_type) = if is_p {
+            (2, NAL_NON_IDR_SLICE)
+        } else {
+            (3, NAL_IDR_SLICE)
+        };
         for (rbsp, _) in &results {
             append_annexb_nal(&mut out, ref_idc, nal_type, rbsp);
         }
@@ -322,8 +394,19 @@ impl Encoder {
         for ((_, fe), &(fy, ly)) in results.iter().zip(bands.iter()) {
             fe.copy_band_into(&mut unified, fy, ly);
         }
-        encode_mb::expand_reference(&mut unified.y, &mut unified.u, &mut unified.v, dims, unified.ystride, unified.cstride);
-        self.reference = Some(RefPlanes { y: unified.y, u: unified.u, v: unified.v });
+        encode_mb::expand_reference(
+            &mut unified.y,
+            &mut unified.u,
+            &mut unified.v,
+            dims,
+            unified.ystride,
+            unified.cstride,
+        );
+        self.reference = Some(RefPlanes {
+            y: unified.y,
+            u: unified.u,
+            v: unified.v,
+        });
         self.frame_index = self.frame_index.wrapping_add(1);
         out
     }
@@ -338,9 +421,17 @@ impl Encoder {
         if n == 0 {
             return Vec::new();
         }
-        let par = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1);
+        let par = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1);
         let nthreads = n.min(par).max(1);
-        let (w, h, qp, slices, fps) = (self.width, self.height, self.cfg.qp, self.slices, self.cfg.fps);
+        let (w, h, qp, slices, fps) = (
+            self.width,
+            self.height,
+            self.cfg.qp,
+            self.slices,
+            self.cfg.fps,
+        );
         std::thread::scope(|scope| {
             let frames = &frames;
             let handles: Vec<_> = (0..nthreads)
@@ -361,7 +452,10 @@ impl Encoder {
                     })
                 })
                 .collect();
-            handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap())
+                .collect()
         })
     }
 }
@@ -390,7 +484,14 @@ struct SliceJob<'a> {
 #[cfg(feature = "threads")]
 fn encode_one_band<'a>(job: SliceJob<'a>, band: (usize, usize)) -> (Vec<u8>, FrameEnc<'a>) {
     let (first_mb_y, last_mb_y) = band;
-    let mut fe = FrameEnc::new(job.dims, job.qp, job.src, job.sy_stride, job.sc_stride, job.refs);
+    let mut fe = FrameEnc::new(
+        job.dims,
+        job.qp,
+        job.src,
+        job.sy_stride,
+        job.sc_stride,
+        job.refs,
+    );
     let mut bw = BitWriter::new();
     let first_mb = (first_mb_y * job.dims.width) as u32;
     if job.is_p {
@@ -405,7 +506,14 @@ fn encode_one_band<'a>(job: SliceJob<'a>, band: (usize, usize)) -> (Vec<u8>, Fra
 
 /// Copy `src` (`w`x`h`, row stride `src_stride`) into a tightly-strided
 /// `dst_w`x`dst_h` buffer, replicating the right/bottom edges into the padding.
-fn pad_plane(src: &[u8], src_stride: usize, w: usize, h: usize, dst_w: usize, dst_h: usize) -> (Vec<u8>, usize) {
+fn pad_plane(
+    src: &[u8],
+    src_stride: usize,
+    w: usize,
+    h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> (Vec<u8>, usize) {
     let mut dst = vec![0u8; dst_w * dst_h];
     for y in 0..dst_h {
         let sy = y.min(h - 1);

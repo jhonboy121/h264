@@ -166,9 +166,18 @@ mod tests {
             assert_eq!(satd8x4(&a, st1, &b, st2), satd_ref(&a, st1, &b, st2, 8, 4));
             assert_eq!(satd4x8(&a, st1, &b, st2), satd_ref(&a, st1, &b, st2, 4, 8));
             assert_eq!(satd8x8(&a, st1, &b, st2), satd_ref(&a, st1, &b, st2, 8, 8));
-            assert_eq!(satd16x8(&a, st1, &b, st2), satd_ref(&a, st1, &b, st2, 16, 8));
-            assert_eq!(satd8x16(&a, st1, &b, st2), satd_ref(&a, st1, &b, st2, 8, 16));
-            assert_eq!(satd16x16(&a, st1, &b, st2), satd_ref(&a, st1, &b, st2, 16, 16));
+            assert_eq!(
+                satd16x8(&a, st1, &b, st2),
+                satd_ref(&a, st1, &b, st2, 16, 8)
+            );
+            assert_eq!(
+                satd8x16(&a, st1, &b, st2),
+                satd_ref(&a, st1, &b, st2, 8, 16)
+            );
+            assert_eq!(
+                satd16x16(&a, st1, &b, st2),
+                satd_ref(&a, st1, &b, st2, 16, 16)
+            );
         }
     }
 

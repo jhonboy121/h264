@@ -68,8 +68,10 @@ pub(crate) fn pixel_avg(dst: BlkMut, a: Blk, b: Blk, dim: Dim) {
 pub(crate) fn pixel_avg_scalar(dst: BlkMut, a: Blk, b: Blk, dim: Dim) {
     for i in 0..dim.h {
         for j in 0..dim.w {
-            dst.data[dst.off + i * dst.stride + j] =
-                ((a.data[a.off + i * a.stride + j] as i32 + b.data[b.off + i * b.stride + j] as i32 + 1) >> 1) as u8;
+            dst.data[dst.off + i * dst.stride + j] = ((a.data[a.off + i * a.stride + j] as i32
+                + b.data[b.off + i * b.stride + j] as i32
+                + 1)
+                >> 1) as u8;
         }
     }
 }
@@ -86,7 +88,15 @@ pub fn mc_copy(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss:
 /// Horizontal half-pel filter, quarter-pel position (2,0) (`McHorVer20_c`).
 ///
 /// Dispatches to a bit-exact NEON kernel under `--features simd` on aarch64.
-pub fn mc_hor_ver20(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss: usize, dim: Dim) {
+pub fn mc_hor_ver20(
+    dst: &mut [u8],
+    do_: usize,
+    ds: usize,
+    src: &[u8],
+    so: usize,
+    ss: usize,
+    dim: Dim,
+) {
     #[cfg(simd_neon)]
     return crate::dsp::simd::neon::mc_hor_ver20(dst, do_, ds, src, so, ss, dim);
     #[cfg(not(simd_neon))]
@@ -94,7 +104,15 @@ pub fn mc_hor_ver20(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize
 }
 
 /// Scalar reference for [`mc_hor_ver20`].
-pub(crate) fn mc_hor_ver20_scalar(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss: usize, dim: Dim) {
+pub(crate) fn mc_hor_ver20_scalar(
+    dst: &mut [u8],
+    do_: usize,
+    ds: usize,
+    src: &[u8],
+    so: usize,
+    ss: usize,
+    dim: Dim,
+) {
     for i in 0..dim.h {
         for j in 0..dim.w {
             let v = filter_input_8bit(src, so + i * ss + j, 1);
@@ -106,7 +124,15 @@ pub(crate) fn mc_hor_ver20_scalar(dst: &mut [u8], do_: usize, ds: usize, src: &[
 /// Vertical half-pel filter, quarter-pel position (0,2) (`McHorVer02_c`).
 ///
 /// Dispatches to a bit-exact NEON kernel under `--features simd` on aarch64.
-pub fn mc_hor_ver02(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss: usize, dim: Dim) {
+pub fn mc_hor_ver02(
+    dst: &mut [u8],
+    do_: usize,
+    ds: usize,
+    src: &[u8],
+    so: usize,
+    ss: usize,
+    dim: Dim,
+) {
     #[cfg(simd_neon)]
     return crate::dsp::simd::neon::mc_hor_ver02(dst, do_, ds, src, so, ss, dim);
     #[cfg(not(simd_neon))]
@@ -114,7 +140,15 @@ pub fn mc_hor_ver02(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize
 }
 
 /// Scalar reference for [`mc_hor_ver02`].
-pub(crate) fn mc_hor_ver02_scalar(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss: usize, dim: Dim) {
+pub(crate) fn mc_hor_ver02_scalar(
+    dst: &mut [u8],
+    do_: usize,
+    ds: usize,
+    src: &[u8],
+    so: usize,
+    ss: usize,
+    dim: Dim,
+) {
     for i in 0..dim.h {
         for j in 0..dim.w {
             let v = filter_input_8bit(src, so + i * ss + j, ss as isize);
@@ -125,7 +159,15 @@ pub(crate) fn mc_hor_ver02_scalar(dst: &mut [u8], do_: usize, ds: usize, src: &[
 
 /// Center half-pel filter, quarter-pel position (2,2) (`McHorVer22_c`): vertical
 /// 6-tap into a 16-bit row, then horizontal 6-tap with `(x+512)>>10` rounding.
-pub fn mc_hor_ver22(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss: usize, dim: Dim) {
+pub fn mc_hor_ver22(
+    dst: &mut [u8],
+    do_: usize,
+    ds: usize,
+    src: &[u8],
+    so: usize,
+    ss: usize,
+    dim: Dim,
+) {
     let mut tmp = [0i16; 16 + 5];
     for i in 0..dim.h {
         for (j, t) in tmp.iter_mut().enumerate().take(dim.w + 5) {
@@ -146,9 +188,21 @@ fn mc_hor_ver01(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss
     let mut t = [0u8; 256];
     mc_hor_ver02(&mut t, 0, 16, src, so, ss, dim);
     pixel_avg(
-        BlkMut { data: dst, off: do_, stride: ds },
-        Blk { data: src, off: so, stride: ss },
-        Blk { data: &t, off: 0, stride: 16 },
+        BlkMut {
+            data: dst,
+            off: do_,
+            stride: ds,
+        },
+        Blk {
+            data: src,
+            off: so,
+            stride: ss,
+        },
+        Blk {
+            data: &t,
+            off: 0,
+            stride: 16,
+        },
         dim,
     );
 }
@@ -156,9 +210,21 @@ fn mc_hor_ver03(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss
     let mut t = [0u8; 256];
     mc_hor_ver02(&mut t, 0, 16, src, so, ss, dim);
     pixel_avg(
-        BlkMut { data: dst, off: do_, stride: ds },
-        Blk { data: src, off: so + ss, stride: ss },
-        Blk { data: &t, off: 0, stride: 16 },
+        BlkMut {
+            data: dst,
+            off: do_,
+            stride: ds,
+        },
+        Blk {
+            data: src,
+            off: so + ss,
+            stride: ss,
+        },
+        Blk {
+            data: &t,
+            off: 0,
+            stride: 16,
+        },
         dim,
     );
 }
@@ -166,9 +232,21 @@ fn mc_hor_ver10(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss
     let mut t = [0u8; 256];
     mc_hor_ver20(&mut t, 0, 16, src, so, ss, dim);
     pixel_avg(
-        BlkMut { data: dst, off: do_, stride: ds },
-        Blk { data: src, off: so, stride: ss },
-        Blk { data: &t, off: 0, stride: 16 },
+        BlkMut {
+            data: dst,
+            off: do_,
+            stride: ds,
+        },
+        Blk {
+            data: src,
+            off: so,
+            stride: ss,
+        },
+        Blk {
+            data: &t,
+            off: 0,
+            stride: 16,
+        },
         dim,
     );
 }
@@ -178,9 +256,21 @@ fn mc_hor_ver11(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss
     mc_hor_ver20(&mut hor, 0, 16, src, so, ss, dim);
     mc_hor_ver02(&mut ver, 0, 16, src, so, ss, dim);
     pixel_avg(
-        BlkMut { data: dst, off: do_, stride: ds },
-        Blk { data: &hor, off: 0, stride: 16 },
-        Blk { data: &ver, off: 0, stride: 16 },
+        BlkMut {
+            data: dst,
+            off: do_,
+            stride: ds,
+        },
+        Blk {
+            data: &hor,
+            off: 0,
+            stride: 16,
+        },
+        Blk {
+            data: &ver,
+            off: 0,
+            stride: 16,
+        },
         dim,
     );
 }
@@ -190,9 +280,21 @@ fn mc_hor_ver12(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss
     mc_hor_ver02(&mut ver, 0, 16, src, so, ss, dim);
     mc_hor_ver22(&mut ctr, 0, 16, src, so, ss, dim);
     pixel_avg(
-        BlkMut { data: dst, off: do_, stride: ds },
-        Blk { data: &ver, off: 0, stride: 16 },
-        Blk { data: &ctr, off: 0, stride: 16 },
+        BlkMut {
+            data: dst,
+            off: do_,
+            stride: ds,
+        },
+        Blk {
+            data: &ver,
+            off: 0,
+            stride: 16,
+        },
+        Blk {
+            data: &ctr,
+            off: 0,
+            stride: 16,
+        },
         dim,
     );
 }
@@ -202,9 +304,21 @@ fn mc_hor_ver13(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss
     mc_hor_ver20(&mut hor, 0, 16, src, so + ss, ss, dim);
     mc_hor_ver02(&mut ver, 0, 16, src, so, ss, dim);
     pixel_avg(
-        BlkMut { data: dst, off: do_, stride: ds },
-        Blk { data: &hor, off: 0, stride: 16 },
-        Blk { data: &ver, off: 0, stride: 16 },
+        BlkMut {
+            data: dst,
+            off: do_,
+            stride: ds,
+        },
+        Blk {
+            data: &hor,
+            off: 0,
+            stride: 16,
+        },
+        Blk {
+            data: &ver,
+            off: 0,
+            stride: 16,
+        },
         dim,
     );
 }
@@ -214,9 +328,21 @@ fn mc_hor_ver21(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss
     mc_hor_ver20(&mut hor, 0, 16, src, so, ss, dim);
     mc_hor_ver22(&mut ctr, 0, 16, src, so, ss, dim);
     pixel_avg(
-        BlkMut { data: dst, off: do_, stride: ds },
-        Blk { data: &hor, off: 0, stride: 16 },
-        Blk { data: &ctr, off: 0, stride: 16 },
+        BlkMut {
+            data: dst,
+            off: do_,
+            stride: ds,
+        },
+        Blk {
+            data: &hor,
+            off: 0,
+            stride: 16,
+        },
+        Blk {
+            data: &ctr,
+            off: 0,
+            stride: 16,
+        },
         dim,
     );
 }
@@ -226,9 +352,21 @@ fn mc_hor_ver23(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss
     mc_hor_ver20(&mut hor, 0, 16, src, so + ss, ss, dim);
     mc_hor_ver22(&mut ctr, 0, 16, src, so, ss, dim);
     pixel_avg(
-        BlkMut { data: dst, off: do_, stride: ds },
-        Blk { data: &hor, off: 0, stride: 16 },
-        Blk { data: &ctr, off: 0, stride: 16 },
+        BlkMut {
+            data: dst,
+            off: do_,
+            stride: ds,
+        },
+        Blk {
+            data: &hor,
+            off: 0,
+            stride: 16,
+        },
+        Blk {
+            data: &ctr,
+            off: 0,
+            stride: 16,
+        },
         dim,
     );
 }
@@ -236,9 +374,21 @@ fn mc_hor_ver30(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss
     let mut hor = [0u8; 256];
     mc_hor_ver20(&mut hor, 0, 16, src, so, ss, dim);
     pixel_avg(
-        BlkMut { data: dst, off: do_, stride: ds },
-        Blk { data: src, off: so + 1, stride: ss },
-        Blk { data: &hor, off: 0, stride: 16 },
+        BlkMut {
+            data: dst,
+            off: do_,
+            stride: ds,
+        },
+        Blk {
+            data: src,
+            off: so + 1,
+            stride: ss,
+        },
+        Blk {
+            data: &hor,
+            off: 0,
+            stride: 16,
+        },
         dim,
     );
 }
@@ -248,9 +398,21 @@ fn mc_hor_ver31(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss
     mc_hor_ver20(&mut hor, 0, 16, src, so, ss, dim);
     mc_hor_ver02(&mut ver, 0, 16, src, so + 1, ss, dim);
     pixel_avg(
-        BlkMut { data: dst, off: do_, stride: ds },
-        Blk { data: &hor, off: 0, stride: 16 },
-        Blk { data: &ver, off: 0, stride: 16 },
+        BlkMut {
+            data: dst,
+            off: do_,
+            stride: ds,
+        },
+        Blk {
+            data: &hor,
+            off: 0,
+            stride: 16,
+        },
+        Blk {
+            data: &ver,
+            off: 0,
+            stride: 16,
+        },
         dim,
     );
 }
@@ -260,9 +422,21 @@ fn mc_hor_ver32(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss
     mc_hor_ver02(&mut ver, 0, 16, src, so + 1, ss, dim);
     mc_hor_ver22(&mut ctr, 0, 16, src, so, ss, dim);
     pixel_avg(
-        BlkMut { data: dst, off: do_, stride: ds },
-        Blk { data: &ver, off: 0, stride: 16 },
-        Blk { data: &ctr, off: 0, stride: 16 },
+        BlkMut {
+            data: dst,
+            off: do_,
+            stride: ds,
+        },
+        Blk {
+            data: &ver,
+            off: 0,
+            stride: 16,
+        },
+        Blk {
+            data: &ctr,
+            off: 0,
+            stride: 16,
+        },
         dim,
     );
 }
@@ -272,9 +446,21 @@ fn mc_hor_ver33(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss
     mc_hor_ver20(&mut hor, 0, 16, src, so + ss, ss, dim);
     mc_hor_ver02(&mut ver, 0, 16, src, so + 1, ss, dim);
     pixel_avg(
-        BlkMut { data: dst, off: do_, stride: ds },
-        Blk { data: &hor, off: 0, stride: 16 },
-        Blk { data: &ver, off: 0, stride: 16 },
+        BlkMut {
+            data: dst,
+            off: do_,
+            stride: ds,
+        },
+        Blk {
+            data: &hor,
+            off: 0,
+            stride: 16,
+        },
+        Blk {
+            data: &ver,
+            off: 0,
+            stride: 16,
+        },
         dim,
     );
 }
@@ -282,7 +468,15 @@ fn mc_hor_ver33(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss
 /// Luma motion compensation dispatcher (`McLuma_c`). `src_off` is the linear
 /// index of the (already integer-MV-offset) block top-left in `src`; the
 /// fractional position is `(mv.x & 3, mv.y & 3)`.
-pub fn mc_luma(dst: &mut [u8], dst_stride: usize, src: &[u8], src_off: usize, src_stride: usize, mv: Mv, dim: Dim) {
+pub fn mc_luma(
+    dst: &mut [u8],
+    dst_stride: usize,
+    src: &[u8],
+    src_off: usize,
+    src_stride: usize,
+    mv: Mv,
+    dim: Dim,
+) {
     let x = (mv.x & 0x03) as usize;
     let y = (mv.y & 0x03) as usize;
     let f: McKernel = match (x, y) {
@@ -309,7 +503,12 @@ pub fn mc_luma(dst: &mut [u8], dst_stride: usize, src: &[u8], src_off: usize, sr
 /// Chroma fractional MC with the bilinear weights (`McChromaWithFragMv_c`).
 fn mc_chroma_frag(dst: &mut [u8], ds: usize, src: &[u8], so: usize, ss: usize, mv: Mv, dim: Dim) {
     let abcd = &G_ABCD[(mv.y & 0x07) as usize][(mv.x & 0x07) as usize];
-    let (ia, ib, ic, id) = (abcd[0] as i32, abcd[1] as i32, abcd[2] as i32, abcd[3] as i32);
+    let (ia, ib, ic, id) = (
+        abcd[0] as i32,
+        abcd[1] as i32,
+        abcd[2] as i32,
+        abcd[3] as i32,
+    );
     let mut row = so;
     let mut next = so + ss;
     for i in 0..dim.h {
@@ -327,7 +526,15 @@ fn mc_chroma_frag(dst: &mut [u8], ds: usize, src: &[u8], so: usize, ss: usize, m
 
 /// Chroma motion compensation dispatcher (`McChroma_c`). Fractional position is
 /// `(mv.x & 7, mv.y & 7)`; an all-zero fraction is a full-pel copy.
-pub fn mc_chroma(dst: &mut [u8], dst_stride: usize, src: &[u8], src_off: usize, src_stride: usize, mv: Mv, dim: Dim) {
+pub fn mc_chroma(
+    dst: &mut [u8],
+    dst_stride: usize,
+    src: &[u8],
+    src_off: usize,
+    src_stride: usize,
+    mv: Mv,
+    dim: Dim,
+) {
     if (mv.x & 0x07) == 0 && (mv.y & 0x07) == 0 {
         mc_copy(dst, 0, dst_stride, src, src_off, src_stride, dim);
     } else {
@@ -374,7 +581,15 @@ mod tests {
 
     /// Builds the H, V and HV half-pel planes from `src` over a `dim` region
     /// rooted at `base` (MCHalfPelFilterAnchor).
-    fn half_pel_anchor(dst_h: &mut [u8], dst_v: &mut [u8], dst_hv: &mut [u8], src: &[u8], base: usize, stride: usize, dim: Dim) {
+    fn half_pel_anchor(
+        dst_h: &mut [u8],
+        dst_v: &mut [u8],
+        dst_hv: &mut [u8],
+        src: &[u8],
+        base: usize,
+        stride: usize,
+        dim: Dim,
+    ) {
         let mut buf = [0i16; 64];
         let pb = 2usize; // pBuf base (pBuf+4 inside C, indexed [x+2])
         for y in 0..dim.h {
@@ -397,10 +612,20 @@ mod tests {
         }
     }
 
-    fn pixel_avg_anchor(dst: &mut [u8], s1: &[u8], o1: usize, s2: &[u8], o2: usize, stride: usize, dim: Dim) {
+    fn pixel_avg_anchor(
+        dst: &mut [u8],
+        s1: &[u8],
+        o1: usize,
+        s2: &[u8],
+        o2: usize,
+        stride: usize,
+        dim: Dim,
+    ) {
         for y in 0..dim.h {
             for x in 0..dim.w {
-                dst[y * DS + x] = ((s1[o1 + y * stride + x] as i32 + s2[o2 + y * stride + x] as i32 + 1) >> 1) as u8;
+                dst[y * DS + x] =
+                    ((s1[o1 + y * stride + x] as i32 + s2[o2 + y * stride + x] as i32 + 1) >> 1)
+                        as u8;
             }
         }
     }
@@ -423,7 +648,14 @@ mod tests {
 
     /// Independent luma MC reference selecting among the four half-pel planes
     /// (MCLumaAnchor). `planes[0]` is full-pel; `1,2,3` are H, V, HV.
-    fn luma_anchor(dst: &mut [u8], planes: &[&[u8]; 4], base: usize, stride: usize, mv: Mv, dim: Dim) {
+    fn luma_anchor(
+        dst: &mut [u8],
+        planes: &[&[u8]; 4],
+        base: usize,
+        stride: usize,
+        mv: Mv,
+        dim: Dim,
+    ) {
         let mvx = mv.x as i32;
         let mvy = mv.y as i32;
         let xi = (mvx & 3) as usize;
@@ -454,18 +686,41 @@ mod tests {
         }
         let base = PAD * SS + PAD;
 
-        for &(w, h) in &[(4usize, 4usize), (4, 8), (8, 4), (8, 8), (16, 8), (8, 16), (16, 16)] {
+        for &(w, h) in &[
+            (4usize, 4usize),
+            (4, 8),
+            (8, 4),
+            (8, 8),
+            (16, 8),
+            (8, 16),
+            (16, 16),
+        ] {
             // Anchor planes filled for a (w+1)x(h+1) region as in the C test.
             let mut ph = vec![0u8; HT * SS];
             let mut pv = vec![0u8; HT * SS];
             let mut phv = vec![0u8; HT * SS];
-            half_pel_anchor(&mut ph, &mut pv, &mut phv, &p0, base, SS, Dim { w: w + 1, h: h + 1 });
+            half_pel_anchor(
+                &mut ph,
+                &mut pv,
+                &mut phv,
+                &p0,
+                base,
+                SS,
+                Dim { w: w + 1, h: h + 1 },
+            );
             let planes: [&[u8]; 4] = [&p0, &ph, &pv, &phv];
 
             for a in 0..4i16 {
                 for b in 0..4i16 {
                     let mut want = vec![0u8; HT * DS];
-                    luma_anchor(&mut want, &planes, base, SS, Mv { x: a, y: b }, Dim { w, h });
+                    luma_anchor(
+                        &mut want,
+                        &planes,
+                        base,
+                        SS,
+                        Mv { x: a, y: b },
+                        Dim { w, h },
+                    );
 
                     let mut got = vec![0u8; HT * DS];
                     mc_luma(&mut got, DS, &p0, base, SS, Mv { x: a, y: b }, Dim { w, h });
@@ -507,7 +762,15 @@ mod tests {
             *v = lcg.next_u8();
         }
         // Block rooted at top-left (matches the C test's uSrcTest[0]).
-        for &(w, h) in &[(2usize, 2usize), (2, 4), (4, 2), (4, 4), (4, 8), (8, 4), (8, 8)] {
+        for &(w, h) in &[
+            (2usize, 2usize),
+            (2, 4),
+            (4, 2),
+            (4, 4),
+            (4, 8),
+            (8, 4),
+            (8, 8),
+        ] {
             for a in 0..8i16 {
                 for b in 0..8i16 {
                     let mut want = vec![0u8; HT * DS];
@@ -528,7 +791,15 @@ mod tests {
         let src: Vec<u8> = (0..HT * SS).map(|_| lcg.next_u8()).collect();
         let base = PAD * SS + PAD;
         let mut got = vec![0u8; HT * DS];
-        mc_luma(&mut got, DS, &src, base, SS, Mv { x: 0, y: 0 }, Dim { w: 16, h: 16 });
+        mc_luma(
+            &mut got,
+            DS,
+            &src,
+            base,
+            SS,
+            Mv { x: 0, y: 0 },
+            Dim { w: 16, h: 16 },
+        );
 
         for y in 0..16 {
             for x in 0..16 {

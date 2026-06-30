@@ -147,7 +147,13 @@ mod tests {
 
     #[test]
     fn sps_roundtrip_dimensions() {
-        for &(w, h) in &[(176u32, 144u32), (640, 480), (1920, 1080), (160, 120), (100, 64)] {
+        for &(w, h) in &[
+            (176u32, 144u32),
+            (640, 480),
+            (1920, 1080),
+            (160, 120),
+            (100, 64),
+        ] {
             for &qp in &[26u8, 32, 40] {
                 let cfg = ParamConfig::new(w, h, qp);
                 let sps = parse_sps(&write_sps(&cfg)).expect("parse_sps");

@@ -17,10 +17,10 @@
 //! All kernels are bit-exact ports validated against the `EncUT_GetIntraPredictor`
 //! anchors.
 
-use crate::dsp::clip1;
 use crate::dsp::Blk;
+use crate::dsp::clip1;
 use crate::dsp::sad::{sad8x8, sad16x16};
-use crate::dsp::satd::{satd16x16, satd4x4, satd8x8};
+use crate::dsp::satd::{satd4x4, satd8x8, satd16x16};
 
 // ===========================================================================
 // Luma 4x4 (output stride 4, 16 bytes)
@@ -53,7 +53,16 @@ pub fn i4x4_luma_pred_h(pred: &mut [u8], reff: &[u8], roff: usize, stride: usize
 pub fn i4x4_luma_pred_dc(pred: &mut [u8], reff: &[u8], roff: usize, stride: usize) {
     let r = |d: isize| reff[(roff as isize + d) as usize] as i32;
     let s = stride as isize;
-    let dc = ((r(-1) + r(s - 1) + r(2 * s - 1) + r(3 * s - 1) + r(-s) + r(1 - s) + r(2 - s) + r(3 - s) + 4) >> 3) as u8;
+    let dc = ((r(-1)
+        + r(s - 1)
+        + r(2 * s - 1)
+        + r(3 * s - 1)
+        + r(-s)
+        + r(1 - s)
+        + r(2 - s)
+        + r(3 - s)
+        + 4)
+        >> 3) as u8;
     fill16(pred, dc);
 }
 
@@ -464,7 +473,9 @@ pub fn chroma_pred_plane(pred: &mut [u8], reff: &[u8], roff: usize, stride: usiz
     let left_shift = (17 * left_sum + 16) >> 5;
     for i in 0..8 {
         for j in 0..8 {
-            pred[i * 8 + j] = clip1((lt_shift + top_shift * (j as i32 - 3) + left_shift * (i as i32 - 3) + 16) >> 5);
+            pred[i * 8 + j] = clip1(
+                (lt_shift + top_shift * (j as i32 - 3) + left_shift * (i as i32 - 3) + 16) >> 5,
+            );
         }
     }
 }
@@ -549,7 +560,9 @@ pub fn i16x16_luma_pred_plane(pred: &mut [u8], reff: &[u8], roff: usize, stride:
     let left_shift = (5 * left_sum + 32) >> 6;
     for i in 0..16 {
         for j in 0..16 {
-            pred[i * 16 + j] = clip1((lt_shift + top_shift * (j as i32 - 7) + left_shift * (i as i32 - 7) + 16) >> 5);
+            pred[i * 16 + j] = clip1(
+                (lt_shift + top_shift * (j as i32 - 7) + left_shift * (i as i32 - 7) + 16) >> 5,
+            );
         }
     }
 }
@@ -570,8 +583,16 @@ pub fn satd_intra_4x4_combined3(
     lambda1: i32,
     lambda0: i32,
 ) -> (i32, i32) {
-    let Blk { data: dec, off: dec_off, stride: dec_stride } = dec;
-    let Blk { data: enc, off: enc_off, stride: enc_stride } = enc;
+    let Blk {
+        data: dec,
+        off: dec_off,
+        stride: dec_stride,
+    } = dec;
+    let Blk {
+        data: enc,
+        off: enc_off,
+        stride: enc_stride,
+    } = enc;
     let mut buf = [[0u8; 16]; 3];
     let e = &enc[enc_off..];
     i4x4_luma_pred_dc(&mut buf[2], dec, dec_off, dec_stride);
@@ -601,7 +622,9 @@ pub fn satd_intra_16x16_combined3(dec: Blk, enc: Blk, dst: &mut [u8], lambda: i3
 
 /// `WelsSampleSadIntra16x16Combined3_c`: as above but using SAD.
 pub fn sad_intra_16x16_combined3(dec: Blk, enc: Blk, dst: &mut [u8], lambda: i32) -> (i32, i32) {
-    intra_16x16_combined3(dec, enc, dst, lambda, |a, sa, b, sb| sad16x16(a, sa, b, sb) as i32)
+    intra_16x16_combined3(dec, enc, dst, lambda, |a, sa, b, sb| {
+        sad16x16(a, sa, b, sb) as i32
+    })
 }
 
 #[inline]
@@ -612,8 +635,16 @@ fn intra_16x16_combined3(
     lambda: i32,
     metric: impl Fn(&[u8], usize, &[u8], usize) -> i32,
 ) -> (i32, i32) {
-    let Blk { data: dec, off: dec_off, stride: dec_stride } = dec;
-    let Blk { data: enc, off: enc_off, stride: enc_stride } = enc;
+    let Blk {
+        data: dec,
+        off: dec_off,
+        stride: dec_stride,
+    } = dec;
+    let Blk {
+        data: enc,
+        off: enc_off,
+        stride: enc_stride,
+    } = enc;
     let e = &enc[enc_off..];
     i16x16_luma_pred_v(dst, dec, dec_off, dec_stride);
     let mut best_cost = metric(dst, 16, e, enc_stride);
@@ -655,7 +686,15 @@ pub fn sad_intra_8x8_combined3(
     dec_cr: Blk,
     enc_cr: Blk,
 ) -> (i32, i32) {
-    intra_8x8_combined3(dec_cb, enc_cb, dst, lambda, dec_cr, enc_cr, |a, sa, b, sb| sad8x8(a, sa, b, sb) as i32)
+    intra_8x8_combined3(
+        dec_cb,
+        enc_cb,
+        dst,
+        lambda,
+        dec_cr,
+        enc_cr,
+        |a, sa, b, sb| sad8x8(a, sa, b, sb) as i32,
+    )
 }
 
 #[inline]
@@ -668,10 +707,26 @@ fn intra_8x8_combined3(
     enc_cr: Blk,
     metric: impl Fn(&[u8], usize, &[u8], usize) -> i32,
 ) -> (i32, i32) {
-    let Blk { data: dec_cb, off: dec_off_cb, stride: dec_stride } = dec_cb;
-    let Blk { data: enc_cb, off: enc_off_cb, stride: enc_stride } = enc_cb;
-    let Blk { data: dec_cr, off: dec_off_cr, stride: _ } = dec_cr;
-    let Blk { data: enc_cr, off: enc_off_cr, stride: _ } = enc_cr;
+    let Blk {
+        data: dec_cb,
+        off: dec_off_cb,
+        stride: dec_stride,
+    } = dec_cb;
+    let Blk {
+        data: enc_cb,
+        off: enc_off_cb,
+        stride: enc_stride,
+    } = enc_cb;
+    let Blk {
+        data: dec_cr,
+        off: dec_off_cr,
+        stride: _,
+    } = dec_cr;
+    let Blk {
+        data: enc_cr,
+        off: enc_off_cr,
+        stride: _,
+    } = enc_cr;
     let ecb = &enc_cb[enc_off_cb..];
     let ecr = &enc_cr[enc_off_cr..];
     let cost_both = |dst: &[u8], lambda_add: i32| {

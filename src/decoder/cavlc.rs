@@ -156,7 +156,12 @@ fn get_level_val(
 
     let mut suffix_length: i32 = (total_coeff > 10 && trailing_ones < 3) as i32;
 
-    for (i, lv) in level.iter_mut().enumerate().take(total_coeff).skip(trailing_ones) {
+    for (i, lv) in level
+        .iter_mut()
+        .enumerate()
+        .take(total_coeff)
+        .skip(trailing_ones)
+    {
         let prefix_bits = read_prefix_len(bs)?;
         if prefix_bits > MAX_LEVEL_PREFIX + 1 {
             return Err(DecodeError::InvalidSyntax("cavlc level_prefix"));
@@ -328,7 +333,9 @@ pub fn residual_block_cavlc(
         return Ok(0);
     }
     if trailing_ones > 3 || total_coeff > 16 {
-        return Err(DecodeError::InvalidSyntax("cavlc total_coeff/trailing_ones"));
+        return Err(DecodeError::InvalidSyntax(
+            "cavlc total_coeff/trailing_ones",
+        ));
     }
 
     let mut level = [0i32; 16];
@@ -416,11 +423,7 @@ mod tests {
         for &(n_c, code, len, et, eo) in cases {
             let data = pack(&[(code, len)], 2);
             let (total, ones) = token(&data, n_c);
-            assert_eq!(
-                (total, ones),
-                (et, eo),
-                "n_c={n_c} code={code:b} len={len}"
-            );
+            assert_eq!((total, ones), (et, eo), "n_c={n_c} code={code:b} len={len}");
         }
     }
 

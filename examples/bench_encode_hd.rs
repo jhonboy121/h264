@@ -131,7 +131,9 @@ fn main() {
     let total_mb = n as f64 * (W * H * 3 / 2) as f64 / 1.0e6;
 
     #[cfg(feature = "threads")]
-    let cores = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1);
+    let cores = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1);
     #[cfg(feature = "threads")]
     let slices = cores as u32;
 
@@ -144,7 +146,9 @@ fn main() {
     println!("threads: ON   available_parallelism = {cores}   IPPP slices/frame = {slices}");
     #[cfg(not(feature = "threads"))]
     println!("threads: OFF (build with --features threads for the multithreaded rows)");
-    println!("source: synthetic {W}x{H}, {n} frames  |  MB/s = source I420 throughput  |  xRT = fps / {RT:.0}\n");
+    println!(
+        "source: synthetic {W}x{H}, {n} frames  |  MB/s = source I420 throughput  |  xRT = fps / {RT:.0}\n"
+    );
     println!(
         "{:<22} {:>3} {:>10} {:>8} {:>8} {:>9} {:>12}",
         "MODE", "QP", "ms/frame", "fps", "MB/s", "xRT-30", "avg AU B"
@@ -173,7 +177,13 @@ fn main() {
                 let _ = e.encode_frame(&f.y, W, &f.u, &f.v, W / 2);
             }
         });
-        Row { label: "INTRA  1T/1slice", qp, ms_total: ms, au_bytes: au }.print(n, total_mb);
+        Row {
+            label: "INTRA  1T/1slice",
+            qp,
+            ms_total: ms,
+            au_bytes: au,
+        }
+        .print(n, total_mb);
 
         // ---- IPPP, single-threaded (1 slice). ----
         let au = {
@@ -190,14 +200,28 @@ fn main() {
                 let _ = e.encode_frame(&f.y, W, &f.u, &f.v, W / 2);
             }
         });
-        Row { label: "IPPP   1T/1slice", qp, ms_total: ms, au_bytes: au }.print(n, total_mb);
+        Row {
+            label: "IPPP   1T/1slice",
+            qp,
+            ms_total: ms,
+            au_bytes: au,
+        }
+        .print(n, total_mb);
 
         #[cfg(feature = "threads")]
         {
             use h264::encoder::FrameInput;
             // ---- All-intra, frame-parallel. ----
-            let inputs: Vec<FrameInput> =
-                frames.iter().map(|f| FrameInput { y: &f.y, y_stride: W, u: &f.u, v: &f.v, c_stride: W / 2 }).collect();
+            let inputs: Vec<FrameInput> = frames
+                .iter()
+                .map(|f| FrameInput {
+                    y: &f.y,
+                    y_stride: W,
+                    u: &f.u,
+                    v: &f.v,
+                    c_stride: W / 2,
+                })
+                .collect();
             let au = {
                 let e = Encoder::new(W as u32, H as u32, qp).unwrap();
                 let aus = e.encode_frames_parallel(&inputs);
@@ -207,7 +231,13 @@ fn main() {
                 let e = Encoder::new(W as u32, H as u32, qp).unwrap();
                 let _ = e.encode_frames_parallel(&inputs);
             });
-            Row { label: "INTRA  NT frame-par", qp, ms_total: ms, au_bytes: au }.print(n, total_mb);
+            Row {
+                label: "INTRA  NT frame-par",
+                qp,
+                ms_total: ms,
+                au_bytes: au,
+            }
+            .print(n, total_mb);
 
             // ---- IPPP, slice-parallel (S slices/frame). ----
             let au = {
@@ -224,7 +254,13 @@ fn main() {
                     let _ = e.encode_frame_parallel(&f.y, W, &f.u, &f.v, W / 2);
                 }
             });
-            Row { label: "IPPP   NT slice-par", qp, ms_total: ms, au_bytes: au }.print(n, total_mb);
+            Row {
+                label: "IPPP   NT slice-par",
+                qp,
+                ms_total: ms,
+                au_bytes: au,
+            }
+            .print(n, total_mb);
         }
         println!();
     }

@@ -17,12 +17,12 @@ use crate::formats::yuv::{Frame, VisibleRegion};
 use super::context::{DecoderContext, MbType};
 use super::dpb::Dpb;
 use super::mb_parse_cavlc::{parse_intra_mb_cavlc, parse_p_mb_cavlc};
-use super::nal::{annexb_nal_units, parse_nal, NalUnit, NalUnitType};
-use super::params::{parse_pps, parse_sps, Pps, Sps};
+use super::nal::{NalUnit, NalUnitType, annexb_nal_units, parse_nal};
+use super::params::{Pps, Sps, parse_pps, parse_sps};
 use super::picture::Picture;
 use super::recon_inter::recon_inter_mb;
 use super::recon_intra::recon_intra_mb;
-use super::slice_header::{parse_slice_header_in_place, SliceHeader};
+use super::slice_header::{SliceHeader, parse_slice_header_in_place};
 
 /// Decode the first IDR (intra, CAVLC 4:2:0 8-bit) frame of an Annex-B stream
 /// and return its reconstructed picture (no deblocking — that is the next
@@ -119,7 +119,14 @@ struct PocState {
 impl PocState {
     /// Compute the picture order count for one frame and update state
     /// (`ParseSliceHeaderSyntaxs` POC block). Frame-coded only.
-    fn compute(&mut self, sps: &Sps, sh: &SliceHeader, pps: &Pps, is_idr: bool, nal_ref_idc: u8) -> i32 {
+    fn compute(
+        &mut self,
+        sps: &Sps,
+        sh: &SliceHeader,
+        pps: &Pps,
+        is_idr: bool,
+        nal_ref_idc: u8,
+    ) -> i32 {
         match sps.pic_order_cnt_type {
             0 => {
                 if is_idr {
@@ -190,8 +197,8 @@ fn build_col_motion(ctx: &DecoderContext) -> super::dpb::ColMotion {
         // mode (`MB_TYPE_8x8` vs `MB_TYPE_16x16`), not the syntax type.
         let direct = matches!(t, MbType::BSkip | MbType::BDirect16x16);
         let resolved_8x8 = direct && ctx.direct_8x8[mb];
-        inter8x8[mb] = matches!(t, MbType::Inter8x8 | MbType::Inter8x8Ref0 | MbType::B8x8)
-            || resolved_8x8;
+        inter8x8[mb] =
+            matches!(t, MbType::Inter8x8 | MbType::Inter8x8Ref0 | MbType::B8x8) || resolved_8x8;
         inter16x16[mb] = if direct {
             !ctx.direct_8x8[mb]
         } else {
@@ -306,7 +313,9 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
             });
         }
 
-        let cp = cur.as_mut().ok_or(DecodeError::InvalidSyntax("slice before picture start"))?;
+        let cp = cur
+            .as_mut()
+            .ok_or(DecodeError::InvalidSyntax("slice before picture start"))?;
         let sp = SliceParams {
             sh: &sh,
             pps: &pps,
@@ -333,7 +342,12 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
 }
 
 /// Deblock, optionally border-extend + insert into the DPB, and emit.
-fn finalize_picture(c: CurPic, dpb: &mut Dpb, output: &mut Vec<(i32, i32, Picture)>, next_id: &mut i32) {
+fn finalize_picture(
+    c: CurPic,
+    dpb: &mut Dpb,
+    output: &mut Vec<(i32, i32, Picture)>,
+    next_id: &mut i32,
+) {
     let (cvs, poc) = (c.cvs, c.poc);
     output.push((cvs, poc, finalize_into(c, dpb, next_id).into_picture()));
 }
@@ -390,8 +404,18 @@ struct SliceParams<'a> {
     direct_8x8_inference: bool,
 }
 
-fn decode_one_slice(ctx: &mut DecoderContext, bs: &mut BitReader<'_>, sp: SliceParams<'_>) -> Result<(), DecodeError> {
-    let SliceParams { sh, pps, slice_index, dpb, .. } = sp;
+fn decode_one_slice(
+    ctx: &mut DecoderContext,
+    bs: &mut BitReader<'_>,
+    sp: SliceParams<'_>,
+) -> Result<(), DecodeError> {
+    let SliceParams {
+        sh,
+        pps,
+        slice_index,
+        dpb,
+        ..
+    } = sp;
     let total_mb = ctx.total_mb;
     let mut last_mb_qp = sh.slice_qp;
     let mut coeffs = [0i16; 384];
@@ -437,7 +461,11 @@ fn decode_one_slice(ctx: &mut DecoderContext, bs: &mut BitReader<'_>, sp: SliceP
         coeffs.iter_mut().for_each(|c| *c = 0);
         parse_p_mb_cavlc(
             bs,
-            super::mb_parse_cavlc::MbCtx { ctx: &mut *ctx, mb_xy, pps },
+            super::mb_parse_cavlc::MbCtx {
+                ctx: &mut *ctx,
+                mb_xy,
+                pps,
+            },
             &mut last_mb_qp,
             &mut skip_run,
             &ref_pic_ids,
@@ -466,8 +494,15 @@ fn decode_b_slice_cavlc(
     last_mb_qp: &mut i32,
     coeffs: &mut [i16; 384],
 ) -> Result<(), DecodeError> {
-    let SliceParams { sh, pps, slice_index, dpb, cur_poc, direct_8x8_inference } = sp;
-    use super::mb_parse_cavlc::{parse_b_mb_cavlc, BRefs};
+    let SliceParams {
+        sh,
+        pps,
+        slice_index,
+        dpb,
+        cur_poc,
+        direct_8x8_inference,
+    } = sp;
+    use super::mb_parse_cavlc::{BRefs, parse_b_mb_cavlc};
     use super::recon_inter::recon_b_mb;
 
     let (blist0, blist1) = dpb.b_ref_lists(
@@ -513,7 +548,11 @@ fn decode_b_slice_cavlc(
         };
         parse_b_mb_cavlc(
             bs,
-            super::mb_parse_cavlc::MbCtx { ctx: &mut *ctx, mb_xy, pps },
+            super::mb_parse_cavlc::MbCtx {
+                ctx: &mut *ctx,
+                mb_xy,
+                pps,
+            },
             last_mb_qp,
             &mut skip_run,
             &bref,
@@ -537,10 +576,19 @@ fn decode_b_slice_cavlc(
 fn compute_p_weight(sh: &SliceHeader, weighted_pred_flag: bool) -> super::recon_inter::PWeight {
     use super::recon_inter::PWeight;
     if !weighted_pred_flag || sh.pred_weight_table.is_none() {
-        return PWeight { active: false, luma_denom: 0, chroma_denom: 0, lw: Vec::new(), cw: Vec::new() };
+        return PWeight {
+            active: false,
+            luma_denom: 0,
+            chroma_denom: 0,
+            lw: Vec::new(),
+            cw: Vec::new(),
+        };
     }
     let pwt = sh.pred_weight_table.as_ref().unwrap();
-    let lw: Vec<(i32, i32)> = pwt.list[0].iter().map(|w| (w.luma_weight, w.luma_offset)).collect();
+    let lw: Vec<(i32, i32)> = pwt.list[0]
+        .iter()
+        .map(|w| (w.luma_weight, w.luma_offset))
+        .collect();
     let cw: Vec<[(i32, i32); 2]> = pwt.list[0]
         .iter()
         .map(|w| {
@@ -571,7 +619,11 @@ fn compute_bi_weights(
 ) -> super::recon_inter::BiWeights {
     let nref1 = blist1.len();
     if weighted_bipred_idc != 2 {
-        return super::recon_inter::BiWeights { active: false, nref1, w0: Vec::new() };
+        return super::recon_inter::BiWeights {
+            active: false,
+            nref1,
+            w0: Vec::new(),
+        };
     }
     let mut w0 = Vec::with_capacity(blist0.len() * nref1);
     for &i0 in blist0 {
@@ -593,7 +645,11 @@ fn compute_bi_weights(
             w0.push(w);
         }
     }
-    super::recon_inter::BiWeights { active: true, nref1, w0 }
+    super::recon_inter::BiWeights {
+        active: true,
+        nref1,
+        w0,
+    }
 }
 
 /// Per-list-0-reference temporal-direct MV scale factor (`iMvScale`, spec
@@ -618,8 +674,19 @@ fn temporal_mv_scale(dpb: &Dpb, cur_poc: i32, blist0: &[usize], blist1: &[usize]
 /// Decode one CABAC slice's macroblocks (parse + reconstruct) into `ctx`.
 /// `rbsp` is the full slice NAL RBSP; `bs` is positioned just past the slice
 /// header, used to find the `cabac_alignment_one_bit` boundary.
-fn decode_one_slice_cabac(ctx: &mut DecoderContext, bs: &mut BitReader<'_>, rbsp: &[u8], sp: SliceParams<'_>) -> Result<(), DecodeError> {
-    let SliceParams { sh, pps, slice_index, dpb, .. } = sp;
+fn decode_one_slice_cabac(
+    ctx: &mut DecoderContext,
+    bs: &mut BitReader<'_>,
+    rbsp: &[u8],
+    sp: SliceParams<'_>,
+) -> Result<(), DecodeError> {
+    let SliceParams {
+        sh,
+        pps,
+        slice_index,
+        dpb,
+        ..
+    } = sp;
     use super::cabac::{CabacContexts, CabacDecoder};
     use super::mb_parse_cabac::{decode_mb_cabac_islice, decode_mb_cabac_pslice};
 
@@ -670,7 +737,11 @@ fn decode_one_slice_cabac(ctx: &mut DecoderContext, bs: &mut BitReader<'_>, rbsp
             decode_mb_cabac_islice(
                 &mut dec,
                 &mut ctxs,
-                super::mb_parse_cabac::MbCtx { ctx: &mut *ctx, mb_xy, pps },
+                super::mb_parse_cabac::MbCtx {
+                    ctx: &mut *ctx,
+                    mb_xy,
+                    pps,
+                },
                 super::mb_parse_cabac::QpState {
                     last_mb_qp: &mut last_mb_qp,
                     last_delta_qp: &mut last_delta_qp,
@@ -681,7 +752,11 @@ fn decode_one_slice_cabac(ctx: &mut DecoderContext, bs: &mut BitReader<'_>, rbsp
             decode_mb_cabac_pslice(
                 &mut dec,
                 &mut ctxs,
-                super::mb_parse_cabac::MbCtx { ctx: &mut *ctx, mb_xy, pps },
+                super::mb_parse_cabac::MbCtx {
+                    ctx: &mut *ctx,
+                    mb_xy,
+                    pps,
+                },
                 super::mb_parse_cabac::QpState {
                     last_mb_qp: &mut last_mb_qp,
                     last_delta_qp: &mut last_delta_qp,
@@ -704,10 +779,22 @@ fn decode_one_slice_cabac(ctx: &mut DecoderContext, bs: &mut BitReader<'_>, rbsp
 }
 
 /// Decode one B slice's macroblocks (CABAC).
-fn decode_b_slice_cabac(ctx: &mut DecoderContext, bs: &mut BitReader<'_>, rbsp: &[u8], sp: SliceParams<'_>) -> Result<(), DecodeError> {
-    let SliceParams { sh, pps, slice_index, dpb, cur_poc, direct_8x8_inference } = sp;
+fn decode_b_slice_cabac(
+    ctx: &mut DecoderContext,
+    bs: &mut BitReader<'_>,
+    rbsp: &[u8],
+    sp: SliceParams<'_>,
+) -> Result<(), DecodeError> {
+    let SliceParams {
+        sh,
+        pps,
+        slice_index,
+        dpb,
+        cur_poc,
+        direct_8x8_inference,
+    } = sp;
     use super::cabac::{CabacContexts, CabacDecoder};
-    use super::mb_parse_cabac::{decode_mb_cabac_bslice, BRefsCabac};
+    use super::mb_parse_cabac::{BRefsCabac, decode_mb_cabac_bslice};
     use super::recon_inter::recon_b_mb;
 
     let (blist0, blist1) = dpb.b_ref_lists(
@@ -765,7 +852,11 @@ fn decode_b_slice_cabac(ctx: &mut DecoderContext, bs: &mut BitReader<'_>, rbsp: 
         let eos = decode_mb_cabac_bslice(
             &mut dec,
             &mut ctxs,
-            super::mb_parse_cabac::MbCtx { ctx: &mut *ctx, mb_xy, pps },
+            super::mb_parse_cabac::MbCtx {
+                ctx: &mut *ctx,
+                mb_xy,
+                pps,
+            },
             super::mb_parse_cabac::QpState {
                 last_mb_qp: &mut last_mb_qp,
                 last_delta_qp: &mut last_delta_qp,
@@ -990,7 +1081,10 @@ impl StreamDecoder {
     /// Flush the trailing in-flight picture (the last frame of a stream), if any.
     pub(crate) fn finish(&mut self, out: &mut Vec<Frame>) {
         if let Some(c) = self.cur.take() {
-            let dpb = self.dpb.as_mut().expect("dpb exists when a picture is in flight");
+            let dpb = self
+                .dpb
+                .as_mut()
+                .expect("dpb exists when a picture is in flight");
             out.push(finalize_into(c, dpb, &mut self.next_id));
         }
     }
@@ -1028,7 +1122,10 @@ mod tests {
         }
         let mean = sum / (pic.width as u64 * pic.height as u64);
         assert!(max - min > 64, "luma range too small: {min}..{max}");
-        assert!((16..=235).contains(&(mean as u8)), "implausible mean {mean}");
+        assert!(
+            (16..=235).contains(&(mean as u8)),
+            "implausible mean {mean}"
+        );
     }
 
     #[test]

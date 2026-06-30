@@ -2,7 +2,7 @@
 //! must equal the proven `decode_stream` path, and YUV→RGB conversion must hit
 //! known values.
 
-use h264::{nal_units, Decoder, YUVSource};
+use h264::{Decoder, YUVSource, nal_units};
 
 const BANM: &[u8] = include_bytes!("fixtures/BANM_MW_D.264");
 const GOLDEN_FRAME0: &[u8] = include_bytes!("fixtures/banm_frame0.yuv");
@@ -41,7 +41,10 @@ fn decode_all_matches_golden_and_count() {
     // First frame must equal the proven golden decode.
     let f0 = visible_i420(&frames[0]);
     assert_eq!(f0.len(), GOLDEN_FRAME0.len());
-    assert!(f0 == GOLDEN_FRAME0, "Decoder API frame 0 diverged from golden");
+    assert!(
+        f0 == GOLDEN_FRAME0,
+        "Decoder API frame 0 diverged from golden"
+    );
 }
 
 #[test]

@@ -299,7 +299,9 @@ pub fn parse_slice_header_in_place(
 
     // num_ref_frames == 0 only admits intra slices (OpenH264).
     if sps.max_num_ref_frames == 0 && !slice_type.is_intra() {
-        return Err(DecodeError::InvalidSyntax("slice_type for num_ref_frames=0"));
+        return Err(DecodeError::InvalidSyntax(
+            "slice_type for num_ref_frames=0",
+        ));
     }
 
     if sps.log2_max_frame_num == 0 {
@@ -721,7 +723,7 @@ fn parse_dec_ref_pic_marking(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decoder::nal::{annexb_nal_units, parse_nal, NalUnit, NalUnitType};
+    use crate::decoder::nal::{NalUnit, NalUnitType, annexb_nal_units, parse_nal};
     use crate::decoder::params::{parse_pps, parse_sps};
     use alloc::vec::Vec;
 
@@ -779,10 +781,12 @@ mod tests {
             let _slice_type = probe.read_ue().expect("probe slice_type");
             let pps_id = probe.read_ue().expect("probe pps_id");
             let pps = pps_map[pps_id as usize].as_ref().expect("referenced PPS");
-            let sps = sps_map[pps.sps_id as usize].as_ref().expect("referenced SPS");
+            let sps = sps_map[pps.sps_id as usize]
+                .as_ref()
+                .expect("referenced SPS");
 
-            let sh = parse_slice_header(&nal.rbsp, nal.ref_idc, is_idr, sps, pps)
-                .expect("slice header");
+            let sh =
+                parse_slice_header(&nal.rbsp, nal.ref_idc, is_idr, sps, pps).expect("slice header");
 
             // Range / sanity assertions.
             assert!(
@@ -829,7 +833,9 @@ mod tests {
         // Following slices in a typical IPPP clip are P.
         if types.len() > 1 {
             assert!(
-                types[1..].iter().all(|t| *t == SliceType::P || *t == SliceType::I),
+                types[1..]
+                    .iter()
+                    .all(|t| *t == SliceType::P || *t == SliceType::I),
                 "subsequent slices are P (or I): {types:?}"
             );
         }

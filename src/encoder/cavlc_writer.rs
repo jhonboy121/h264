@@ -158,7 +158,13 @@ pub fn write_residual_block(
     let mut level = [0i16; 16];
     let mut run = [0u8; 16];
     let mut total_coeffs = 0usize;
-    let total_zeros = cavlc_param_cal(coeff_level, end_idx as i32, &mut level, &mut run, &mut total_coeffs);
+    let total_zeros = cavlc_param_cal(
+        coeff_level,
+        end_idx as i32,
+        &mut level,
+        &mut run,
+        &mut total_coeffs,
+    );
 
     // Trailing ones (up to 3 leading +/-1 coefficients) and their sign bits.
     let mut trailing_ones = 0usize;
@@ -177,7 +183,11 @@ pub fn write_residual_block(
     }
 
     // Step 3: coeff_token.
-    let nc_idx = if chroma_dc { 4usize } else { ENC_NC_MAP[nc.clamp(0, 16) as usize] as usize };
+    let nc_idx = if chroma_dc {
+        4usize
+    } else {
+        ENC_NC_MAP[nc.clamp(0, 16) as usize] as usize
+    };
     let (ct_val, ct_bits) = COEFF_TOKEN[nc_idx][total_coeffs][trailing_ones];
     if total_coeffs == 0 {
         bw.write_bits(ct_val as u32, ct_bits as u32);
@@ -191,7 +201,12 @@ pub fn write_residual_block(
 
     // Levels.
     let mut suffix_length: i32 = (total_coeffs > 10 && trailing_ones < 3) as i32;
-    for (i, &lv) in level.iter().enumerate().take(total_coeffs).skip(trailing_ones) {
+    for (i, &lv) in level
+        .iter()
+        .enumerate()
+        .take(total_coeffs)
+        .skip(trailing_ones)
+    {
         let val = lv as i32;
         let mut level_code = (val - 1) * 2;
         let s = level_code >> 31;

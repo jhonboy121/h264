@@ -74,14 +74,23 @@ fn roundtrip_psnr_and_monotonicity() {
         let py = psnr(&sy, &ry);
         let pu = psnr(&su, &ru);
         let pv = psnr(&sv, &rv);
-        eprintln!("qp={qp}: PSNR Y={py:.2} U={pu:.2} V={pv:.2} dB, AU={} bytes", au.len());
+        eprintln!(
+            "qp={qp}: PSNR Y={py:.2} U={pu:.2} V={pv:.2} dB, AU={} bytes",
+            au.len()
+        );
 
         let bar = if qp == 26 { 36.0 } else { 32.0 };
         assert!(py >= bar, "luma PSNR {py:.2} dB below {bar} at qp={qp}");
-        assert!(pu >= 38.0 && pv >= 38.0, "chroma PSNR too low at qp={qp}: U={pu:.2} V={pv:.2}");
+        assert!(
+            pu >= 38.0 && pv >= 38.0,
+            "chroma PSNR too low at qp={qp}: U={pu:.2} V={pv:.2}"
+        );
 
         if idx > 0 {
-            assert!(py >= prev_psnr - 0.01, "PSNR not monotonic with QP (qp={qp})");
+            assert!(
+                py >= prev_psnr - 0.01,
+                "PSNR not monotonic with QP (qp={qp})"
+            );
         }
         prev_psnr = py;
     }
@@ -140,7 +149,11 @@ fn decode_all_planes(stream: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> {
                 }
                 out
             };
-            (pack(f.y(), ys, w, h), pack(f.u(), us, w / 2, h / 2), pack(f.v(), vs, w / 2, h / 2))
+            (
+                pack(f.y(), ys, w, h),
+                pack(f.u(), us, w / 2, h / 2),
+                pack(f.v(), vs, w / 2, h / 2),
+            )
         })
         .collect()
 }
@@ -160,7 +173,11 @@ fn ippp_roundtrip_psnr_and_inter_savings() {
         }
 
         let decoded = decode_all_planes(&stream);
-        assert_eq!(decoded.len(), frames.len(), "frame count round-trips at qp={qp}");
+        assert_eq!(
+            decoded.len(),
+            frames.len(),
+            "frame count round-trips at qp={qp}"
+        );
 
         for (k, ((sy, su, sv), (ry, ru, rv))) in frames.iter().zip(decoded.iter()).enumerate() {
             let py = psnr(sy, ry);
@@ -171,14 +188,23 @@ fn ippp_roundtrip_psnr_and_inter_savings() {
                 if k == 0 { "I" } else { "P" },
                 au_sizes[k]
             );
-            assert!(py >= bar, "frame {k} luma PSNR {py:.2} below {bar} at qp={qp}");
-            assert!(pu >= bar && pv >= bar, "frame {k} chroma PSNR low at qp={qp}: U={pu:.2} V={pv:.2}");
+            assert!(
+                py >= bar,
+                "frame {k} luma PSNR {py:.2} below {bar} at qp={qp}"
+            );
+            assert!(
+                pu >= bar && pv >= bar,
+                "frame {k} chroma PSNR low at qp={qp}: U={pu:.2} V={pv:.2}"
+            );
         }
 
         // Inter coding must pay off: every P access unit is smaller than the IDR.
         let i_size = au_sizes[0];
         for (k, &p) in au_sizes.iter().enumerate().skip(1) {
-            assert!(p < i_size, "qp={qp}: P frame {k} ({p} B) not smaller than I ({i_size} B)");
+            assert!(
+                p < i_size,
+                "qp={qp}: P frame {k} ({p} B) not smaller than I ({i_size} B)"
+            );
         }
     }
 }

@@ -60,8 +60,14 @@ pub fn i4x4_luma_pred_dc(plane: &mut [u8], offset: usize, stride: usize) {
     let o = offset as isize;
     let s = stride as isize;
     let g = |d: isize| plane[(o + d) as usize] as i32;
-    let mean = ((g(-1) + g(-1 + s) + g(-1 + 2 * s) + g(-1 + 3 * s)
-        + g(-s) + g(1 - s) + g(2 - s) + g(3 - s)
+    let mean = ((g(-1)
+        + g(-1 + s)
+        + g(-1 + 2 * s)
+        + g(-1 + 3 * s)
+        + g(-s)
+        + g(1 - s)
+        + g(2 - s)
+        + g(3 - s)
         + 4)
         >> 3) as u8;
     fill4(plane, o, s, mean);
@@ -641,7 +647,9 @@ pub fn i8x8_luma_pred_ddr(plane: &mut [u8], offset: usize, stride: usize, _b_tl:
         // 8-98, x < y-1
         let mut j = 0;
         while j < i - 1 {
-            let v = (l[(i - j - 2) as usize] + (l[(i - j - 1) as usize] << 1) + l[(i - j) as usize]
+            let v = (l[(i - j - 2) as usize]
+                + (l[(i - j - 1) as usize] << 1)
+                + l[(i - j) as usize]
                 + 2)
                 >> 2;
             put8(plane, o, s, i, j, v);
@@ -668,7 +676,9 @@ pub fn i8x8_luma_pred_ddr(plane: &mut [u8], offset: usize, stride: usize, _b_tl:
         // 8-97, x > y+1
         let mut j = i + 2;
         while j < 8 {
-            let v = (t[(j - i - 2) as usize] + (t[(j - i - 1) as usize] << 1) + t[(j - i) as usize]
+            let v = (t[(j - i - 2) as usize]
+                + (t[(j - i - 1) as usize] << 1)
+                + t[(j - i) as usize]
                 + 2)
                 >> 2;
             put8(plane, o, s, i, j, v);
@@ -876,8 +886,14 @@ pub fn i_chroma_pred_dc(plane: &mut [u8], offset: usize, stride: usize) {
     let o = offset as isize;
     let s = stride as isize;
     let g = |d: isize| plane[(o + d) as usize] as i32;
-    let m1 = ((g(-s) + g(1 - s) + g(2 - s) + g(3 - s)
-        + g(-1) + g(s - 1) + g(2 * s - 1) + g(3 * s - 1)
+    let m1 = ((g(-s)
+        + g(1 - s)
+        + g(2 - s)
+        + g(3 - s)
+        + g(-1)
+        + g(s - 1)
+        + g(2 * s - 1)
+        + g(3 * s - 1)
         + 4)
         >> 3) as u8;
     let sum2 = g(4 - s) + g(5 - s) + g(6 - s) + g(7 - s);
@@ -1147,7 +1163,11 @@ mod tests {
         }
     }
 
-    fn run_big(sz: usize, k: impl Fn(&mut [u8], usize, usize), r: impl Fn(&mut [u8], usize, usize)) {
+    fn run_big(
+        sz: usize,
+        k: impl Fn(&mut [u8], usize, usize),
+        r: impl Fn(&mut [u8], usize, usize),
+    ) {
         let stride = 32usize;
         let off = 2 * stride;
         let mut rnd = lcg();
@@ -1177,7 +1197,11 @@ mod tests {
         r: impl Fn(&mut [u8], usize, usize, bool, bool),
     ) {
         for &(tl, tr) in &[(false, false), (false, true), (true, false), (true, true)] {
-            run_big(8, |p, o, s| k(p, o, s, tl, tr), |p, o, s| r(p, o, s, tl, tr));
+            run_big(
+                8,
+                |p, o, s| k(p, o, s, tl, tr),
+                |p, o, s| r(p, o, s, tl, tr),
+            );
         }
     }
 
@@ -1278,7 +1302,9 @@ mod tests {
     fn r4_ddl_top(p: &mut [u8], o: usize, s: usize) {
         let si = s as isize;
         let raw = top4(p, o, si);
-        let t = [raw[0], raw[1], raw[2], raw[3], raw[3], raw[3], raw[3], raw[3]];
+        let t = [
+            raw[0], raw[1], raw[2], raw[3], raw[3], raw[3], raw[3], raw[3],
+        ];
         let oi = o as isize;
         for y in 0..4i32 {
             for x in 0..4i32 {
@@ -1360,7 +1386,9 @@ mod tests {
     fn r4_vl_top(p: &mut [u8], o: usize, s: usize) {
         let si = s as isize;
         let raw = top4(p, o, si);
-        let t = [raw[0], raw[1], raw[2], raw[3], raw[3], raw[3], raw[3], raw[3]];
+        let t = [
+            raw[0], raw[1], raw[2], raw[3], raw[3], raw[3], raw[3], raw[3],
+        ];
         let oi = o as isize;
         for y in 0..4i32 {
             for x in 0..4i32 {
@@ -1469,7 +1497,11 @@ mod tests {
             (3 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2
         };
         for (i, ti) in t.iter_mut().enumerate().take(7).skip(1) {
-            *ti = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
+            *ti = (rtop(p, o, s, i as isize - 1)
+                + 2 * rtop(p, o, s, i as isize)
+                + rtop(p, o, s, i as isize + 1)
+                + 2)
+                >> 2;
         }
         t[7] = if b_tr {
             (rtop(p, o, s, 6) + 2 * rtop(p, o, s, 7) + rtop(p, o, s, 8) + 2) >> 2
@@ -1487,7 +1519,11 @@ mod tests {
             (3 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2
         };
         for (i, ti) in t.iter_mut().enumerate().take(15).skip(1) {
-            *ti = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
+            *ti = (rtop(p, o, s, i as isize - 1)
+                + 2 * rtop(p, o, s, i as isize)
+                + rtop(p, o, s, i as isize + 1)
+                + 2)
+                >> 2;
         }
         t[15] = (rtop(p, o, s, 14) + 3 * rtop(p, o, s, 15) + 2) >> 2;
         t
@@ -1501,7 +1537,11 @@ mod tests {
             (3 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2
         };
         for (i, ti) in t.iter_mut().enumerate().take(7).skip(1) {
-            *ti = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
+            *ti = (rtop(p, o, s, i as isize - 1)
+                + 2 * rtop(p, o, s, i as isize)
+                + rtop(p, o, s, i as isize + 1)
+                + 2)
+                >> 2;
         }
         t[7] = (rtop(p, o, s, 6) + 3 * rtop(p, o, s, 7) + 2) >> 2;
         for ti in t.iter_mut().skip(8) {
@@ -1514,7 +1554,11 @@ mod tests {
         let mut t = [0i32; 8];
         t[0] = (rcorner(p, o, s) + 2 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2;
         for (i, ti) in t.iter_mut().enumerate().take(7).skip(1) {
-            *ti = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
+            *ti = (rtop(p, o, s, i as isize - 1)
+                + 2 * rtop(p, o, s, i as isize)
+                + rtop(p, o, s, i as isize + 1)
+                + 2)
+                >> 2;
         }
         t[7] = if b_tr {
             (rtop(p, o, s, 6) + 2 * rtop(p, o, s, 7) + rtop(p, o, s, 8) + 2) >> 2
@@ -1532,7 +1576,11 @@ mod tests {
             (3 * rleft(p, o, s, 0) + rleft(p, o, s, 1) + 2) >> 2
         };
         for (i, li) in l.iter_mut().enumerate().take(7).skip(1) {
-            *li = (rleft(p, o, s, i as isize - 1) + 2 * rleft(p, o, s, i as isize) + rleft(p, o, s, i as isize + 1) + 2) >> 2;
+            *li = (rleft(p, o, s, i as isize - 1)
+                + 2 * rleft(p, o, s, i as isize)
+                + rleft(p, o, s, i as isize + 1)
+                + 2)
+                >> 2;
         }
         l[7] = (rleft(p, o, s, 6) + 3 * rleft(p, o, s, 7) + 2) >> 2;
         l
@@ -1542,7 +1590,11 @@ mod tests {
         let mut l = [0i32; 8];
         l[0] = (rcorner(p, o, s) + 2 * rleft(p, o, s, 0) + rleft(p, o, s, 1) + 2) >> 2;
         for (i, li) in l.iter_mut().enumerate().take(7).skip(1) {
-            *li = (rleft(p, o, s, i as isize - 1) + 2 * rleft(p, o, s, i as isize) + rleft(p, o, s, i as isize + 1) + 2) >> 2;
+            *li = (rleft(p, o, s, i as isize - 1)
+                + 2 * rleft(p, o, s, i as isize)
+                + rleft(p, o, s, i as isize + 1)
+                + 2)
+                >> 2;
         }
         l[7] = (rleft(p, o, s, 6) + 3 * rleft(p, o, s, 7) + 2) >> 2;
         l
@@ -1677,7 +1729,8 @@ mod tests {
                 } else if z == -1 {
                     (l[0] + 2 * tl + t[0] + 2) >> 2
                 } else if z < -2 {
-                    (l[(-z - 1) as usize] + 2 * l[(-z - 2) as usize] + l[(-z - 3) as usize] + 2) >> 2
+                    (l[(-z - 1) as usize] + 2 * l[(-z - 2) as usize] + l[(-z - 3) as usize] + 2)
+                        >> 2
                 } else {
                     (l[1] + 2 * l[0] + tl + 2) >> 2
                 };
@@ -1729,7 +1782,8 @@ mod tests {
                 } else if z == -1 {
                     (l[0] + 2 * tl + t[0] + 2) >> 2
                 } else if z < -2 {
-                    (t[(-z - 1) as usize] + 2 * t[(-z - 2) as usize] + t[(-z - 3) as usize] + 2) >> 2
+                    (t[(-z - 1) as usize] + 2 * t[(-z - 2) as usize] + t[(-z - 3) as usize] + 2)
+                        >> 2
                 } else {
                     (t[1] + 2 * t[0] + tl + 2) >> 2
                 };

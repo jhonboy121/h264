@@ -17,17 +17,21 @@ use alloc::vec::Vec;
 
 use crate::bits::BitWriter;
 use crate::dsp::intra_pred as ip;
-use crate::dsp::tables::{G_KUI_CHROMA_DC_SCAN, G_KUI_DEQUANT_COEFF, G_KUI_LUMA_DC_ZIGZAG_SCAN, G_KUI_ZIGZAG_SCAN};
+use crate::dsp::tables::{
+    G_KUI_CHROMA_DC_SCAN, G_KUI_DEQUANT_COEFF, G_KUI_LUMA_DC_ZIGZAG_SCAN, G_KUI_ZIGZAG_SCAN,
+};
 use crate::dsp::transform::{
-    dct_four_t4, dct_t4, get_none_zero_count, hadamard_quant2x2, hadamard_t4_dc, idct4x4_add, quant4x4, quant4x4_dc,
-    quant_four4x4, scan4x4_ac, scan4x4_dcac,
+    dct_four_t4, dct_t4, get_none_zero_count, hadamard_quant2x2, hadamard_t4_dc, idct4x4_add,
+    quant_four4x4, quant4x4, quant4x4_dc, scan4x4_ac, scan4x4_dcac,
 };
 
 use crate::dsp::mc::{mc_chroma, mc_luma};
 use crate::dsp::{Blk, Dim, Mv};
 
 use super::cavlc_writer::write_residual_block;
-use super::motion_est::{me_lambda, median, pred_mv, search_mv, Pos, RefView, REF_NOT_AVAIL, REF_NOT_IN_LIST};
+use super::motion_est::{
+    Pos, REF_NOT_AVAIL, REF_NOT_IN_LIST, RefView, me_lambda, median, pred_mv, search_mv,
+};
 
 // g_kuiInterCbpTable: maps the coded_block_pattern ue code -> cbp value (the
 // inverse direction the decoder reads). The encoder needs cbp -> code, derived
@@ -78,11 +82,20 @@ const INTRA4X4_CBP_CODE: [u8; 48] = [
 ];
 
 // (pred_mode, need_left, need_top, need_left_top); DC handled specially.
-const I16_PRED_INFO: [(i8, i32, i32, i32); 4] = [(0, 0, 1, 0), (1, 1, 0, 0), (0, 0, 0, 0), (3, 1, 1, 1)];
-const CHROMA_PRED_INFO: [(i8, i32, i32, i32); 4] = [(0, 0, 0, 0), (1, 1, 0, 0), (2, 0, 1, 0), (3, 1, 1, 1)];
+const I16_PRED_INFO: [(i8, i32, i32, i32); 4] =
+    [(0, 0, 1, 0), (1, 1, 0, 0), (0, 0, 0, 0), (3, 1, 1, 1)];
+const CHROMA_PRED_INFO: [(i8, i32, i32, i32); 4] =
+    [(0, 0, 0, 0), (1, 1, 0, 0), (2, 0, 1, 0), (3, 1, 1, 1)];
 const I4_PRED_INFO: [(i8, i32, i32, i32); 9] = [
-    (0, 0, 1, 0), (1, 1, 0, 0), (0, 0, 0, 0), (3, 0, 1, 0), (4, 1, 1, 1),
-    (5, 1, 1, 1), (6, 1, 1, 1), (7, 0, 1, 0), (8, 1, 0, 0),
+    (0, 0, 1, 0),
+    (1, 1, 0, 0),
+    (0, 0, 0, 0),
+    (3, 0, 1, 0),
+    (4, 1, 1, 1),
+    (5, 1, 1, 1),
+    (6, 1, 1, 1),
+    (7, 0, 1, 0),
+    (8, 1, 0, 0),
 ];
 
 /// Quant multiplier table `g_kiQuantMF[52][8]`.
@@ -174,7 +187,13 @@ impl RecPlanes {
     /// Allocate blank (border-padded) reconstruction planes for a frame.
     pub(crate) fn new(dims: MbDims) -> Self {
         let (ystride, cstride, ylen, clen) = rec_dims(dims.width, dims.height);
-        RecPlanes { y: vec![0u8; ylen], u: vec![0u8; clen], v: vec![0u8; clen], ystride, cstride }
+        RecPlanes {
+            y: vec![0u8; ylen],
+            u: vec![0u8; clen],
+            v: vec![0u8; clen],
+            ystride,
+            cstride,
+        }
     }
 }
 
@@ -190,7 +209,14 @@ pub(crate) fn rec_dims(mb_width: usize, mb_height: usize) -> (usize, usize, usiz
 
 /// Border-extend reconstruction planes in place (edge replication, matching the
 /// decoder's `expand_picture`).
-pub(crate) fn expand_reference(rec_y: &mut [u8], rec_u: &mut [u8], rec_v: &mut [u8], dims: MbDims, ystride: usize, cstride: usize) {
+pub(crate) fn expand_reference(
+    rec_y: &mut [u8],
+    rec_u: &mut [u8],
+    rec_v: &mut [u8],
+    dims: MbDims,
+    ystride: usize,
+    cstride: usize,
+) {
     use crate::dsp::expand::expand_plane;
     let lw = dims.width * 16;
     let lh = dims.height * 16;
@@ -257,8 +283,8 @@ pub(crate) struct FrameEnc<'a> {
     ref_y: &'a [u8], // border-extended reference planes (empty for I frames)
     ref_u: &'a [u8],
     ref_v: &'a [u8],
-    mv: Vec<[i16; 2]>, // mb_count * 16 (raster), signalled list-0 MVs (qpel)
-    ref_idx: Vec<i8>,  // mb_count * 16 (raster); -1 == REF_NOT_IN_LIST (intra)
+    mv: Vec<[i16; 2]>,   // mb_count * 16 (raster), signalled list-0 MVs (qpel)
+    ref_idx: Vec<i8>,    // mb_count * 16 (raster); -1 == REF_NOT_IN_LIST (intra)
     mb_inter: Vec<bool>, // per MB: true if coded as inter (incl. P_Skip)
 }
 
@@ -269,12 +295,12 @@ struct MbEnc {
     is_i16: bool,
     i16_base_mode: i8,
     chroma_mode_signaled: i8,
-    i4_best: [i8; 16],   // raster, base modes (0..8)
-    i4_final: [i8; 16],  // raster, final modes (0..13)
-    luma_dc: [i16; 16],  // scan order (I16 only)
+    i4_best: [i8; 16],  // raster, base modes (0..8)
+    i4_final: [i8; 16], // raster, final modes (0..13)
+    luma_dc: [i16; 16], // scan order (I16 only)
     has_dc: bool,
     luma_levels: [[i16; 16]; 16], // per scan-block; I16=AC(15), I4=full(16)
-    nzc_luma: [i8; 16],  // raster
+    nzc_luma: [i8; 16],           // raster
     cbp_l: u8,
     chroma_dc: [[i16; 4]; 2],
     chroma_ac: [[[i16; 16]; 4]; 2],
@@ -303,9 +329,20 @@ impl<'a> FrameEnc<'a> {
         src_cstride: usize,
         refs: PlaneRefs<'a>,
     ) -> Self {
-        let MbDims { width: mb_width, height: mb_height } = dims;
-        let PlaneRefs { y: src_y, u: src_u, v: src_v } = src;
-        let PlaneRefs { y: ref_y, u: ref_u, v: ref_v } = refs;
+        let MbDims {
+            width: mb_width,
+            height: mb_height,
+        } = dims;
+        let PlaneRefs {
+            y: src_y,
+            u: src_u,
+            v: src_v,
+        } = src;
+        let PlaneRefs {
+            y: ref_y,
+            u: ref_u,
+            v: ref_v,
+        } = refs;
         let (ystride, cstride, ylen, clen) = rec_dims(mb_width, mb_height);
         let mb_count = mb_width * mb_height;
         FrameEnc {
@@ -350,7 +387,10 @@ impl<'a> FrameEnc<'a> {
             &mut self.rec_y,
             &mut self.rec_u,
             &mut self.rec_v,
-            MbDims { width: self.mb_width, height: self.mb_height },
+            MbDims {
+                width: self.mb_width,
+                height: self.mb_height,
+            },
             self.ystride,
             self.cstride,
         );
@@ -384,7 +424,13 @@ impl<'a> FrameEnc<'a> {
     /// neighbour prediction never reaches above the slice's first row. Writes
     /// the MB layer only (the caller appends rbsp_trailing_bits). For P slices
     /// the trailing `mb_skip_run` is flushed here, at the slice end.
-    pub(crate) fn encode_band(&mut self, bw: &mut BitWriter, first_mb_y: usize, last_mb_y: usize, is_p: bool) {
+    pub(crate) fn encode_band(
+        &mut self,
+        bw: &mut BitWriter,
+        first_mb_y: usize,
+        last_mb_y: usize,
+        is_p: bool,
+    ) {
         self.slice_top_y = first_mb_y;
         if is_p {
             let mut pending = 0u32;
@@ -445,7 +491,12 @@ impl<'a> FrameEnc<'a> {
         let top_right = top && mb_x + 1 < self.mb_width;
 
         let pos = MbPos { x: mb_x, y: mb_y };
-        let avail = NeighAvail { left, top, left_top, top_right };
+        let avail = NeighAvail {
+            left,
+            top,
+            left_top,
+            top_right,
+        };
         let cost16 = self.decide_i16(mb_x, mb_y, left, top, left_top, enc);
         let i16_base = enc.i16_base_mode;
         let cost4 = self.encode_i4x4(pos, avail, enc);
@@ -517,13 +568,26 @@ impl<'a> FrameEnc<'a> {
             bw.write_ue(*pending);
             *pending = 0;
             self.commit_inter_context(mb_xy, me.mv, 0, &enc.nzc_luma, &enc.nzc_chroma);
-            self.write_inter_mb_syntax(bw, MbPos { x: mb_x, y: mb_y }, Avail { left, top }, me.mv, mvp, &enc);
+            self.write_inter_mb_syntax(
+                bw,
+                MbPos { x: mb_x, y: mb_y },
+                Avail { left, top },
+                me.mv,
+                mvp,
+                &enc,
+            );
         } else {
             bw.write_ue(*pending);
             *pending = 0;
             self.commit_intra_context(mb_xy, &intra_enc);
             // Intra mb_type in a P slice carries the +5 offset.
-            self.write_mb_syntax(bw, MbPos { x: mb_x, y: mb_y }, Avail { left, top }, &intra_enc, 5);
+            self.write_mb_syntax(
+                bw,
+                MbPos { x: mb_x, y: mb_y },
+                Avail { left, top },
+                &intra_enc,
+                5,
+            );
         }
     }
 
@@ -565,7 +629,11 @@ impl<'a> FrameEnc<'a> {
             mv[0] = mv_of(left_top_xy, 15);
             ref_idx[0] = ref_of(left_top_xy, 15);
         } else {
-            ref_idx[0] = if left_top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+            ref_idx[0] = if left_top {
+                REF_NOT_IN_LIST
+            } else {
+                REF_NOT_AVAIL
+            };
         }
         if top && self.mb_inter[top_xy] {
             for (k, &b) in [12usize, 13, 14, 15].iter().enumerate() {
@@ -580,7 +648,11 @@ impl<'a> FrameEnc<'a> {
             mv[5] = mv_of(right_top_xy, 12);
             ref_idx[5] = ref_of(right_top_xy, 12);
         } else {
-            ref_idx[5] = if right_top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
+            ref_idx[5] = if right_top {
+                REF_NOT_IN_LIST
+            } else {
+                REF_NOT_AVAIL
+            };
         }
         for &c in &[9usize, 11, 17, 21, 23] {
             ref_idx[c] = REF_NOT_AVAIL;
@@ -650,14 +722,24 @@ impl<'a> FrameEnc<'a> {
         let pic_w = (self.mb_width * 16) as i32;
         let pic_h = (self.mb_height * 16) as i32;
         let origin = BORDER * self.ystride + BORDER;
-        let refv = RefView { plane: self.ref_y, stride: self.ystride, origin, pic_w, pic_h };
+        let refv = RefView {
+            plane: self.ref_y,
+            stride: self.ystride,
+            origin,
+            pic_w,
+            pic_h,
+        };
         let px = (mb_x * 16) as i32;
         let py = (mb_y * 16) as i32;
         let soff = self.src_y_off(mb_x, mb_y);
         search_mv(
             &refv,
             Pos { x: px, y: py },
-            Blk { data: self.src_y, off: soff, stride: self.src_ystride },
+            Blk {
+                data: self.src_y,
+                off: soff,
+                stride: self.src_ystride,
+            },
             Dim { w: 16, h: 16 },
             mvp,
             me_lambda(self.qp),
@@ -680,13 +762,27 @@ impl<'a> FrameEnc<'a> {
 
         let dst = origin + (py as usize) * ls + px as usize;
         let src = (origin as i32 + (fx >> 2) + (fy >> 2) * ls as i32) as usize;
-        mc_luma(&mut self.rec_y[dst..], ls, self.ref_y, src, ls, Mv { x: fx as i16, y: fy as i16 }, Dim { w: 16, h: 16 });
+        mc_luma(
+            &mut self.rec_y[dst..],
+            ls,
+            self.ref_y,
+            src,
+            ls,
+            Mv {
+                x: fx as i16,
+                y: fy as i16,
+            },
+            Dim { w: 16, h: 16 },
+        );
 
         let cs = self.cstride;
         let corigin = BORDER * cs + BORDER;
         let cdst = corigin + (mb_y * 8) * cs + mb_x * 8;
         let csrc = (corigin as i32 + (fx >> 3) + (fy >> 3) * cs as i32) as usize;
-        let cmv = Mv { x: fx as i16, y: fy as i16 };
+        let cmv = Mv {
+            x: fx as i16,
+            y: fy as i16,
+        };
         let cdim = Dim { w: 8, h: 8 };
         mc_chroma(&mut self.rec_u[cdst..], cs, self.ref_u, csrc, cs, cmv, cdim);
         mc_chroma(&mut self.rec_v[cdst..], cs, self.ref_v, csrc, cs, cmv, cdim);
@@ -712,7 +808,15 @@ impl<'a> FrameEnc<'a> {
             let boff = off + BLOCK_BY[i] * 4 * stride + BLOCK_BX[i] * 4;
             let sboff = soff + BLOCK_BY[i] * 4 * self.src_ystride + BLOCK_BX[i] * 4;
             let mut dct = [0i16; 16];
-            dct_t4(&mut dct, self.src_y, sboff, self.src_ystride, &self.rec_y, boff, stride);
+            dct_t4(
+                &mut dct,
+                self.src_y,
+                sboff,
+                self.src_ystride,
+                &self.rec_y,
+                boff,
+                stride,
+            );
             quant4x4(&mut dct, ff, mf);
             let mut scanned = [0i16; 16];
             scan4x4_dcac(&mut scanned, &dct);
@@ -739,7 +843,14 @@ impl<'a> FrameEnc<'a> {
 
     /// Commit an inter MB's neighbour context (single ref index, uniform MV over
     /// the 16x16 partition).
-    fn commit_inter_context(&mut self, mb_xy: usize, mv: [i16; 2], iref: i8, nzc_luma: &[i8; 16], nzc_chroma: &[i8; 8]) {
+    fn commit_inter_context(
+        &mut self,
+        mb_xy: usize,
+        mv: [i16; 2],
+        iref: i8,
+        nzc_luma: &[i8; 16],
+        nzc_chroma: &[i8; 8],
+    ) {
         self.is_nxn[mb_xy] = false;
         self.best_mode[mb_xy * 16..mb_xy * 16 + 16].fill(-1);
         self.nzc_luma[mb_xy * 16..mb_xy * 16 + 16].copy_from_slice(nzc_luma);
@@ -794,9 +905,16 @@ impl<'a> FrameEnc<'a> {
         let mut best_cost = i32::MAX;
         let mut best_base = 2i8;
         for base in 0..4i8 {
-            let Some(actual) = map_i16_mode(base, left, top, left_top) else { continue };
+            let Some(actual) = map_i16_mode(base, left, top, left_top) else {
+                continue;
+            };
             luma16_pred(actual, &mut self.rec_y, off, self.ystride);
-            let cost = crate::dsp::satd::satd16x16(&self.rec_y[off..], self.ystride, &self.src_y[soff..], self.src_ystride);
+            let cost = crate::dsp::satd::satd16x16(
+                &self.rec_y[off..],
+                self.ystride,
+                &self.src_y[soff..],
+                self.src_ystride,
+            );
             if cost < best_cost {
                 best_cost = cost;
                 best_base = base;
@@ -810,7 +928,12 @@ impl<'a> FrameEnc<'a> {
     /// AC), reconstruct in place, and store the levels/nzc/cbp in `enc`.
     fn encode_i16x16(&mut self, pos: MbPos, avail: NeighAvail, base_mode: i8, enc: &mut MbEnc) {
         let MbPos { x: mb_x, y: mb_y } = pos;
-        let NeighAvail { left, top, left_top, .. } = avail;
+        let NeighAvail {
+            left,
+            top,
+            left_top,
+            ..
+        } = avail;
         let off = self.y_off(mb_x, mb_y);
         let soff = self.src_y_off(mb_x, mb_y);
         let stride = self.ystride;
@@ -826,8 +949,15 @@ impl<'a> FrameEnc<'a> {
         let quad_off = [0usize, 8, 8 * stride, 8 * stride + 8];
         for (g, &qo) in quad_off.iter().enumerate() {
             let mut dct = [0i16; 64];
-            dct_four_t4(&mut dct, self.src_y, soff + (g / 2) * 8 * self.src_ystride + (g % 2) * 8, self.src_ystride,
-                        &self.rec_y, off + qo, stride);
+            dct_four_t4(
+                &mut dct,
+                self.src_y,
+                soff + (g / 2) * 8 * self.src_ystride + (g % 2) * 8,
+                self.src_ystride,
+                &self.rec_y,
+                off + qo,
+                stride,
+            );
             res[g * 64..g * 64 + 64].copy_from_slice(&dct);
         }
 
@@ -896,7 +1026,12 @@ impl<'a> FrameEnc<'a> {
     /// record levels/modes/nzc. Returns the summed residual SATD.
     fn encode_i4x4(&mut self, pos: MbPos, avail: NeighAvail, enc: &mut MbEnc) -> i32 {
         let MbPos { x: mb_x, y: mb_y } = pos;
-        let NeighAvail { left, top, left_top, top_right } = avail;
+        let NeighAvail {
+            left,
+            top,
+            left_top,
+            top_right,
+        } = avail;
         let off = self.y_off(mb_x, mb_y);
         let soff = self.src_y_off(mb_x, mb_y);
         let stride = self.ystride;
@@ -940,9 +1075,16 @@ impl<'a> FrameEnc<'a> {
             let mut best_base = 2i8;
             let mut best_final = 2i8;
             for base in 0..9i8 {
-                let Some(fin) = map_i4_mode(&sample_avail, base, i) else { continue };
+                let Some(fin) = map_i4_mode(&sample_avail, base, i) else {
+                    continue;
+                };
                 luma4_pred(fin, &mut self.rec_y, boff, stride);
-                let cost = crate::dsp::satd::satd4x4(&self.rec_y[boff..], stride, &self.src_y[sboff..], self.src_ystride);
+                let cost = crate::dsp::satd::satd4x4(
+                    &self.rec_y[boff..],
+                    stride,
+                    &self.src_y[sboff..],
+                    self.src_ystride,
+                );
                 if cost < best_cost {
                     best_cost = cost;
                     best_base = base;
@@ -956,7 +1098,15 @@ impl<'a> FrameEnc<'a> {
             // Predict (final), transform + quant, scan, reconstruct.
             luma4_pred(best_final, &mut self.rec_y, boff, stride);
             let mut dct = [0i16; 16];
-            dct_t4(&mut dct, self.src_y, sboff, self.src_ystride, &self.rec_y, boff, stride);
+            dct_t4(
+                &mut dct,
+                self.src_y,
+                sboff,
+                self.src_ystride,
+                &self.rec_y,
+                boff,
+                stride,
+            );
             quant4x4(&mut dct, ff, mf);
             let mut scanned = [0i16; 16];
             scan4x4_dcac(&mut scanned, &dct);
@@ -983,7 +1133,15 @@ impl<'a> FrameEnc<'a> {
 
     // ===================== Chroma =====================
 
-    fn encode_chroma(&mut self, mb_x: usize, mb_y: usize, left: bool, top: bool, left_top: bool, enc: &mut MbEnc) {
+    fn encode_chroma(
+        &mut self,
+        mb_x: usize,
+        mb_y: usize,
+        left: bool,
+        top: bool,
+        left_top: bool,
+        enc: &mut MbEnc,
+    ) {
         let coff = self.c_off(mb_x, mb_y);
         let scoff = self.src_c_off(mb_x, mb_y);
         let cstride = self.cstride;
@@ -992,11 +1150,22 @@ impl<'a> FrameEnc<'a> {
         let mut best_cost = i32::MAX;
         let mut best_base = 0i8;
         for base in 0..4i8 {
-            let Some(actual) = map_chroma_mode(base, left, top, left_top) else { continue };
+            let Some(actual) = map_chroma_mode(base, left, top, left_top) else {
+                continue;
+            };
             chroma_pred(actual, &mut self.rec_u, coff, cstride);
             chroma_pred(actual, &mut self.rec_v, coff, cstride);
-            let cost = crate::dsp::satd::satd8x8(&self.rec_u[coff..], cstride, &self.src_u[scoff..], self.src_cstride)
-                + crate::dsp::satd::satd8x8(&self.rec_v[coff..], cstride, &self.src_v[scoff..], self.src_cstride);
+            let cost = crate::dsp::satd::satd8x8(
+                &self.rec_u[coff..],
+                cstride,
+                &self.src_u[scoff..],
+                self.src_cstride,
+            ) + crate::dsp::satd::satd8x8(
+                &self.rec_v[coff..],
+                cstride,
+                &self.src_v[scoff..],
+                self.src_cstride,
+            );
             if cost < best_cost {
                 best_cost = cost;
                 best_base = base;
@@ -1021,7 +1190,11 @@ impl<'a> FrameEnc<'a> {
 
         let chroma_qp = CHROMA_QP_TABLE[self.qp.clamp(0, 51) as usize] as usize;
         let mf = &QUANT_MF[chroma_qp];
-        let ff: &[i16; 8] = if inter { inter_ff(chroma_qp) } else { &QUANT_INTRA_FF[chroma_qp] };
+        let ff: &[i16; 8] = if inter {
+            inter_ff(chroma_qp)
+        } else {
+            &QUANT_INTRA_FF[chroma_qp]
+        };
         let deq = &G_KUI_DEQUANT_COEFF[chroma_qp];
 
         let mut dc_present = false;
@@ -1040,7 +1213,8 @@ impl<'a> FrameEnc<'a> {
             // DC: 2x2 Hadamard + quant (ff[0]<<1, mf[0]>>1); zeroes res DC slots.
             let mut dct2x2 = [0i16; 4];
             let mut block_dc = [0i16; 4];
-            let dc_nnz = hadamard_quant2x2(&mut res, ff[0] << 1, mf[0] >> 1, &mut dct2x2, &mut block_dc);
+            let dc_nnz =
+                hadamard_quant2x2(&mut res, ff[0] << 1, mf[0] >> 1, &mut dct2x2, &mut block_dc);
             enc.chroma_dc[c] = block_dc;
             if dc_nnz > 0 {
                 dc_present = true;
@@ -1070,7 +1244,11 @@ impl<'a> FrameEnc<'a> {
 
         // Reconstruct chroma: replay decoder dequant + IDCT.
         for c in 0..2 {
-            let rec = if c == 0 { &mut self.rec_u } else { &mut self.rec_v };
+            let rec = if c == 0 {
+                &mut self.rec_u
+            } else {
+                &mut self.rec_v
+            };
             let mut coeffs = [0i16; 64];
             if enc.cbp_c == 1 || enc.cbp_c == 2 {
                 // DC: place levels, inverse 2x2 Hadamard, dequant.
@@ -1109,7 +1287,14 @@ impl<'a> FrameEnc<'a> {
 
     // ===================== Syntax write =====================
 
-    fn write_mb_syntax(&self, bw: &mut BitWriter, pos: MbPos, avail: Avail, enc: &MbEnc, mb_type_offset: u32) {
+    fn write_mb_syntax(
+        &self,
+        bw: &mut BitWriter,
+        pos: MbPos,
+        avail: Avail,
+        enc: &MbEnc,
+        mb_type_offset: u32,
+    ) {
         let MbPos { x: mb_x, y: mb_y } = pos;
         let Avail { left, top } = avail;
         let mb_xy = mb_y * self.mb_width + mb_x;
@@ -1168,9 +1353,21 @@ impl<'a> FrameEnc<'a> {
             let raster = BLOCK_RASTER[i];
             let bx = BLOCK_BX[i];
             let by = BLOCK_BY[i];
-            let top_mode = if by > 0 { cache[(by - 1) * 4 + bx] } else { top_modes[bx] };
-            let left_mode = if bx > 0 { cache[by * 4 + bx - 1] } else { left_modes[by] };
-            let pred_mode = if left_mode == -1 || top_mode == -1 { 2 } else { left_mode.min(top_mode) };
+            let top_mode = if by > 0 {
+                cache[(by - 1) * 4 + bx]
+            } else {
+                top_modes[bx]
+            };
+            let left_mode = if bx > 0 {
+                cache[by * 4 + bx - 1]
+            } else {
+                left_modes[by]
+            };
+            let pred_mode = if left_mode == -1 || top_mode == -1 {
+                2
+            } else {
+                left_mode.min(top_mode)
+            };
             let cur = enc.i4_best[raster];
             if cur == pred_mode {
                 bw.write_flag(true);
@@ -1183,7 +1380,14 @@ impl<'a> FrameEnc<'a> {
         }
     }
 
-    fn write_residuals(&self, bw: &mut BitWriter, mb_xy: usize, left: bool, top: bool, enc: &MbEnc) {
+    fn write_residuals(
+        &self,
+        bw: &mut BitWriter,
+        mb_xy: usize,
+        left: bool,
+        top: bool,
+        enc: &MbEnc,
+    ) {
         let mb_width = self.mb_width;
         let lxy = mb_xy.wrapping_sub(1);
         let txy = mb_xy.wrapping_sub(mb_width);
@@ -1208,8 +1412,16 @@ impl<'a> FrameEnc<'a> {
         if enc.is_i16 {
             // Luma DC (block 0,0 context), end_idx 15.
             let nc0 = nc_average(
-                if left { self.nzc_luma[lxy * 16 + 3] as i32 } else { -1 },
-                if top { self.nzc_luma[txy * 16 + 12] as i32 } else { -1 },
+                if left {
+                    self.nzc_luma[lxy * 16 + 3] as i32
+                } else {
+                    -1
+                },
+                if top {
+                    self.nzc_luma[txy * 16 + 12] as i32
+                } else {
+                    -1
+                },
             );
             write_residual_block(bw, &enc.luma_dc, 15, false, nc0);
             if enc.cbp_l != 0 {

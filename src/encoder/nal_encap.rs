@@ -41,7 +41,9 @@ mod tests {
     fn emulation_prevention_inserted_and_stripped() {
         // Payload containing 0x000001 / 0x000002 / 0x000000 patterns that must
         // be escaped, then recovered exactly by the decoder's unescaper.
-        let payload = [0x00, 0x00, 0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0xff];
+        let payload = [
+            0x00, 0x00, 0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0xff,
+        ];
         let mut out = Vec::new();
         append_annexb_nal(&mut out, 3, 7, &payload);
 

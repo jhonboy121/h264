@@ -65,7 +65,8 @@ pub fn pred_mv(
         return amv;
     }
 
-    let match_ref = (iref == left_ref) as i32 + (iref == top_ref) as i32 + (iref == diagonal_ref) as i32;
+    let match_ref =
+        (iref == left_ref) as i32 + (iref == top_ref) as i32 + (iref == diagonal_ref) as i32;
     if match_ref == 1 {
         if iref == left_ref {
             amv
@@ -144,10 +145,18 @@ impl SkipNeighbor {
                         ref_idx: ctx.ref_idx[xy * 16 + block],
                     }
                 } else {
-                    SkipNeighbor { is_inter: false, mv: [0, 0], ref_idx: REF_NOT_IN_LIST }
+                    SkipNeighbor {
+                        is_inter: false,
+                        mv: [0, 0],
+                        ref_idx: REF_NOT_IN_LIST,
+                    }
                 }
             }
-            _ => SkipNeighbor { is_inter: false, mv: [0, 0], ref_idx: REF_NOT_AVAIL },
+            _ => SkipNeighbor {
+                is_inter: false,
+                mv: [0, 0],
+                ref_idx: REF_NOT_AVAIL,
+            },
         }
     }
 }
@@ -160,9 +169,21 @@ pub fn pred_p_skip_mv(ctx: &DecoderContext, mb_xy: usize) -> [i16; 2] {
     let cur_slice = ctx.slice_idc[mb_xy];
 
     let left_xy = if mb_x != 0 { Some(mb_xy - 1) } else { None };
-    let top_xy = if mb_y != 0 { Some(mb_xy - mb_width) } else { None };
-    let left_top_xy = if mb_x != 0 && mb_y != 0 { Some(mb_xy - mb_width - 1) } else { None };
-    let right_top_xy = if mb_x != mb_width - 1 && mb_y != 0 { Some(mb_xy - mb_width + 1) } else { None };
+    let top_xy = if mb_y != 0 {
+        Some(mb_xy - mb_width)
+    } else {
+        None
+    };
+    let left_top_xy = if mb_x != 0 && mb_y != 0 {
+        Some(mb_xy - mb_width - 1)
+    } else {
+        None
+    };
+    let right_top_xy = if mb_x != mb_width - 1 && mb_y != 0 {
+        Some(mb_xy - mb_width + 1)
+    } else {
+        None
+    };
 
     // Left (block 3), Top (block 12), RightTop (block 12), LeftTop (block 15).
     let left = SkipNeighbor::fetch(ctx, cur_slice, left_xy, 3);
@@ -184,7 +205,10 @@ pub fn pred_p_skip_mv(ctx: &DecoderContext, mb_xy: usize) -> [i16; 2] {
     }
     let _ = (left.is_inter, top.is_inter); // availability already folded into ref
 
-    if top.ref_idx == REF_NOT_AVAIL && diagonal_ref == REF_NOT_AVAIL && left.ref_idx >= REF_NOT_IN_LIST {
+    if top.ref_idx == REF_NOT_AVAIL
+        && diagonal_ref == REF_NOT_AVAIL
+        && left.ref_idx >= REF_NOT_IN_LIST
+    {
         return left.mv;
     }
 
@@ -215,14 +239,23 @@ mod tests {
     struct Rng(u64);
     impl Rng {
         fn next(&mut self) -> i64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((self.0 >> 33) & 0x7fff_ffff) as i64
         }
     }
 
     // ---- Independent anchors transcribed from DecUT_PredMv.cpp ----
 
-    fn anchor_pred_mv(mv: &[[i16; 2]; 30], r: &[i8; 30], part_idx: usize, pw: usize, iref: i8) -> [i16; 2] {
+    fn anchor_pred_mv(
+        mv: &[[i16; 2]; 30],
+        r: &[i8; 30],
+        part_idx: usize,
+        pw: usize,
+        iref: i8,
+    ) -> [i16; 2] {
         let left = CACHE30_SCAN_IDX[part_idx] - 1;
         let top = CACHE30_SCAN_IDX[part_idx] - 6;
         let rtop = top + pw;
@@ -304,11 +337,11 @@ mod tests {
     fn pred_mv_matches_anchor() {
         let mut rng = Rng(0x1234_5678);
         let cases: &[(Vec<usize>, usize)] = &[
-            (alloc::vec![0], 4),                 // 16x16
-            (alloc::vec![0, 8], 4),              // 16x8
-            (alloc::vec![0, 4], 2),              // 8x16
-            (alloc::vec![0, 4, 8, 12], 2),       // 8x8
-            ((0..16).collect(), 1),              // 4x4
+            (alloc::vec![0], 4),           // 16x16
+            (alloc::vec![0, 8], 4),        // 16x8
+            (alloc::vec![0, 4], 2),        // 8x16
+            (alloc::vec![0, 4, 8, 12], 2), // 8x8
+            ((0..16).collect(), 1),        // 4x4
         ];
         for (idxs, pw) in cases {
             for _ in 0..200 {
@@ -332,7 +365,10 @@ mod tests {
             let (mv, r) = random_cache(&mut rng);
             let idx = ((rng.next() & 1) << 3) as usize;
             let iref = (rng.next() % 18 - 2) as i8;
-            assert_eq!(pred_inter16x8(&mv, &r, idx, iref), anchor_16x8(&mv, &r, idx, iref));
+            assert_eq!(
+                pred_inter16x8(&mv, &r, idx, iref),
+                anchor_16x8(&mv, &r, idx, iref)
+            );
         }
     }
 
@@ -343,7 +379,10 @@ mod tests {
             let (mv, r) = random_cache(&mut rng);
             let idx = ((rng.next() & 1) << 2) as usize;
             let iref = (rng.next() % 18 - 2) as i8;
-            assert_eq!(pred_inter8x16(&mv, &r, idx, iref), anchor_8x16(&mv, &r, idx, iref));
+            assert_eq!(
+                pred_inter8x16(&mv, &r, idx, iref),
+                anchor_8x16(&mv, &r, idx, iref)
+            );
         }
     }
 }

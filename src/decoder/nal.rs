@@ -183,7 +183,11 @@ pub fn parse_nal(ebsp: &[u8]) -> Option<NalUnit> {
     let ref_idc = (hdr >> 5) & 0x03;
     let unit_type = NalUnitType::from_u8(hdr & 0x1f);
     let rbsp = ebsp_to_rbsp(&ebsp[1..]);
-    Some(NalUnit { ref_idc, unit_type, rbsp })
+    Some(NalUnit {
+        ref_idc,
+        unit_type,
+        rbsp,
+    })
 }
 
 #[cfg(test)]

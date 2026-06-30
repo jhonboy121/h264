@@ -139,8 +139,16 @@ mod tests {
         let (o1, o2) = (0usize, st2 + 1);
         for (w, h) in [(4, 4), (8, 4), (4, 8), (8, 8), (16, 8), (8, 16), (16, 16)] {
             let got = sad_four(
-                crate::dsp::Blk { data: &a, off: o1, stride: st1 },
-                crate::dsp::Blk { data: &b, off: o2, stride: st2 },
+                crate::dsp::Blk {
+                    data: &a,
+                    off: o1,
+                    stride: st1,
+                },
+                crate::dsp::Blk {
+                    data: &b,
+                    off: o2,
+                    stride: st2,
+                },
                 crate::dsp::Dim { w, h },
             );
             let want = [

@@ -34,7 +34,11 @@ fn visible_i420(pic: &Picture) -> Vec<u8> {
 #[test]
 fn banm_first_p_frame_bit_exact_vs_c_oracle() {
     let frames = decode_stream(BANM).expect("decode BANM stream");
-    assert!(frames.len() >= 2, "expected at least 2 frames, got {}", frames.len());
+    assert!(
+        frames.len() >= 2,
+        "expected at least 2 frames, got {}",
+        frames.len()
+    );
 
     // Frame 0 (IDR) must still match, and frame 1 (first P frame) too.
     let f0 = visible_i420(&frames[0]);

@@ -5,8 +5,8 @@
 //! the next P frame is coded against.
 #![cfg(feature = "threads")]
 
-use h264::encoder::{Encoder, FrameInput};
 use h264::Decoder;
+use h264::encoder::{Encoder, FrameInput};
 
 const W: usize = 320;
 const H: usize = 192; // 20x12 MBs — room for up to 12 slices
@@ -55,7 +55,10 @@ fn slice_parallel_ippp_byte_identical_to_serial() {
             for (y, u, v) in &frames {
                 let a = serial.encode_frame(y, W, u, v, W / 2);
                 let b = threaded.encode_frame_parallel(y, W, u, v, W / 2);
-                assert_eq!(a, b, "slice-parallel IPPP AU differs at slices={slices} qp={qp}");
+                assert_eq!(
+                    a, b,
+                    "slice-parallel IPPP AU differs at slices={slices} qp={qp}"
+                );
             }
         }
     }
@@ -83,13 +86,22 @@ fn frame_parallel_intra_byte_identical_to_serial() {
             let enc = Encoder::new_with_slices(W as u32, H as u32, qp, slices).unwrap();
             let inputs: Vec<FrameInput> = frames
                 .iter()
-                .map(|(y, u, v)| FrameInput { y, y_stride: W, u, v, c_stride: W / 2 })
+                .map(|(y, u, v)| FrameInput {
+                    y,
+                    y_stride: W,
+                    u,
+                    v,
+                    c_stride: W / 2,
+                })
                 .collect();
             let got = enc.encode_frames_parallel(&inputs);
 
             assert_eq!(got.len(), want.len());
             for (k, (a, b)) in want.iter().zip(got.iter()).enumerate() {
-                assert_eq!(a, b, "frame-parallel intra AU {k} differs at slices={slices} qp={qp}");
+                assert_eq!(
+                    a, b,
+                    "frame-parallel intra AU {k} differs at slices={slices} qp={qp}"
+                );
             }
         }
     }

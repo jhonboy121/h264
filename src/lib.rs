@@ -25,7 +25,7 @@ pub mod formats;
 pub use error::{DecodeError, EncodeError};
 
 #[cfg(feature = "decoder")]
-pub use api::{nal_units, Decoder};
+pub use api::{Decoder, nal_units};
 #[cfg(feature = "decoder")]
 pub use formats::yuv::{DecodedYuv, Frame, VisibleRegion, YUVSource};
 

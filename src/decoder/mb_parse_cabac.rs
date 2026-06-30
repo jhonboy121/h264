@@ -19,16 +19,16 @@ use crate::error::DecodeError;
 
 use super::cabac::{CabacContexts, CabacDecoder};
 use super::cabac_mb::{
-    coded_block_flag, residual_block_cabac, CHROMA_AC_U, CHROMA_AC_V, CHROMA_DC_U, CHROMA_DC_V,
-    I16_LUMA_AC, I16_LUMA_DC, LUMA_DC_AC, LUMA_DC_AC_8,
+    CHROMA_AC_U, CHROMA_AC_V, CHROMA_DC_U, CHROMA_DC_V, I16_LUMA_AC, I16_LUMA_DC, LUMA_DC_AC,
+    LUMA_DC_AC_8, coded_block_flag, residual_block_cabac,
 };
 use super::context::{DecoderContext, MbType, SubMbType};
 use super::mb_parse_cavlc::{
-    check_intra16x16_mode, check_intra_chroma_mode, check_intra_nxn_mode, chroma_dc_idct, clip3,
-    dequant8x8, luma_dc_dequant_idct, BLOCK_BX, BLOCK_BY, BLOCK_RASTER, CACHE30_SCAN_IDX,
-    CHROMA_QP_TABLE, I16_CBP_TABLE,
+    BLOCK_BX, BLOCK_BY, BLOCK_RASTER, CACHE30_SCAN_IDX, CHROMA_QP_TABLE, I16_CBP_TABLE,
+    check_intra_chroma_mode, check_intra_nxn_mode, check_intra16x16_mode, chroma_dc_idct, clip3,
+    dequant8x8, luma_dc_dequant_idct,
 };
-use super::mv_pred::{pred_inter16x8, pred_inter8x16, pred_mv, pred_p_skip_mv, SCAN4};
+use super::mv_pred::{SCAN4, pred_inter8x16, pred_inter16x8, pred_mv, pred_p_skip_mv};
 use super::params::Pps;
 
 type Result<T> = core::result::Result<T, DecodeError>;
@@ -200,13 +200,14 @@ impl Neigh {
             && ctx.slice_idc[mb_xy - ctx.mb_width + 1] == cur;
 
         // Constrained-intra availability: mask inter-coded neighbours.
-        let intra_ok = |avail: bool, xy: usize| avail && (!constrained || ctx.mb_type[xy].is_intra());
+        let intra_ok =
+            |avail: bool, xy: usize| avail && (!constrained || ctx.mb_type[xy].is_intra());
         let left_avail_intra = intra_ok(na.left, na.left_xy);
         let top_avail_intra = intra_ok(na.top, na.top_xy);
-        let left_top_avail_intra = na.top_left
-            && (!constrained || ctx.mb_type[mb_xy - ctx.mb_width - 1].is_intra());
-        let right_top_avail_intra = right_top_avail
-            && (!constrained || ctx.mb_type[mb_xy - ctx.mb_width + 1].is_intra());
+        let left_top_avail_intra =
+            na.top_left && (!constrained || ctx.mb_type[mb_xy - ctx.mb_width - 1].is_intra());
+        let right_top_avail_intra =
+            right_top_avail && (!constrained || ctx.mb_type[mb_xy - ctx.mb_width + 1].is_intra());
 
         type SnapResult = ([i8; 16], [i8; 8], [i8; 16], bool, i8, u8, u16, MbType, bool);
         let snap = |avail: bool, xy: usize| -> SnapResult {
@@ -218,9 +219,29 @@ impl Neigh {
                 nc.copy_from_slice(ctx.nzc_chroma_mb(xy));
                 bm.copy_from_slice(&ctx.i4_best_mode[xy * 16..xy * 16 + 16]);
                 let t = ctx.mb_type[xy];
-                (nl, nc, bm, t.is_intra_nxn(), ctx.chroma_mode[xy], ctx.cbp[xy], ctx.cbf_dc[xy], t, t.is_skip())
+                (
+                    nl,
+                    nc,
+                    bm,
+                    t.is_intra_nxn(),
+                    ctx.chroma_mode[xy],
+                    ctx.cbp[xy],
+                    ctx.cbf_dc[xy],
+                    t,
+                    t.is_skip(),
+                )
             } else {
-                ([-1; 16], [-1; 8], [-1; 16], false, 0, 0, 0, MbType::Intra4x4, false)
+                (
+                    [-1; 16],
+                    [-1; 8],
+                    [-1; 16],
+                    false,
+                    0,
+                    0,
+                    0,
+                    MbType::Intra4x4,
+                    false,
+                )
             }
         };
 
@@ -412,7 +433,11 @@ fn parse_cbp(dec: &mut CabacDecoder, ctxs: &mut CabacContexts, n: &Neigh) -> u32
 }
 
 /// `ParseDeltaQpCabac`: signed mb_qp_delta.
-fn parse_delta_qp(dec: &mut CabacDecoder, ctxs: &mut CabacContexts, last_delta_qp: &mut i32) -> i32 {
+fn parse_delta_qp(
+    dec: &mut CabacDecoder,
+    ctxs: &mut CabacContexts,
+    last_delta_qp: &mut i32,
+) -> i32 {
     let base = NEW_CTX_OFFSET_DELTA_QP;
     let ctx_inc = (*last_delta_qp != 0) as usize;
     let mut delta = 0i32;
@@ -580,8 +605,19 @@ fn parse_residuals_cabac(
     out: ResidualOut,
     coeffs: &mut [i16; 384],
 ) {
-    let ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 } = params;
-    let ResidualOut { cur_nzc_luma, cur_nzc_chroma, cur_cbf_dc } = out;
+    let ResidualParams {
+        mb_type,
+        cbp_l,
+        cbp_c,
+        luma_qp,
+        chroma_qp,
+        transform_8x8,
+    } = params;
+    let ResidualOut {
+        cur_nzc_luma,
+        cur_nzc_chroma,
+        cur_cbf_dc,
+    } = out;
     let mut cache = [0i16; 48];
     fill_nzc_cache(&mut cache, n);
     let cur_intra = mb_type.is_intra();
@@ -725,7 +761,11 @@ fn parse_residuals_cabac(
 /// sample bytes from the bitstream and re-initialise the arithmetic engine past
 /// them, copy the samples into the picture, and commit PCM MB state (QP=0,
 /// nnz=16). Shared by the I- and P-slice CABAC paths.
-fn decode_pcm_mb_cabac(dec: &mut CabacDecoder, ctx: &mut DecoderContext, mb_xy: usize) -> Result<()> {
+fn decode_pcm_mb_cabac(
+    dec: &mut CabacDecoder,
+    ctx: &mut DecoderContext,
+    mb_xy: usize,
+) -> Result<()> {
     let raw = dec.read_pcm_bytes()?;
     let mut luma = [0u8; 256];
     luma.copy_from_slice(&raw[0..256]);
@@ -748,7 +788,15 @@ pub fn decode_mb_cabac_islice(
     let MbCtx { ctx, mb_xy, pps } = mb;
     let n = Neigh::build(ctx, mb_xy, pps.constrained_intra_pred_flag);
     let ui_mb_type = parse_mb_type_i(dec, ctxs, &n);
-    decode_intra_mb_body(dec, ctxs, MbCtx { ctx, mb_xy, pps }, qp, coeffs, &n, ui_mb_type)?;
+    decode_intra_mb_body(
+        dec,
+        ctxs,
+        MbCtx { ctx, mb_xy, pps },
+        qp,
+        coeffs,
+        &n,
+        ui_mb_type,
+    )?;
     Ok(parse_end_of_slice(dec))
 }
 
@@ -764,7 +812,10 @@ fn decode_intra_mb_body(
     ui_mb_type: u32,
 ) -> Result<()> {
     let MbCtx { ctx, mb_xy, pps } = mb;
-    let QpState { last_mb_qp, last_delta_qp } = qp;
+    let QpState {
+        last_mb_qp,
+        last_delta_qp,
+    } = qp;
     if ui_mb_type == 25 {
         return decode_pcm_mb_cabac(dec, ctx, mb_xy);
     }
@@ -796,7 +847,8 @@ fn decode_intra_mb_body(
             chroma_mode = cm;
             i8_avail = avail8;
         } else {
-            chroma_mode = parse_intra4x4_cabac(dec, ctxs, ctx, mb_xy, n, &mut best_mode, &mut final_mode)?;
+            chroma_mode =
+                parse_intra4x4_cabac(dec, ctxs, ctx, mb_xy, n, &mut best_mode, &mut final_mode)?;
         }
         let cbp_v = parse_cbp(dec, ctxs, n);
         cbp = cbp_v as u8;
@@ -840,7 +892,14 @@ fn decode_intra_mb_body(
             dec,
             ctxs,
             n,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 },
+            ResidualParams {
+                mb_type,
+                cbp_l,
+                cbp_c,
+                luma_qp,
+                chroma_qp,
+                transform_8x8,
+            },
             ResidualOut {
                 cur_nzc_luma: &mut cur_nzc_luma,
                 cur_nzc_chroma: &mut cur_nzc_chroma,
@@ -875,11 +934,7 @@ fn decode_intra_mb_body(
 }
 
 /// `ParseTransformSize8x8FlagCabac`.
-fn parse_transform_size_8x8(
-    dec: &mut CabacDecoder,
-    ctxs: &mut CabacContexts,
-    n: &Neigh,
-) -> bool {
+fn parse_transform_size_8x8(dec: &mut CabacDecoder, ctxs: &mut CabacContexts, n: &Neigh) -> bool {
     // ctxIdxInc = condTermFlagA + condTermFlagB, each set when the available
     // left/top neighbour itself used the 8x8 transform.
     let ctx_inc = n.left_t8 as usize + n.top_t8 as usize;
@@ -940,14 +995,24 @@ fn parse_intra4x4_cabac(
     final_mode: &mut [i8; 16],
 ) -> Result<i8> {
     let top_modes: [i8; 4] = if n.top_avail_intra && n.top_is_nxn {
-        [n.top_best[12], n.top_best[13], n.top_best[14], n.top_best[15]]
+        [
+            n.top_best[12],
+            n.top_best[13],
+            n.top_best[14],
+            n.top_best[15],
+        ]
     } else if n.top_avail_intra {
         [2; 4]
     } else {
         [-1; 4]
     };
     let left_modes: [i8; 4] = if n.left_avail_intra && n.left_is_nxn {
-        [n.left_best[3], n.left_best[7], n.left_best[11], n.left_best[15]]
+        [
+            n.left_best[3],
+            n.left_best[7],
+            n.left_best[11],
+            n.left_best[15],
+        ]
     } else if n.left_avail_intra {
         [2; 4]
     } else {
@@ -980,8 +1045,16 @@ fn parse_intra4x4_cabac(
         let by = BLOCK_BY[i];
 
         let code = parse_ipr_luma(dec, ctxs);
-        let top_mode = if by > 0 { best_mode[(by - 1) * 4 + bx] } else { top_modes[bx] };
-        let left_mode = if bx > 0 { best_mode[by * 4 + bx - 1] } else { left_modes[by] };
+        let top_mode = if by > 0 {
+            best_mode[(by - 1) * 4 + bx]
+        } else {
+            top_modes[bx]
+        };
+        let left_mode = if bx > 0 {
+            best_mode[by * 4 + bx - 1]
+        } else {
+            left_modes[by]
+        };
         let pred_mode = if left_mode == -1 || top_mode == -1 {
             2
         } else {
@@ -1000,8 +1073,7 @@ fn parse_intra4x4_cabac(
 
     let cm = parse_ipr_chroma(dec, ctxs, n);
     let mut chroma_mode = cm as i8;
-    let chroma_neigh_avail =
-        ((sample_avail[6]) << 2) | ((sample_avail[0]) << 1) | sample_avail[1];
+    let chroma_neigh_avail = ((sample_avail[6]) << 2) | ((sample_avail[0]) << 1) | sample_avail[1];
     check_intra_chroma_mode(chroma_neigh_avail, &mut chroma_mode)?;
     Ok(chroma_mode)
 }
@@ -1017,14 +1089,24 @@ fn parse_intra8x8_cabac(
     final_mode: &mut [i8; 16],
 ) -> Result<(i8, u8)> {
     let top_modes: [i8; 4] = if n.top_avail_intra && n.top_is_nxn {
-        [n.top_best[12], n.top_best[13], n.top_best[14], n.top_best[15]]
+        [
+            n.top_best[12],
+            n.top_best[13],
+            n.top_best[14],
+            n.top_best[15],
+        ]
     } else if n.top_avail_intra {
         [2; 4]
     } else {
         [-1; 4]
     };
     let left_modes: [i8; 4] = if n.left_avail_intra && n.left_is_nxn {
-        [n.left_best[3], n.left_best[7], n.left_best[11], n.left_best[15]]
+        [
+            n.left_best[3],
+            n.left_best[7],
+            n.left_best[11],
+            n.left_best[15],
+        ]
     } else if n.left_avail_intra {
         [2; 4]
     } else {
@@ -1092,8 +1174,7 @@ fn parse_intra8x8_cabac(
 
     let cm = parse_ipr_chroma(dec, ctxs, n);
     let mut chroma_mode = cm as i8;
-    let chroma_neigh_avail =
-        ((sample_avail[6]) << 2) | ((sample_avail[0]) << 1) | sample_avail[1];
+    let chroma_neigh_avail = ((sample_avail[6]) << 2) | ((sample_avail[0]) << 1) | sample_avail[1];
     check_intra_chroma_mode(chroma_neigh_avail, &mut chroma_mode)?;
     Ok((chroma_mode, avail8))
 }
@@ -1133,8 +1214,10 @@ impl InterCacheC {
         let mut mv = [[0i16; 2]; 30];
         let mut ref_idx = [REF_NOT_AVAIL_C; 30];
         let mut mvd = [[0i16; 2]; 30];
-        let mv_of = |xy: usize, b: usize| [ctx.mv[(xy * 16 + b) * 2], ctx.mv[(xy * 16 + b) * 2 + 1]];
-        let mvd_of = |xy: usize, b: usize| [ctx.mvd[(xy * 16 + b) * 2], ctx.mvd[(xy * 16 + b) * 2 + 1]];
+        let mv_of =
+            |xy: usize, b: usize| [ctx.mv[(xy * 16 + b) * 2], ctx.mv[(xy * 16 + b) * 2 + 1]];
+        let mvd_of =
+            |xy: usize, b: usize| [ctx.mvd[(xy * 16 + b) * 2], ctx.mvd[(xy * 16 + b) * 2 + 1]];
         let ref_of = |xy: usize, b: usize| ctx.ref_idx[xy * 16 + b];
 
         if left && ctx.mb_type[left_xy].is_inter() {
@@ -1145,7 +1228,11 @@ impl InterCacheC {
                 ref_idx[c] = ref_of(left_xy, b);
             }
         } else {
-            let r = if left { REF_NOT_IN_LIST_C } else { REF_NOT_AVAIL_C };
+            let r = if left {
+                REF_NOT_IN_LIST_C
+            } else {
+                REF_NOT_AVAIL_C
+            };
             for &c in &[6usize, 12, 18, 24] {
                 ref_idx[c] = r;
             }
@@ -1155,7 +1242,11 @@ impl InterCacheC {
             mvd[0] = mvd_of(left_top_xy, 15);
             ref_idx[0] = ref_of(left_top_xy, 15);
         } else {
-            ref_idx[0] = if left_top { REF_NOT_IN_LIST_C } else { REF_NOT_AVAIL_C };
+            ref_idx[0] = if left_top {
+                REF_NOT_IN_LIST_C
+            } else {
+                REF_NOT_AVAIL_C
+            };
         }
         if top && ctx.mb_type[top_xy].is_inter() {
             for (k, &b) in [12usize, 13, 14, 15].iter().enumerate() {
@@ -1165,7 +1256,11 @@ impl InterCacheC {
                 ref_idx[c] = ref_of(top_xy, b);
             }
         } else {
-            let r = if top { REF_NOT_IN_LIST_C } else { REF_NOT_AVAIL_C };
+            let r = if top {
+                REF_NOT_IN_LIST_C
+            } else {
+                REF_NOT_AVAIL_C
+            };
             for slot in &mut ref_idx[1..=4] {
                 *slot = r;
             }
@@ -1175,7 +1270,11 @@ impl InterCacheC {
             mvd[5] = mvd_of(right_top_xy, 12);
             ref_idx[5] = ref_of(right_top_xy, 12);
         } else {
-            ref_idx[5] = if right_top { REF_NOT_IN_LIST_C } else { REF_NOT_AVAIL_C };
+            ref_idx[5] = if right_top {
+                REF_NOT_IN_LIST_C
+            } else {
+                REF_NOT_AVAIL_C
+            };
         }
         for &c in &[9usize, 11, 17, 21, 23] {
             ref_idx[c] = REF_NOT_AVAIL_C;
@@ -1340,11 +1439,22 @@ pub fn decode_mb_cabac_pslice(
         } else if ui_mb_type == 30 {
             decode_pcm_mb_cabac(dec, ctx, mb_xy)?;
         } else {
-            decode_intra_mb_body(dec, ctxs, MbCtx { ctx, mb_xy, pps }, qp, coeffs, &n, ui_mb_type - 5)?;
+            decode_intra_mb_body(
+                dec,
+                ctxs,
+                MbCtx { ctx, mb_xy, pps },
+                qp,
+                coeffs,
+                &n,
+                ui_mb_type - 5,
+            )?;
         }
     } else {
         // P_Skip.
-        let QpState { last_mb_qp, last_delta_qp } = qp;
+        let QpState {
+            last_mb_qp,
+            last_delta_qp,
+        } = qp;
         let mv = pred_p_skip_mv(ctx, mb_xy);
         let ref_pic_id = if ref_count > 0 { ref_pic_ids[0] } else { -1 };
         for raster in 0..16 {
@@ -1357,7 +1467,11 @@ pub fn decode_mb_cabac_pslice(
         let luma_qp = *last_mb_qp;
         *last_delta_qp = 0;
         commit_inter_meta(
-            MbCtx { ctx: &mut *ctx, mb_xy, pps },
+            MbCtx {
+                ctx: &mut *ctx,
+                mb_xy,
+                pps,
+            },
             MbType::PSkip,
             0,
             luma_qp,
@@ -1401,7 +1515,10 @@ fn parse_inter_mb_cabac(
     coeffs: &mut [i16; 384],
 ) -> Result<()> {
     let MbCtx { ctx, mb_xy, pps } = mb;
-    let QpState { last_mb_qp, last_delta_qp } = qp;
+    let QpState {
+        last_mb_qp,
+        last_delta_qp,
+    } = qp;
     let InterRefs { n, ref_pic_ids } = refs;
     let mb_type = match ui_mb_type {
         0 => MbType::Inter16x16,
@@ -1418,8 +1535,15 @@ fn parse_inter_mb_cabac(
     parse_inter_motion_cabac(
         dec,
         ctxs,
-        MbCtx { ctx: &mut *ctx, mb_xy, pps },
-        MotionState { cache: &mut cache, cur_ref: &mut cur_ref },
+        MbCtx {
+            ctx: &mut *ctx,
+            mb_xy,
+            pps,
+        },
+        MotionState {
+            cache: &mut cache,
+            cur_ref: &mut cur_ref,
+        },
         mb_type,
         ref_count,
         refs,
@@ -1430,7 +1554,18 @@ fn parse_inter_mb_cabac(
     let cbp_l = cbp & 0x0f;
     let cbp_c = cbp >> 4;
 
-    let transform_8x8 = parse_inter_t8_flag_cabac(dec, ctxs, MbCtx { ctx: &mut *ctx, mb_xy, pps }, n, mb_type, cbp_l);
+    let transform_8x8 = parse_inter_t8_flag_cabac(
+        dec,
+        ctxs,
+        MbCtx {
+            ctx: &mut *ctx,
+            mb_xy,
+            pps,
+        },
+        n,
+        mb_type,
+        cbp_l,
+    );
 
     let luma_qp: i32;
     let mut cur_nzc_luma = [0i8; 16];
@@ -1452,7 +1587,14 @@ fn parse_inter_mb_cabac(
             dec,
             ctxs,
             n,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 },
+            ResidualParams {
+                mb_type,
+                cbp_l,
+                cbp_c,
+                luma_qp,
+                chroma_qp,
+                transform_8x8,
+            },
             ResidualOut {
                 cur_nzc_luma: &mut cur_nzc_luma,
                 cur_nzc_chroma: &mut cur_nzc_chroma,
@@ -1465,7 +1607,11 @@ fn parse_inter_mb_cabac(
         luma_qp = *last_mb_qp;
     }
     commit_inter_meta(
-        MbCtx { ctx: &mut *ctx, mb_xy, pps },
+        MbCtx {
+            ctx: &mut *ctx,
+            mb_xy,
+            pps,
+        },
         mb_type,
         cbp,
         luma_qp,
@@ -1497,7 +1643,12 @@ fn parse_inter_motion_cabac(
                 cache,
                 cur_ref,
                 mb_xy,
-                BlockPlace { scan4: 0, cache_idx: CACHE30_SCAN_IDX[0], w: 4, h: 4 },
+                BlockPlace {
+                    scan4: 0,
+                    cache_idx: CACHE30_SCAN_IDX[0],
+                    w: 4,
+                    h: 4,
+                },
                 iref,
                 ref_pic_ids[iref as usize],
             );
@@ -1509,7 +1660,12 @@ fn parse_inter_motion_cabac(
                 ctx,
                 cache,
                 mb_xy,
-                BlockPlace { scan4: 0, cache_idx: CACHE30_SCAN_IDX[0], w: 4, h: 4 },
+                BlockPlace {
+                    scan4: 0,
+                    cache_idx: CACHE30_SCAN_IDX[0],
+                    w: 4,
+                    h: 4,
+                },
                 mv,
                 [mx, my],
             );
@@ -1524,7 +1680,12 @@ fn parse_inter_motion_cabac(
                     cache,
                     cur_ref,
                     mb_xy,
-                    BlockPlace { scan4: SCAN4[part], cache_idx: CACHE30_SCAN_IDX[part], w: 4, h: 2 },
+                    BlockPlace {
+                        scan4: SCAN4[part],
+                        cache_idx: CACHE30_SCAN_IDX[part],
+                        w: 4,
+                        h: 2,
+                    },
                     r[i],
                     ref_pic_ids[r[i] as usize],
                 );
@@ -1539,7 +1700,12 @@ fn parse_inter_motion_cabac(
                     ctx,
                     cache,
                     mb_xy,
-                    BlockPlace { scan4: SCAN4[part], cache_idx: CACHE30_SCAN_IDX[part], w: 4, h: 2 },
+                    BlockPlace {
+                        scan4: SCAN4[part],
+                        cache_idx: CACHE30_SCAN_IDX[part],
+                        w: 4,
+                        h: 2,
+                    },
                     mv,
                     [mx, my],
                 );
@@ -1555,7 +1721,12 @@ fn parse_inter_motion_cabac(
                     cache,
                     cur_ref,
                     mb_xy,
-                    BlockPlace { scan4: SCAN4[part], cache_idx: CACHE30_SCAN_IDX[part], w: 2, h: 4 },
+                    BlockPlace {
+                        scan4: SCAN4[part],
+                        cache_idx: CACHE30_SCAN_IDX[part],
+                        w: 2,
+                        h: 4,
+                    },
                     r[i],
                     ref_pic_ids[r[i] as usize],
                 );
@@ -1570,7 +1741,12 @@ fn parse_inter_motion_cabac(
                     ctx,
                     cache,
                     mb_xy,
-                    BlockPlace { scan4: SCAN4[part], cache_idx: CACHE30_SCAN_IDX[part], w: 2, h: 4 },
+                    BlockPlace {
+                        scan4: SCAN4[part],
+                        cache_idx: CACHE30_SCAN_IDX[part],
+                        w: 2,
+                        h: 4,
+                    },
                     mv,
                     [mx, my],
                 );
@@ -1596,7 +1772,11 @@ fn parse_inter_motion_cabac(
             let mut iref = [0i8; 4];
             for (i, ir) in iref.iter_mut().enumerate() {
                 let z = i << 2;
-                *ir = if ref0 { 0 } else { parse_ref_idx(dec, ctxs, cache, cur_ref, n, z, eff) as i8 };
+                *ir = if ref0 {
+                    0
+                } else {
+                    parse_ref_idx(dec, ctxs, cache, cur_ref, n, z, eff) as i8
+                };
                 let s8 = SCAN4[z];
                 let rp = ref_pic_ids[*ir as usize];
                 for &rr in &[s8, s8 + 1, s8 + 4, s8 + 5] {
@@ -1630,7 +1810,12 @@ fn parse_inter_motion_cabac(
                         ctx,
                         cache,
                         mb_xy,
-                        BlockPlace { scan4: SCAN4[part], cache_idx: CACHE30_SCAN_IDX[part], w, h },
+                        BlockPlace {
+                            scan4: SCAN4[part],
+                            cache_idx: CACHE30_SCAN_IDX[part],
+                            w,
+                            h,
+                        },
                         mv,
                         [mx, my],
                     );
@@ -1653,7 +1838,12 @@ fn store_ref_block(
     iref: i8,
     ref_pic: i32,
 ) {
-    let BlockPlace { scan4, cache_idx, w, h } = place;
+    let BlockPlace {
+        scan4,
+        cache_idx,
+        w,
+        h,
+    } = place;
     for by in 0..h {
         for bx in 0..w {
             let raster = scan4 + by * 4 + bx;
@@ -1675,7 +1865,12 @@ fn store_mvmvd_block(
     mv: [i16; 2],
     mvd: [i16; 2],
 ) {
-    let BlockPlace { scan4, cache_idx, w, h } = place;
+    let BlockPlace {
+        scan4,
+        cache_idx,
+        w,
+        h,
+    } = place;
     for by in 0..h {
         for bx in 0..w {
             let raster = scan4 + by * 4 + bx;
@@ -1694,7 +1889,7 @@ fn store_mvmvd_block(
 // ===================== B-slice (bi-predictive) macroblock parse (CABAC) =====
 
 use super::bdirect::ColRef;
-use super::mb_parse_cavlc::{apply_b_direct, dir_uses, BShape, B_MB_INFO, B_SUB_INFO};
+use super::mb_parse_cavlc::{B_MB_INFO, B_SUB_INFO, BShape, apply_b_direct, dir_uses};
 
 const NEW_CTX_OFFSET_B_MB_TYPE: usize = 27;
 const NEW_CTX_OFFSET_B_SUBMB_TYPE: usize = 36;
@@ -1755,7 +1950,11 @@ fn parse_mb_type_b(dec: &mut CabacDecoder, ctxs: &mut CabacContexts, n: &Neigh) 
 
 /// `DecodeCabacIntraMbType` with the given ctx base (32 for B): 0 = I_NxN,
 /// 1..24 = I_16x16, 25 = I_PCM.
-fn decode_cabac_intra_mb_type(dec: &mut CabacDecoder, ctxs: &mut CabacContexts, base: usize) -> u32 {
+fn decode_cabac_intra_mb_type(
+    dec: &mut CabacDecoder,
+    ctxs: &mut CabacContexts,
+    base: usize,
+) -> u32 {
     if dec.decode_decision(ctxs.ctx(base)) == 0 {
         return 0;
     }
@@ -1828,18 +2027,28 @@ impl BInterCacheC {
                 if list == 0 {
                     [ctx.mv[(xy * 16 + b) * 2], ctx.mv[(xy * 16 + b) * 2 + 1]]
                 } else {
-                    [ctx.mv_l1[(xy * 16 + b) * 2], ctx.mv_l1[(xy * 16 + b) * 2 + 1]]
+                    [
+                        ctx.mv_l1[(xy * 16 + b) * 2],
+                        ctx.mv_l1[(xy * 16 + b) * 2 + 1],
+                    ]
                 }
             };
             let mvd_of = |xy: usize, b: usize| {
                 if list == 0 {
                     [ctx.mvd[(xy * 16 + b) * 2], ctx.mvd[(xy * 16 + b) * 2 + 1]]
                 } else {
-                    [ctx.mvd_l1[(xy * 16 + b) * 2], ctx.mvd_l1[(xy * 16 + b) * 2 + 1]]
+                    [
+                        ctx.mvd_l1[(xy * 16 + b) * 2],
+                        ctx.mvd_l1[(xy * 16 + b) * 2 + 1],
+                    ]
                 }
             };
             let ref_of = |xy: usize, b: usize| {
-                if list == 0 { ctx.ref_idx[xy * 16 + b] } else { ctx.ref_idx_l1[xy * 16 + b] }
+                if list == 0 {
+                    ctx.ref_idx[xy * 16 + b]
+                } else {
+                    ctx.ref_idx_l1[xy * 16 + b]
+                }
             };
             let (m, d, r) = (&mut mv[list], &mut mvd[list], &mut ref_idx[list]);
             if left && ctx.mb_type[left_xy].is_inter() {
@@ -1850,7 +2059,11 @@ impl BInterCacheC {
                     r[c] = ref_of(left_xy, b);
                 }
             } else {
-                let v = if left { REF_NOT_IN_LIST_C } else { REF_NOT_AVAIL_C };
+                let v = if left {
+                    REF_NOT_IN_LIST_C
+                } else {
+                    REF_NOT_AVAIL_C
+                };
                 for &c in &[6usize, 12, 18, 24] {
                     r[c] = v;
                 }
@@ -1860,7 +2073,11 @@ impl BInterCacheC {
                 d[0] = mvd_of(left_top_xy, 15);
                 r[0] = ref_of(left_top_xy, 15);
             } else {
-                r[0] = if left_top { REF_NOT_IN_LIST_C } else { REF_NOT_AVAIL_C };
+                r[0] = if left_top {
+                    REF_NOT_IN_LIST_C
+                } else {
+                    REF_NOT_AVAIL_C
+                };
             }
             if top && ctx.mb_type[top_xy].is_inter() {
                 for (k, &b) in [12usize, 13, 14, 15].iter().enumerate() {
@@ -1869,7 +2086,11 @@ impl BInterCacheC {
                     r[1 + k] = ref_of(top_xy, b);
                 }
             } else {
-                let v = if top { REF_NOT_IN_LIST_C } else { REF_NOT_AVAIL_C };
+                let v = if top {
+                    REF_NOT_IN_LIST_C
+                } else {
+                    REF_NOT_AVAIL_C
+                };
                 for slot in &mut r[1..=4] {
                     *slot = v;
                 }
@@ -1879,7 +2100,11 @@ impl BInterCacheC {
                 d[5] = mvd_of(right_top_xy, 12);
                 r[5] = ref_of(right_top_xy, 12);
             } else {
-                r[5] = if right_top { REF_NOT_IN_LIST_C } else { REF_NOT_AVAIL_C };
+                r[5] = if right_top {
+                    REF_NOT_IN_LIST_C
+                } else {
+                    REF_NOT_AVAIL_C
+                };
             }
             for &c in &[9usize, 11, 17, 21, 23] {
                 r[c] = REF_NOT_AVAIL_C;
@@ -1906,12 +2131,28 @@ impl BInterCacheC {
             direct[5] = ctx.direct[right_top_xy * 16 + 12];
         }
 
-        BInterCacheC { mv, mvd, ref_idx, direct }
+        BInterCacheC {
+            mv,
+            mvd,
+            ref_idx,
+            direct,
+        }
     }
 
     fn store(&mut self, ctx: &mut DecoderContext, mb_xy: usize, place: BlockPlace, m: MotionB) {
-        let BlockPlace { scan4, cache_idx, w, h } = place;
-        let MotionB { list, mv, mvd, iref, ref_pic } = m;
+        let BlockPlace {
+            scan4,
+            cache_idx,
+            w,
+            h,
+        } = place;
+        let MotionB {
+            list,
+            mv,
+            mvd,
+            iref,
+            ref_pic,
+        } = m;
         for by in 0..h {
             for bx in 0..w {
                 let raster = scan4 + by * 4 + bx;
@@ -1983,7 +2224,11 @@ fn parse_ref_idx_b(
     n: &Neigh,
     q: RefQuery,
 ) -> i8 {
-    let RefQuery { list, z_index, active_ref } = q;
+    let RefQuery {
+        list,
+        z_index,
+        active_ref,
+    } = q;
     let (top_avail, left_avail) = (n.top_avail, n.left_avail);
     if active_ref == 1 {
         return 0;
@@ -1992,7 +2237,11 @@ fn parse_ref_idx_b(
     let scan = SCAN4[z_index];
     let ref_cache = &cache.ref_idx[list];
     let mb_ref = |b: usize| -> i8 {
-        if list == 0 { ctx.ref_idx[mb_xy * 16 + b] } else { ctx.ref_idx_l1[mb_xy * 16 + b] }
+        if list == 0 {
+            ctx.ref_idx[mb_xy * 16 + b]
+        } else {
+            ctx.ref_idx_l1[mb_xy * 16 + b]
+        }
     };
     let mb_dir = |b: usize| -> i8 { ctx.direct[mb_xy * 16 + b] };
     // (neighbour_used, neighbour_not_direct) for the A (left) and B (top) sides.
@@ -2054,12 +2303,33 @@ pub fn decode_mb_cabac_bslice(
 
     if parse_skip_flag_b(dec, ctxs, &n) {
         // B_Skip: direct prediction, no residual.
-        let QpState { last_mb_qp, last_delta_qp } = qp;
+        let QpState {
+            last_mb_qp,
+            last_delta_qp,
+        } = qp;
         ctx.mb_type[mb_xy] = MbType::BSkip;
-        apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true, bref.direct_spatial);
+        apply_b_direct(
+            ctx,
+            mb_xy,
+            bref.ref_pic_ids,
+            &bref.col,
+            true,
+            bref.direct_spatial,
+        );
         let luma_qp = *last_mb_qp;
         *last_delta_qp = 0;
-        commit_inter_meta(MbCtx { ctx: &mut *ctx, mb_xy, pps }, MbType::BSkip, 0, luma_qp, &[0; 16], &[0; 8]);
+        commit_inter_meta(
+            MbCtx {
+                ctx: &mut *ctx,
+                mb_xy,
+                pps,
+            },
+            MbType::BSkip,
+            0,
+            luma_qp,
+            &[0; 16],
+            &[0; 8],
+        );
         ctx.cbf_dc[mb_xy] = 0;
         return Ok(parse_end_of_slice(dec));
     }
@@ -2086,18 +2356,50 @@ pub fn decode_mb_cabac_bslice(
     ctx.mb_type[mb_xy] = mb_type;
 
     if info.shape == BShape::Direct {
-        apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true, bref.direct_spatial);
+        apply_b_direct(
+            ctx,
+            mb_xy,
+            bref.ref_pic_ids,
+            &bref.col,
+            true,
+            bref.direct_spatial,
+        );
     } else {
         let mut cache = BInterCacheC::build(ctx, mb_xy);
-        parse_b_motion_cabac(dec, ctxs, BMbWork { ctx: &mut *ctx, cache: &mut cache, mb_xy }, ui_mb_type, bref, &n)?;
+        parse_b_motion_cabac(
+            dec,
+            ctxs,
+            BMbWork {
+                ctx: &mut *ctx,
+                cache: &mut cache,
+                mb_xy,
+            },
+            ui_mb_type,
+            bref,
+            &n,
+        )?;
     }
 
-    let QpState { last_mb_qp, last_delta_qp } = qp;
+    let QpState {
+        last_mb_qp,
+        last_delta_qp,
+    } = qp;
     let cbp = parse_cbp(dec, ctxs, &n) as u8;
     let cbp_l = cbp & 0x0f;
     let cbp_c = cbp >> 4;
 
-    let transform_8x8 = parse_inter_t8_flag_cabac(dec, ctxs, MbCtx { ctx: &mut *ctx, mb_xy, pps }, &n, mb_type, cbp_l);
+    let transform_8x8 = parse_inter_t8_flag_cabac(
+        dec,
+        ctxs,
+        MbCtx {
+            ctx: &mut *ctx,
+            mb_xy,
+            pps,
+        },
+        &n,
+        mb_type,
+        cbp_l,
+    );
 
     let luma_qp: i32;
     let mut cur_nzc_luma = [0i8; 16];
@@ -2119,7 +2421,14 @@ pub fn decode_mb_cabac_bslice(
             dec,
             ctxs,
             &n,
-            ResidualParams { mb_type, cbp_l, cbp_c, luma_qp, chroma_qp, transform_8x8 },
+            ResidualParams {
+                mb_type,
+                cbp_l,
+                cbp_c,
+                luma_qp,
+                chroma_qp,
+                transform_8x8,
+            },
             ResidualOut {
                 cur_nzc_luma: &mut cur_nzc_luma,
                 cur_nzc_chroma: &mut cur_nzc_chroma,
@@ -2132,7 +2441,11 @@ pub fn decode_mb_cabac_bslice(
         luma_qp = *last_mb_qp;
     }
     commit_inter_meta(
-        MbCtx { ctx: &mut *ctx, mb_xy, pps },
+        MbCtx {
+            ctx: &mut *ctx,
+            mb_xy,
+            pps,
+        },
         mb_type,
         cbp,
         luma_qp,
@@ -2161,8 +2474,17 @@ fn parse_b_motion_cabac(
             for (list, slot) in iref.iter_mut().enumerate() {
                 if dir_uses(info.dir[0], list) {
                     *slot = parse_ref_idx_b(
-                        dec, ctxs, ctx, mb_xy, cache, n,
-                        RefQuery { list, z_index: 0, active_ref: bref.ref_count[list] },
+                        dec,
+                        ctxs,
+                        ctx,
+                        mb_xy,
+                        cache,
+                        n,
+                        RefQuery {
+                            list,
+                            z_index: 0,
+                            active_ref: bref.ref_count[list],
+                        },
                     );
                 }
             }
@@ -2172,9 +2494,41 @@ fn parse_b_motion_cabac(
                     let dx = parse_mvd_b(dec, ctxs, &cache.ref_idx[list], &cache.mvd[list], 0, 0);
                     let dy = parse_mvd_b(dec, ctxs, &cache.ref_idx[list], &cache.mvd[list], 0, 1);
                     let mv = [mvp[0] + dx, mvp[1] + dy];
-                    cache.store(ctx, mb_xy, BlockPlace { scan4: 0, cache_idx: CACHE30_SCAN_IDX[0], w: 4, h: 4 }, MotionB { list, mv, mvd: [dx, dy], iref: iref_l, ref_pic: bref.ref_pic_ids[list][iref_l as usize] });
+                    cache.store(
+                        ctx,
+                        mb_xy,
+                        BlockPlace {
+                            scan4: 0,
+                            cache_idx: CACHE30_SCAN_IDX[0],
+                            w: 4,
+                            h: 4,
+                        },
+                        MotionB {
+                            list,
+                            mv,
+                            mvd: [dx, dy],
+                            iref: iref_l,
+                            ref_pic: bref.ref_pic_ids[list][iref_l as usize],
+                        },
+                    );
                 } else {
-                    cache.store(ctx, mb_xy, BlockPlace { scan4: 0, cache_idx: CACHE30_SCAN_IDX[0], w: 4, h: 4 }, MotionB { list, mv: [0, 0], mvd: [0, 0], iref: REF_NOT_IN_LIST_C, ref_pic: -1 });
+                    cache.store(
+                        ctx,
+                        mb_xy,
+                        BlockPlace {
+                            scan4: 0,
+                            cache_idx: CACHE30_SCAN_IDX[0],
+                            w: 4,
+                            h: 4,
+                        },
+                        MotionB {
+                            list,
+                            mv: [0, 0],
+                            mvd: [0, 0],
+                            iref: REF_NOT_IN_LIST_C,
+                            ref_pic: -1,
+                        },
+                    );
                 }
             }
         }
@@ -2191,8 +2545,17 @@ fn parse_b_motion_cabac(
                     let part_idx = if is16x8 { p << 3 } else { p << 2 };
                     let r = if dir_uses(info.dir[p], list) {
                         parse_ref_idx_b(
-                            dec, ctxs, ctx, mb_xy, cache, n,
-                            RefQuery { list, z_index: part_idx, active_ref: bref.ref_count[list] },
+                            dec,
+                            ctxs,
+                            ctx,
+                            mb_xy,
+                            cache,
+                            n,
+                            RefQuery {
+                                list,
+                                z_index: part_idx,
+                                active_ref: bref.ref_count[list],
+                            },
                         )
                     } else {
                         REF_NOT_IN_LIST_C
@@ -2222,18 +2585,74 @@ fn parse_b_motion_cabac(
                         } else {
                             pred_inter8x16(&cache.mv[list], &cache.ref_idx[list], part_idx, r)
                         };
-                        let dx = parse_mvd_b(dec, ctxs, &cache.ref_idx[list], &cache.mvd[list], part_idx, 0);
-                        let dy = parse_mvd_b(dec, ctxs, &cache.ref_idx[list], &cache.mvd[list], part_idx, 1);
+                        let dx = parse_mvd_b(
+                            dec,
+                            ctxs,
+                            &cache.ref_idx[list],
+                            &cache.mvd[list],
+                            part_idx,
+                            0,
+                        );
+                        let dy = parse_mvd_b(
+                            dec,
+                            ctxs,
+                            &cache.ref_idx[list],
+                            &cache.mvd[list],
+                            part_idx,
+                            1,
+                        );
                         let mv = [mvp[0] + dx, mvp[1] + dy];
-                        cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx: cidx, w: pw, h: ph }, MotionB { list, mv, mvd: [dx, dy], iref: r, ref_pic: bref.ref_pic_ids[list][r as usize] });
+                        cache.store(
+                            ctx,
+                            mb_xy,
+                            BlockPlace {
+                                scan4,
+                                cache_idx: cidx,
+                                w: pw,
+                                h: ph,
+                            },
+                            MotionB {
+                                list,
+                                mv,
+                                mvd: [dx, dy],
+                                iref: r,
+                                ref_pic: bref.ref_pic_ids[list][r as usize],
+                            },
+                        );
                     } else {
-                        cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx: cidx, w: pw, h: ph }, MotionB { list, mv: [0, 0], mvd: [0, 0], iref: REF_NOT_IN_LIST_C, ref_pic: -1 });
+                        cache.store(
+                            ctx,
+                            mb_xy,
+                            BlockPlace {
+                                scan4,
+                                cache_idx: cidx,
+                                w: pw,
+                                h: ph,
+                            },
+                            MotionB {
+                                list,
+                                mv: [0, 0],
+                                mvd: [0, 0],
+                                iref: REF_NOT_IN_LIST_C,
+                                ref_pic: -1,
+                            },
+                        );
                     }
                 }
             }
         }
         BShape::P8x8 => {
-            parse_b_8x8_cabac(dec, ctxs, BMbWork { ctx: &mut *ctx, cache: &mut *cache, mb_xy }, bref, n)?;
+            parse_b_8x8_cabac(
+                dec,
+                ctxs,
+                BMbWork {
+                    ctx: &mut *ctx,
+                    cache: &mut *cache,
+                    mb_xy,
+                },
+                bref,
+                n,
+            )?;
         }
         BShape::Direct => unreachable!(),
     }
@@ -2264,8 +2683,16 @@ fn parse_b_8x8_cabac(
     };
     let direct_refpic = direct.as_ref().map(|d| {
         [
-            if d.iref[0] >= 0 && (d.iref[0] as usize) < bref.ref_pic_ids[0].len() { bref.ref_pic_ids[0][d.iref[0] as usize] } else { -1 },
-            if d.iref[1] >= 0 && (d.iref[1] as usize) < bref.ref_pic_ids[1].len() { bref.ref_pic_ids[1][d.iref[1] as usize] } else { -1 },
+            if d.iref[0] >= 0 && (d.iref[0] as usize) < bref.ref_pic_ids[0].len() {
+                bref.ref_pic_ids[0][d.iref[0] as usize]
+            } else {
+                -1
+            },
+            if d.iref[1] >= 0 && (d.iref[1] as usize) < bref.ref_pic_ids[1].len() {
+                bref.ref_pic_ids[1][d.iref[1] as usize]
+            } else {
+                -1
+            },
         ]
     });
 
@@ -2275,7 +2702,18 @@ fn parse_b_8x8_cabac(
         if sinfo.direct {
             if bref.direct_spatial {
                 let d = direct.as_ref().unwrap();
-                super::bdirect::fill_direct_8x8(ctx, mb_xy, super::bdirect::Part8x8 { idx8: i, part_count: 1, part_w: 2 }, d, &bref.col, direct_refpic.unwrap());
+                super::bdirect::fill_direct_8x8(
+                    ctx,
+                    mb_xy,
+                    super::bdirect::Part8x8 {
+                        idx8: i,
+                        part_count: 1,
+                        part_w: 2,
+                    },
+                    d,
+                    &bref.col,
+                    direct_refpic.unwrap(),
+                );
             } else {
                 super::bdirect::b_direct_temporal_sub(ctx, mb_xy, i, &bref.col);
             }
@@ -2284,9 +2722,15 @@ fn parse_b_8x8_cabac(
             for p in 0..4 {
                 let scan4 = SCAN4[base_part + p];
                 let c = CACHE30_SCAN_IDX[base_part + p];
-                cache.mv[0][c] = [ctx.mv[(mb_xy * 16 + scan4) * 2], ctx.mv[(mb_xy * 16 + scan4) * 2 + 1]];
+                cache.mv[0][c] = [
+                    ctx.mv[(mb_xy * 16 + scan4) * 2],
+                    ctx.mv[(mb_xy * 16 + scan4) * 2 + 1],
+                ];
                 cache.ref_idx[0][c] = ctx.ref_idx[mb_xy * 16 + scan4];
-                cache.mv[1][c] = [ctx.mv_l1[(mb_xy * 16 + scan4) * 2], ctx.mv_l1[(mb_xy * 16 + scan4) * 2 + 1]];
+                cache.mv[1][c] = [
+                    ctx.mv_l1[(mb_xy * 16 + scan4) * 2],
+                    ctx.mv_l1[(mb_xy * 16 + scan4) * 2 + 1],
+                ];
                 cache.ref_idx[1][c] = ctx.ref_idx_l1[mb_xy * 16 + scan4];
             }
         }
@@ -2301,7 +2745,14 @@ fn parse_b_8x8_cabac(
                 if bref.direct_spatial {
                     let d = direct.as_ref().unwrap();
                     irefs[i] = d.iref[list];
-                    set_8x8_ref_ctx(ctx, mb_xy, i, list, d.iref[list], direct_refpic.unwrap()[list]);
+                    set_8x8_ref_ctx(
+                        ctx,
+                        mb_xy,
+                        i,
+                        list,
+                        d.iref[list],
+                        direct_refpic.unwrap()[list],
+                    );
                 } else {
                     // Temporal direct: the colocated-derived reference index is
                     // also the neighbour-prediction value. The C reference writes
@@ -2319,8 +2770,17 @@ fn parse_b_8x8_cabac(
                 }
             } else if dir_uses(sinfo.dir, list) {
                 let r = parse_ref_idx_b(
-                    dec, ctxs, ctx, mb_xy, cache, n,
-                    RefQuery { list, z_index: i << 2, active_ref: bref.ref_count[list] },
+                    dec,
+                    ctxs,
+                    ctx,
+                    mb_xy,
+                    cache,
+                    n,
+                    RefQuery {
+                        list,
+                        z_index: i << 2,
+                        active_ref: bref.ref_count[list],
+                    },
                 );
                 irefs[i] = r;
                 set_8x8_ref_ctx(ctx, mb_xy, i, list, r, bref.ref_pic_ids[list][r as usize]);
@@ -2354,13 +2814,69 @@ fn parse_b_8x8_cabac(
                     SubMbType::P4x4 => (1, 1),
                 };
                 if uses {
-                    let mvp = pred_mv(&cache.mv[list], &cache.ref_idx[list], part_idx, sinfo.part_w, r);
-                    let dx = parse_mvd_b(dec, ctxs, &cache.ref_idx[list], &cache.mvd[list], part_idx, 0);
-                    let dy = parse_mvd_b(dec, ctxs, &cache.ref_idx[list], &cache.mvd[list], part_idx, 1);
+                    let mvp = pred_mv(
+                        &cache.mv[list],
+                        &cache.ref_idx[list],
+                        part_idx,
+                        sinfo.part_w,
+                        r,
+                    );
+                    let dx = parse_mvd_b(
+                        dec,
+                        ctxs,
+                        &cache.ref_idx[list],
+                        &cache.mvd[list],
+                        part_idx,
+                        0,
+                    );
+                    let dy = parse_mvd_b(
+                        dec,
+                        ctxs,
+                        &cache.ref_idx[list],
+                        &cache.mvd[list],
+                        part_idx,
+                        1,
+                    );
                     let mv = [mvp[0] + dx, mvp[1] + dy];
-                    cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx: cidx, w, h }, MotionB { list, mv, mvd: [dx, dy], iref: r, ref_pic: if r >= 0 { bref.ref_pic_ids[list][r as usize] } else { -1 } });
+                    cache.store(
+                        ctx,
+                        mb_xy,
+                        BlockPlace {
+                            scan4,
+                            cache_idx: cidx,
+                            w,
+                            h,
+                        },
+                        MotionB {
+                            list,
+                            mv,
+                            mvd: [dx, dy],
+                            iref: r,
+                            ref_pic: if r >= 0 {
+                                bref.ref_pic_ids[list][r as usize]
+                            } else {
+                                -1
+                            },
+                        },
+                    );
                 } else {
-                    cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx: cidx, w, h }, MotionB { list, mv: [0, 0], mvd: [0, 0], iref: REF_NOT_IN_LIST_C, ref_pic: -1 });
+                    cache.store(
+                        ctx,
+                        mb_xy,
+                        BlockPlace {
+                            scan4,
+                            cache_idx: cidx,
+                            w,
+                            h,
+                        },
+                        MotionB {
+                            list,
+                            mv: [0, 0],
+                            mvd: [0, 0],
+                            iref: REF_NOT_IN_LIST_C,
+                            ref_pic: -1,
+                        },
+                    );
                 }
             }
         }
@@ -2369,7 +2885,14 @@ fn parse_b_8x8_cabac(
 }
 
 /// Set the reference index for a whole 8x8 (4 blocks) in `ctx` (and mvd=0).
-fn set_8x8_ref_ctx(ctx: &mut DecoderContext, mb_xy: usize, idx8: usize, list: usize, iref: i8, ref_pic: i32) {
+fn set_8x8_ref_ctx(
+    ctx: &mut DecoderContext,
+    mb_xy: usize,
+    idx8: usize,
+    list: usize,
+    iref: i8,
+    ref_pic: i32,
+) {
     let scan8 = SCAN4[idx8 << 2];
     for &raster in &[scan8, scan8 + 1, scan8 + 4, scan8 + 5] {
         if list == 0 {

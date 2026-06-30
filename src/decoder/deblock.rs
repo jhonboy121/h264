@@ -17,8 +17,8 @@
 //! differ or the MVs differ by >= 4 quarter-pel, else 0.
 
 use crate::dsp::deblock::{
-    ChromaPair, deblock_chroma_eq42, deblock_chroma_eq4_h, deblock_chroma_eq4_v,
-    deblock_chroma_lt42, deblock_chroma_lt4_h, deblock_chroma_lt4_v, deblock_luma_eq4_h,
+    ChromaPair, deblock_chroma_eq4_h, deblock_chroma_eq4_v, deblock_chroma_eq42,
+    deblock_chroma_lt4_h, deblock_chroma_lt4_v, deblock_chroma_lt42, deblock_luma_eq4_h,
     deblock_luma_eq4_v, deblock_luma_lt4_h, deblock_luma_lt4_v,
 };
 
@@ -99,20 +99,82 @@ static BETA: [u8; 76] = [
 
 /// `g_kiTc0Table[52 + 24][4]`.
 static TC0: [[i8; 4]; 76] = [
-    [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0],
-    [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0],
-    [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0],
-    [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0],
-    [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 0], [-1, 0, 0, 1],
-    [-1, 0, 0, 1], [-1, 0, 0, 1], [-1, 0, 0, 1], [-1, 0, 1, 1], [-1, 0, 1, 1], [-1, 1, 1, 1],
-    [-1, 1, 1, 1], [-1, 1, 1, 1], [-1, 1, 1, 1], [-1, 1, 1, 2], [-1, 1, 1, 2], [-1, 1, 1, 2],
-    [-1, 1, 1, 2], [-1, 1, 2, 3], [-1, 1, 2, 3], [-1, 2, 2, 3], [-1, 2, 2, 4], [-1, 2, 3, 4],
-    [-1, 2, 3, 4], [-1, 3, 3, 5], [-1, 3, 4, 6], [-1, 3, 4, 6], [-1, 4, 5, 7], [-1, 4, 5, 8],
-    [-1, 4, 6, 9], [-1, 5, 7, 10], [-1, 6, 8, 11], [-1, 6, 8, 13], [-1, 7, 10, 14], [-1, 8, 11, 16],
-    [-1, 9, 12, 18], [-1, 10, 13, 20], [-1, 11, 15, 23], [-1, 13, 17, 25],
-    [-1, 13, 17, 25], [-1, 13, 17, 25], [-1, 13, 17, 25], [-1, 13, 17, 25], [-1, 13, 17, 25],
-    [-1, 13, 17, 25], [-1, 13, 17, 25], [-1, 13, 17, 25], [-1, 13, 17, 25], [-1, 13, 17, 25],
-    [-1, 13, 17, 25], [-1, 13, 17, 25],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 0],
+    [-1, 0, 0, 1],
+    [-1, 0, 0, 1],
+    [-1, 0, 0, 1],
+    [-1, 0, 0, 1],
+    [-1, 0, 1, 1],
+    [-1, 0, 1, 1],
+    [-1, 1, 1, 1],
+    [-1, 1, 1, 1],
+    [-1, 1, 1, 1],
+    [-1, 1, 1, 1],
+    [-1, 1, 1, 2],
+    [-1, 1, 1, 2],
+    [-1, 1, 1, 2],
+    [-1, 1, 1, 2],
+    [-1, 1, 2, 3],
+    [-1, 1, 2, 3],
+    [-1, 2, 2, 3],
+    [-1, 2, 2, 4],
+    [-1, 2, 3, 4],
+    [-1, 2, 3, 4],
+    [-1, 3, 3, 5],
+    [-1, 3, 4, 6],
+    [-1, 3, 4, 6],
+    [-1, 4, 5, 7],
+    [-1, 4, 5, 8],
+    [-1, 4, 6, 9],
+    [-1, 5, 7, 10],
+    [-1, 6, 8, 11],
+    [-1, 6, 8, 13],
+    [-1, 7, 10, 14],
+    [-1, 8, 11, 16],
+    [-1, 9, 12, 18],
+    [-1, 10, 13, 20],
+    [-1, 11, 15, 23],
+    [-1, 13, 17, 25],
+    [-1, 13, 17, 25],
+    [-1, 13, 17, 25],
+    [-1, 13, 17, 25],
+    [-1, 13, 17, 25],
+    [-1, 13, 17, 25],
+    [-1, 13, 17, 25],
+    [-1, 13, 17, 25],
+    [-1, 13, 17, 25],
+    [-1, 13, 17, 25],
+    [-1, 13, 17, 25],
+    [-1, 13, 17, 25],
+    [-1, 13, 17, 25],
 ];
 
 /// `GET_ALPHA_BETA_FROM_QP`: alpha from `qp + alpha_off`, beta from
@@ -187,16 +249,33 @@ fn deblock_intra_mb(
 
     // Snapshot QPs (copy out before borrowing the picture mutably).
     let cur_lqp = ctx.luma_qp[mb_xy] as i32;
-    let left_lqp = if left { ctx.luma_qp[mb_xy - 1] as i32 } else { 0 };
-    let top_lqp = if top { ctx.luma_qp[mb_xy - mb_width] as i32 } else { 0 };
-    let cur_cqp = [ctx.chroma_qp[mb_xy * 2] as i32, ctx.chroma_qp[mb_xy * 2 + 1] as i32];
+    let left_lqp = if left {
+        ctx.luma_qp[mb_xy - 1] as i32
+    } else {
+        0
+    };
+    let top_lqp = if top {
+        ctx.luma_qp[mb_xy - mb_width] as i32
+    } else {
+        0
+    };
+    let cur_cqp = [
+        ctx.chroma_qp[mb_xy * 2] as i32,
+        ctx.chroma_qp[mb_xy * 2 + 1] as i32,
+    ];
     let left_cqp = if left {
-        [ctx.chroma_qp[(mb_xy - 1) * 2] as i32, ctx.chroma_qp[(mb_xy - 1) * 2 + 1] as i32]
+        [
+            ctx.chroma_qp[(mb_xy - 1) * 2] as i32,
+            ctx.chroma_qp[(mb_xy - 1) * 2 + 1] as i32,
+        ]
     } else {
         [0, 0]
     };
     let top_cqp = if top {
-        [ctx.chroma_qp[(mb_xy - mb_width) * 2] as i32, ctx.chroma_qp[(mb_xy - mb_width) * 2 + 1] as i32]
+        [
+            ctx.chroma_qp[(mb_xy - mb_width) * 2] as i32,
+            ctx.chroma_qp[(mb_xy - mb_width) * 2 + 1] as i32,
+        ]
     } else {
         [0, 0]
     };
@@ -207,17 +286,34 @@ fn deblock_intra_mb(
     let c_off = ctx.picture.chroma_mb_offset(mb_x, mb_y);
 
     deblock_luma(
-        LumaPlane { y: &mut ctx.picture.y, y_off, stride: ystride },
+        LumaPlane {
+            y: &mut ctx.picture.y,
+            y_off,
+            stride: ystride,
+        },
         AvailEdges { left, top },
         EdgeOffsets { aoff, boff },
-        LumaQp { cur: cur_lqp, left: left_lqp, top: top_lqp },
+        LumaQp {
+            cur: cur_lqp,
+            left: left_lqp,
+            top: top_lqp,
+        },
         ctx.transform_8x8[mb_xy],
     );
     deblock_chroma(
-        ChromaPlanes { cb: &mut ctx.picture.u, cr: &mut ctx.picture.v, off: c_off, stride: cstride },
+        ChromaPlanes {
+            cb: &mut ctx.picture.u,
+            cr: &mut ctx.picture.v,
+            off: c_off,
+            stride: cstride,
+        },
         AvailEdges { left, top },
         EdgeOffsets { aoff, boff },
-        ChromaQp { cur: cur_cqp, left: left_cqp, top: top_cqp },
+        ChromaQp {
+            cur: cur_cqp,
+            left: left_cqp,
+            top: top_cqp,
+        },
     );
 }
 
@@ -231,7 +327,11 @@ fn deblock_luma(
     let LumaPlane { y, y_off, stride } = plane;
     let AvailEdges { left, top } = avail;
     let EdgeOffsets { aoff, boff } = edge;
-    let LumaQp { cur: cur_qp, left: left_qp, top: top_qp } = qp;
+    let LumaQp {
+        cur: cur_qp,
+        left: left_qp,
+        top: top_qp,
+    } = qp;
     // --- Vertical edges (filtered with the H kernels) ---
     if left {
         let qp = (cur_qp + left_qp + 1) >> 1;
@@ -274,30 +374,90 @@ fn deblock_luma(
 }
 
 fn deblock_chroma(planes: ChromaPlanes, avail: AvailEdges, edge: EdgeOffsets, qp_set: ChromaQp) {
-    let ChromaPlanes { cb, cr, off: c_off, stride } = planes;
+    let ChromaPlanes {
+        cb,
+        cr,
+        off: c_off,
+        stride,
+    } = planes;
     let AvailEdges { left, top } = avail;
     let EdgeOffsets { aoff, boff } = edge;
-    let ChromaQp { cur: cur_qp, left: left_qp, top: top_qp } = qp_set;
+    let ChromaQp {
+        cur: cur_qp,
+        left: left_qp,
+        top: top_qp,
+    } = qp_set;
     // --- Vertical edges (H kernels): left boundary x=0, internal x=4 ---
     if left {
-        let qp = [(cur_qp[0] + left_qp[0] + 1) >> 1, (cur_qp[1] + left_qp[1] + 1) >> 1];
-        chroma_edge_eq4(ChromaPlanes { cb: &mut *cb, cr: &mut *cr, off: c_off, stride }, EdgeOffsets { aoff, boff }, qp, true);
+        let qp = [
+            (cur_qp[0] + left_qp[0] + 1) >> 1,
+            (cur_qp[1] + left_qp[1] + 1) >> 1,
+        ];
+        chroma_edge_eq4(
+            ChromaPlanes {
+                cb: &mut *cb,
+                cr: &mut *cr,
+                off: c_off,
+                stride,
+            },
+            EdgeOffsets { aoff, boff },
+            qp,
+            true,
+        );
     }
-    chroma_edge_lt4(ChromaPlanes { cb: &mut *cb, cr: &mut *cr, off: c_off + 4, stride }, EdgeOffsets { aoff, boff }, cur_qp, true);
+    chroma_edge_lt4(
+        ChromaPlanes {
+            cb: &mut *cb,
+            cr: &mut *cr,
+            off: c_off + 4,
+            stride,
+        },
+        EdgeOffsets { aoff, boff },
+        cur_qp,
+        true,
+    );
 
     // --- Horizontal edges (V kernels): top boundary y=0, internal y=4 ---
     if top {
-        let qp = [(cur_qp[0] + top_qp[0] + 1) >> 1, (cur_qp[1] + top_qp[1] + 1) >> 1];
-        chroma_edge_eq4(ChromaPlanes { cb: &mut *cb, cr: &mut *cr, off: c_off, stride }, EdgeOffsets { aoff, boff }, qp, false);
+        let qp = [
+            (cur_qp[0] + top_qp[0] + 1) >> 1,
+            (cur_qp[1] + top_qp[1] + 1) >> 1,
+        ];
+        chroma_edge_eq4(
+            ChromaPlanes {
+                cb: &mut *cb,
+                cr: &mut *cr,
+                off: c_off,
+                stride,
+            },
+            EdgeOffsets { aoff, boff },
+            qp,
+            false,
+        );
     }
-    chroma_edge_lt4(ChromaPlanes { cb: &mut *cb, cr: &mut *cr, off: c_off + 4 * stride, stride }, EdgeOffsets { aoff, boff }, cur_qp, false);
+    chroma_edge_lt4(
+        ChromaPlanes {
+            cb: &mut *cb,
+            cr: &mut *cr,
+            off: c_off + 4 * stride,
+            stride,
+        },
+        EdgeOffsets { aoff, boff },
+        cur_qp,
+        false,
+    );
 }
 
 /// Strong (bS = 4) chroma edge. `vertical` selects the H (vertical-edge) vs V
 /// (horizontal-edge) kernel. Uses the two-plane kernel when Cb/Cr share a QP
 /// (always true for baseline), else the single-plane kernels per component.
 fn chroma_edge_eq4(planes: ChromaPlanes, edge: EdgeOffsets, qp: [i32; 2], vertical: bool) {
-    let ChromaPlanes { cb, cr, off, stride } = planes;
+    let ChromaPlanes {
+        cb,
+        cr,
+        off,
+        stride,
+    } = planes;
     let EdgeOffsets { aoff, boff } = edge;
     if qp[0] == qp[1] {
         let (a, b) = alpha_beta(qp[0], aoff, boff);
@@ -309,7 +469,11 @@ fn chroma_edge_eq4(planes: ChromaPlanes, edge: EdgeOffsets, qp: [i32; 2], vertic
             }
         }
     } else {
-        let (sx, sy) = if vertical { (1isize, stride as isize) } else { (stride as isize, 1isize) };
+        let (sx, sy) = if vertical {
+            (1isize, stride as isize)
+        } else {
+            (stride as isize, 1isize)
+        };
         for (i, plane) in [&mut *cb, &mut *cr].into_iter().enumerate() {
             let (a, b) = alpha_beta(qp[i], aoff, boff);
             if (a | b) != 0 {
@@ -321,20 +485,51 @@ fn chroma_edge_eq4(planes: ChromaPlanes, edge: EdgeOffsets, qp: [i32; 2], vertic
 
 /// Normal (bS = 3 internal) chroma edge.
 fn chroma_edge_lt4(planes: ChromaPlanes, edge: EdgeOffsets, qp: [i32; 2], vertical: bool) {
-    let ChromaPlanes { cb, cr, off, stride } = planes;
+    let ChromaPlanes {
+        cb,
+        cr,
+        off,
+        stride,
+    } = planes;
     let EdgeOffsets { aoff, boff } = edge;
     if qp[0] == qp[1] {
         let (a, b) = alpha_beta(qp[0], aoff, boff);
         if (a | b) != 0 {
             let tc = tc_uniform(qp[0], aoff, BS_INTERNAL, 1);
             if vertical {
-                deblock_chroma_lt4_h(ChromaPair { cb: &mut *cb, cb_off: off, cr: &mut *cr, cr_off: off }, stride, a, b, &tc);
+                deblock_chroma_lt4_h(
+                    ChromaPair {
+                        cb: &mut *cb,
+                        cb_off: off,
+                        cr: &mut *cr,
+                        cr_off: off,
+                    },
+                    stride,
+                    a,
+                    b,
+                    &tc,
+                );
             } else {
-                deblock_chroma_lt4_v(ChromaPair { cb: &mut *cb, cb_off: off, cr: &mut *cr, cr_off: off }, stride, a, b, &tc);
+                deblock_chroma_lt4_v(
+                    ChromaPair {
+                        cb: &mut *cb,
+                        cb_off: off,
+                        cr: &mut *cr,
+                        cr_off: off,
+                    },
+                    stride,
+                    a,
+                    b,
+                    &tc,
+                );
             }
         }
     } else {
-        let (sx, sy) = if vertical { (1isize, stride as isize) } else { (stride as isize, 1isize) };
+        let (sx, sy) = if vertical {
+            (1isize, stride as isize)
+        } else {
+            (stride as isize, 1isize)
+        };
         for (i, plane) in [&mut *cb, &mut *cr].into_iter().enumerate() {
             let (a, b) = alpha_beta(qp[i], aoff, boff);
             if (a | b) != 0 {
@@ -349,10 +544,7 @@ fn chroma_edge_lt4(planes: ChromaPlanes, edge: EdgeOffsets, qp: [i32; 2], vertic
 
 // g_kuiTableBIdx: per direction (0=vertical edge, 1=horizontal edge), the four
 // current-MB 4x4 raster indices [0..4] and the four neighbour indices [4..8].
-const TABLE_B_IDX: [[usize; 8]; 2] = [
-    [0, 4, 8, 12, 3, 7, 11, 15],
-    [0, 1, 2, 3, 12, 13, 14, 15],
-];
+const TABLE_B_IDX: [[usize; 8]; 2] = [[0, 4, 8, 12, 3, 7, 11, 15], [0, 1, 2, 3, 12, 13, 14, 15]];
 
 /// `g_kiTc0Table(indexA)[bs] + bchroma` for each of four segments, with `bs`
 /// taken as `nbs[k] & 3` exactly as `TC0_TBL_LOOKUP`.
@@ -446,7 +638,10 @@ fn inter_bs_b(
         r0: ctx.ref_pic_id[xy * 16 + r],
         r1: ctx.ref_pic_id_l1[xy * 16 + r],
         m0: [ctx.mv[(xy * 16 + r) * 2], ctx.mv[(xy * 16 + r) * 2 + 1]],
-        m1: [ctx.mv_l1[(xy * 16 + r) * 2], ctx.mv_l1[(xy * 16 + r) * 2 + 1]],
+        m1: [
+            ctx.mv_l1[(xy * 16 + r) * 2],
+            ctx.mv_l1[(xy * 16 + r) * 2 + 1],
+        ],
     };
 
     // MB boundaries (edge 0).
@@ -455,7 +650,11 @@ fn inter_bs_b(
         if !avail {
             continue;
         }
-        let nb_xy = if dir == 0 { mb_xy - 1 } else { mb_xy - mb_width };
+        let nb_xy = if dir == 0 {
+            mb_xy - 1
+        } else {
+            mb_xy - mb_width
+        };
         if ctx.mb_type[nb_xy].is_intra() {
             nbs[dir][0] = [4, 4, 4, 4];
             continue;
@@ -530,7 +729,11 @@ fn inter_bs(
         if !avail {
             continue;
         }
-        let nb_xy = if dir == 0 { mb_xy - 1 } else { mb_xy - mb_width };
+        let nb_xy = if dir == 0 {
+            mb_xy - 1
+        } else {
+            mb_xy - mb_width
+        };
         if ctx.mb_type[nb_xy].is_intra() {
             nbs[dir][0] = [4, 4, 4, 4];
             continue;
@@ -616,16 +819,33 @@ fn deblock_inter_mb(
     let aoff = ctx.deblock_alpha_off[mb_xy] as i32;
     let boff = ctx.deblock_beta_off[mb_xy] as i32;
     let cur_lqp = ctx.luma_qp[mb_xy] as i32;
-    let cur_cqp = [ctx.chroma_qp[mb_xy * 2] as i32, ctx.chroma_qp[mb_xy * 2 + 1] as i32];
-    let left_lqp = if left { ctx.luma_qp[mb_xy - 1] as i32 } else { 0 };
-    let top_lqp = if top { ctx.luma_qp[mb_xy - mb_width] as i32 } else { 0 };
+    let cur_cqp = [
+        ctx.chroma_qp[mb_xy * 2] as i32,
+        ctx.chroma_qp[mb_xy * 2 + 1] as i32,
+    ];
+    let left_lqp = if left {
+        ctx.luma_qp[mb_xy - 1] as i32
+    } else {
+        0
+    };
+    let top_lqp = if top {
+        ctx.luma_qp[mb_xy - mb_width] as i32
+    } else {
+        0
+    };
     let left_cqp = if left {
-        [ctx.chroma_qp[(mb_xy - 1) * 2] as i32, ctx.chroma_qp[(mb_xy - 1) * 2 + 1] as i32]
+        [
+            ctx.chroma_qp[(mb_xy - 1) * 2] as i32,
+            ctx.chroma_qp[(mb_xy - 1) * 2 + 1] as i32,
+        ]
     } else {
         [0, 0]
     };
     let top_cqp = if top {
-        [ctx.chroma_qp[(mb_xy - mb_width) * 2] as i32, ctx.chroma_qp[(mb_xy - mb_width) * 2 + 1] as i32]
+        [
+            ctx.chroma_qp[(mb_xy - mb_width) * 2] as i32,
+            ctx.chroma_qp[(mb_xy - mb_width) * 2 + 1] as i32,
+        ]
     } else {
         [0, 0]
     };
@@ -636,19 +856,36 @@ fn deblock_inter_mb(
     let c_off = ctx.picture.chroma_mb_offset(mb_x, mb_y);
 
     inter_luma(
-        LumaPlane { y: &mut ctx.picture.y, y_off, stride: ystride },
+        LumaPlane {
+            y: &mut ctx.picture.y,
+            y_off,
+            stride: ystride,
+        },
         &nbs,
         AvailEdges { left, top },
         EdgeOffsets { aoff, boff },
-        LumaQp { cur: cur_lqp, left: left_lqp, top: top_lqp },
+        LumaQp {
+            cur: cur_lqp,
+            left: left_lqp,
+            top: top_lqp,
+        },
         ctx.transform_8x8[mb_xy],
     );
     inter_chroma(
-        ChromaPlanes { cb: &mut ctx.picture.u, cr: &mut ctx.picture.v, off: c_off, stride: cstride },
+        ChromaPlanes {
+            cb: &mut ctx.picture.u,
+            cr: &mut ctx.picture.v,
+            off: c_off,
+            stride: cstride,
+        },
         &nbs,
         AvailEdges { left, top },
         EdgeOffsets { aoff, boff },
-        ChromaQp { cur: cur_cqp, left: left_cqp, top: top_cqp },
+        ChromaQp {
+            cur: cur_cqp,
+            left: left_cqp,
+            top: top_cqp,
+        },
     );
 }
 
@@ -663,7 +900,11 @@ fn inter_luma(
     let LumaPlane { y, y_off, stride } = plane;
     let AvailEdges { left, top } = avail;
     let EdgeOffsets { aoff, boff } = edge;
-    let LumaQp { cur: cur_qp, left: left_qp, top: top_qp } = qp;
+    let LumaQp {
+        cur: cur_qp,
+        left: left_qp,
+        top: top_qp,
+    } = qp;
     // For an 8x8-transform MB only the central internal edge (e == 2) is a
     // transform-block boundary; the e == 1 / e == 3 edges are not filtered.
     let skip_internal = |e: usize| transform_8x8 && e != 2;
@@ -721,30 +962,106 @@ fn inter_luma(
     }
 }
 
-fn inter_chroma(planes: ChromaPlanes, nbs: &[[[u8; 4]; 4]; 2], avail: AvailEdges, edge: EdgeOffsets, qp_set: ChromaQp) {
-    let ChromaPlanes { cb, cr, off: c_off, stride } = planes;
+fn inter_chroma(
+    planes: ChromaPlanes,
+    nbs: &[[[u8; 4]; 4]; 2],
+    avail: AvailEdges,
+    edge: EdgeOffsets,
+    qp_set: ChromaQp,
+) {
+    let ChromaPlanes {
+        cb,
+        cr,
+        off: c_off,
+        stride,
+    } = planes;
     let AvailEdges { left, top } = avail;
     let EdgeOffsets { aoff, boff } = edge;
-    let ChromaQp { cur: cur_qp, left: left_qp, top: top_qp } = qp_set;
+    let ChromaQp {
+        cur: cur_qp,
+        left: left_qp,
+        top: top_qp,
+    } = qp_set;
     // Vertical: boundary (bS from nbs[0][0]) then internal x=4 (nbs[0][2]).
     if left {
-        let qp = [(cur_qp[0] + left_qp[0] + 1) >> 1, (cur_qp[1] + left_qp[1] + 1) >> 1];
-        inter_chroma_edge(ChromaPlanes { cb: &mut *cb, cr: &mut *cr, off: c_off, stride }, EdgeOffsets { aoff, boff }, qp, &nbs[0][0], true);
+        let qp = [
+            (cur_qp[0] + left_qp[0] + 1) >> 1,
+            (cur_qp[1] + left_qp[1] + 1) >> 1,
+        ];
+        inter_chroma_edge(
+            ChromaPlanes {
+                cb: &mut *cb,
+                cr: &mut *cr,
+                off: c_off,
+                stride,
+            },
+            EdgeOffsets { aoff, boff },
+            qp,
+            &nbs[0][0],
+            true,
+        );
     }
-    inter_chroma_edge(ChromaPlanes { cb: &mut *cb, cr: &mut *cr, off: c_off + 4, stride }, EdgeOffsets { aoff, boff }, cur_qp, &nbs[0][2], true);
+    inter_chroma_edge(
+        ChromaPlanes {
+            cb: &mut *cb,
+            cr: &mut *cr,
+            off: c_off + 4,
+            stride,
+        },
+        EdgeOffsets { aoff, boff },
+        cur_qp,
+        &nbs[0][2],
+        true,
+    );
 
     // Horizontal: boundary then internal y=4.
     if top {
-        let qp = [(cur_qp[0] + top_qp[0] + 1) >> 1, (cur_qp[1] + top_qp[1] + 1) >> 1];
-        inter_chroma_edge(ChromaPlanes { cb: &mut *cb, cr: &mut *cr, off: c_off, stride }, EdgeOffsets { aoff, boff }, qp, &nbs[1][0], false);
+        let qp = [
+            (cur_qp[0] + top_qp[0] + 1) >> 1,
+            (cur_qp[1] + top_qp[1] + 1) >> 1,
+        ];
+        inter_chroma_edge(
+            ChromaPlanes {
+                cb: &mut *cb,
+                cr: &mut *cr,
+                off: c_off,
+                stride,
+            },
+            EdgeOffsets { aoff, boff },
+            qp,
+            &nbs[1][0],
+            false,
+        );
     }
-    inter_chroma_edge(ChromaPlanes { cb: &mut *cb, cr: &mut *cr, off: c_off + 4 * stride, stride }, EdgeOffsets { aoff, boff }, cur_qp, &nbs[1][2], false);
+    inter_chroma_edge(
+        ChromaPlanes {
+            cb: &mut *cb,
+            cr: &mut *cr,
+            off: c_off + 4 * stride,
+            stride,
+        },
+        EdgeOffsets { aoff, boff },
+        cur_qp,
+        &nbs[1][2],
+        false,
+    );
 }
 
 /// Filter one chroma edge with per-segment bS. `bS == 4` selects the strong
 /// (eq4) filter; otherwise the `Lt4` filter with `tc` from the bS array.
-fn inter_chroma_edge(planes: ChromaPlanes, edge: EdgeOffsets, qp: [i32; 2], nbs: &[u8; 4], vertical: bool) {
-    let ChromaPlanes { cb, cr, off, stride } = planes;
+fn inter_chroma_edge(
+    planes: ChromaPlanes,
+    edge: EdgeOffsets,
+    qp: [i32; 2],
+    nbs: &[u8; 4],
+    vertical: bool,
+) {
+    let ChromaPlanes {
+        cb,
+        cr,
+        off,
+        stride,
+    } = planes;
     let EdgeOffsets { aoff, boff } = edge;
     if nbs[0] == 4 {
         // Strong filter (intra-neighbour boundary).
@@ -758,7 +1075,11 @@ fn inter_chroma_edge(planes: ChromaPlanes, edge: EdgeOffsets, qp: [i32; 2], nbs:
                 }
             }
         } else {
-            let (sx, sy) = if vertical { (1isize, stride as isize) } else { (stride as isize, 1isize) };
+            let (sx, sy) = if vertical {
+                (1isize, stride as isize)
+            } else {
+                (stride as isize, 1isize)
+            };
             for (i, plane) in [&mut *cb, &mut *cr].into_iter().enumerate() {
                 let (a, b) = alpha_beta(qp[i], aoff, boff);
                 if (a | b) != 0 {
@@ -776,13 +1097,39 @@ fn inter_chroma_edge(planes: ChromaPlanes, edge: EdgeOffsets, qp: [i32; 2], nbs:
         if (a | b) != 0 {
             let tc = tc_from_bs(qp[0], aoff, nbs, 1);
             if vertical {
-                deblock_chroma_lt4_h(ChromaPair { cb: &mut *cb, cb_off: off, cr: &mut *cr, cr_off: off }, stride, a, b, &tc);
+                deblock_chroma_lt4_h(
+                    ChromaPair {
+                        cb: &mut *cb,
+                        cb_off: off,
+                        cr: &mut *cr,
+                        cr_off: off,
+                    },
+                    stride,
+                    a,
+                    b,
+                    &tc,
+                );
             } else {
-                deblock_chroma_lt4_v(ChromaPair { cb: &mut *cb, cb_off: off, cr: &mut *cr, cr_off: off }, stride, a, b, &tc);
+                deblock_chroma_lt4_v(
+                    ChromaPair {
+                        cb: &mut *cb,
+                        cb_off: off,
+                        cr: &mut *cr,
+                        cr_off: off,
+                    },
+                    stride,
+                    a,
+                    b,
+                    &tc,
+                );
             }
         }
     } else {
-        let (sx, sy) = if vertical { (1isize, stride as isize) } else { (stride as isize, 1isize) };
+        let (sx, sy) = if vertical {
+            (1isize, stride as isize)
+        } else {
+            (stride as isize, 1isize)
+        };
         for (i, plane) in [&mut *cb, &mut *cr].into_iter().enumerate() {
             let (a, b) = alpha_beta(qp[i], aoff, boff);
             if (a | b) != 0 {

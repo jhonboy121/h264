@@ -135,7 +135,11 @@ impl YUVSource for DecodedYuv<'_> {
         (self.region.width, self.region.height)
     }
     fn strides(&self) -> (usize, usize, usize) {
-        (self.pic.luma_stride, self.pic.chroma_stride, self.pic.chroma_stride)
+        (
+            self.pic.luma_stride,
+            self.pic.chroma_stride,
+            self.pic.chroma_stride,
+        )
     }
     fn y(&self) -> &[u8] {
         luma_slice(self.pic, &self.region)
@@ -153,7 +157,11 @@ impl YUVSource for Frame {
         (self.region.width, self.region.height)
     }
     fn strides(&self) -> (usize, usize, usize) {
-        (self.pic.luma_stride, self.pic.chroma_stride, self.pic.chroma_stride)
+        (
+            self.pic.luma_stride,
+            self.pic.chroma_stride,
+            self.pic.chroma_stride,
+        )
     }
     fn y(&self) -> &[u8] {
         luma_slice(&self.pic, &self.region)

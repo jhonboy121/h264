@@ -152,12 +152,7 @@ pub fn recon_intra_mb(ctx: &mut DecoderContext, mb_xy: usize, coeffs: &[i16; 384
                 i8_avail & 0x04 != 0,
                 true,
             ];
-            let b_tr = [
-                i8_avail & 0x01 != 0,
-                i8_avail & 0x08 != 0,
-                true,
-                false,
-            ];
+            let b_tr = [i8_avail & 0x01 != 0, i8_avail & 0x08 != 0, true, false];
             for i8 in 0..4 {
                 let bx8 = i8 & 1;
                 let by8 = i8 >> 1;
@@ -206,7 +201,13 @@ pub fn recon_intra_mb(ctx: &mut DecoderContext, mb_xy: usize, coeffs: &[i16; 384
 /// order) for 4:2:0. No prediction, transform, or deblock-residual is involved;
 /// the caller has already tagged the MB as [`MbType::IPcm`] with QP = 0 and
 /// nnz = 16 per block so deblocking applies the intra rules.
-pub fn recon_pcm_mb(ctx: &mut DecoderContext, mb_xy: usize, luma: &[u8; 256], cb: &[u8; 64], cr: &[u8; 64]) {
+pub fn recon_pcm_mb(
+    ctx: &mut DecoderContext,
+    mb_xy: usize,
+    luma: &[u8; 256],
+    cb: &[u8; 64],
+    cr: &[u8; 64],
+) {
     let mb_width = ctx.mb_width;
     let mb_x = mb_xy % mb_width;
     let mb_y = mb_xy / mb_width;

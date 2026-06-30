@@ -236,7 +236,15 @@ unsafe fn ver8(dst: *mut u8, doff: usize, src: *const u8, base: isize, ss: isize
 }
 
 /// Bit-exact NEON `mc_hor_ver20` (horizontal half-pel) for w in {8,16}.
-pub fn mc_hor_ver20(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss: usize, dim: Dim) {
+pub fn mc_hor_ver20(
+    dst: &mut [u8],
+    do_: usize,
+    ds: usize,
+    src: &[u8],
+    so: usize,
+    ss: usize,
+    dim: Dim,
+) {
     if dim.w != 8 && dim.w != 16 {
         crate::dsp::mc::mc_hor_ver20_scalar(dst, do_, ds, src, so, ss, dim);
         return;
@@ -256,7 +264,15 @@ pub fn mc_hor_ver20(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize
 }
 
 /// Bit-exact NEON `mc_hor_ver02` (vertical half-pel) for w in {8,16}.
-pub fn mc_hor_ver02(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss: usize, dim: Dim) {
+pub fn mc_hor_ver02(
+    dst: &mut [u8],
+    do_: usize,
+    ds: usize,
+    src: &[u8],
+    so: usize,
+    ss: usize,
+    dim: Dim,
+) {
     if dim.w != 8 && dim.w != 16 {
         crate::dsp::mc::mc_hor_ver02_scalar(dst, do_, ds, src, so, ss, dim);
         return;

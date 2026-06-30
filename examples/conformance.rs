@@ -26,9 +26,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
+use h264::DecodeError;
 use h264::decoder::decode_stream;
 use h264::decoder::picture::Picture;
-use h264::DecodeError;
 
 const DEFAULT_CORPUS_DIR: &str = "/private/tmp/claude-501/-Users-alfredmathew-code-experiments-h264/204f99a2-1e9c-4cb7-9281-a5cdb434a08d/scratchpad/openh264/res";
 const DEFAULT_ORACLE: &str = "/private/tmp/claude-501/-Users-alfredmathew-code-experiments-h264/204f99a2-1e9c-4cb7-9281-a5cdb434a08d/scratchpad/openh264/h264dec";
@@ -377,10 +377,7 @@ fn md5_hex(data: &[u8]) -> String {
                 32..=47 => (b ^ c ^ d, (3 * i + 5) % 16),
                 _ => (c ^ (b | !d), (7 * i) % 16),
             };
-            let f = f
-                .wrapping_add(a)
-                .wrapping_add(K[i])
-                .wrapping_add(m[g]);
+            let f = f.wrapping_add(a).wrapping_add(K[i]).wrapping_add(m[g]);
             a = d;
             d = c;
             c = b;

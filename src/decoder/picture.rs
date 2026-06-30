@@ -119,7 +119,10 @@ mod tests {
 
         // Adjacent macroblocks are 16 luma / 8 chroma samples apart.
         assert_eq!(p.luma_mb_offset(1, 0) - p.luma_mb_offset(0, 0), 16);
-        assert_eq!(p.luma_mb_offset(0, 1) - p.luma_mb_offset(0, 0), 16 * p.luma_stride);
+        assert_eq!(
+            p.luma_mb_offset(0, 1) - p.luma_mb_offset(0, 0),
+            16 * p.luma_stride
+        );
         assert_eq!(p.chroma_mb_offset(1, 0) - p.chroma_mb_offset(0, 0), 8);
     }
 }

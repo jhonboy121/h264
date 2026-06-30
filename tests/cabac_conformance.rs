@@ -73,6 +73,13 @@ fn cif_intra_cabac_frame0_bit_exact_vs_c() {
     assert_eq!(pic.height, 288);
     let got = i420(pic);
     assert_eq!(got.len(), CIF_I_GOLDEN_F0.len());
-    let diff = got.iter().zip(CIF_I_GOLDEN_F0).filter(|(a, b)| a != b).count();
-    assert_eq!(diff, 0, "CIF intra frame 0 differs from C oracle ({diff} bytes)");
+    let diff = got
+        .iter()
+        .zip(CIF_I_GOLDEN_F0)
+        .filter(|(a, b)| a != b)
+        .count();
+    assert_eq!(
+        diff, 0,
+        "CIF intra frame 0 differs from C oracle ({diff} bytes)"
+    );
 }

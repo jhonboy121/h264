@@ -36,7 +36,12 @@ impl<'a> BitReader<'a> {
                 }
             }
         }
-        Self { data, pos: 0, total, stop_bit }
+        Self {
+            data,
+            pos: 0,
+            total,
+            stop_bit,
+        }
     }
 
     /// Bits consumed so far.
@@ -170,7 +175,9 @@ impl<'a> BitReader<'a> {
             zeros += 1;
             if zeros > 31 {
                 // Codes longer than 31 leading zeros are bitstream errors.
-                return Err(DecodeError::InvalidSyntax("exp-golomb leading zeros overflow"));
+                return Err(DecodeError::InvalidSyntax(
+                    "exp-golomb leading zeros overflow",
+                ));
             }
         }
     }
