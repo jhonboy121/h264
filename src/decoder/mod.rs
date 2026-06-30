@@ -21,7 +21,7 @@ pub mod recon_inter;
 pub mod recon_intra;
 pub mod slice_header;
 
-pub use frame::decode_intra_frame;
+pub use frame::{decode_intra_frame, decode_stream};
 
 // Added per phase:
 // pub mod mv_pred;

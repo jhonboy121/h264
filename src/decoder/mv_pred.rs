@@ -10,7 +10,7 @@
 //! current MB's 16 4x4 blocks occupy the inner 4x4 region addressed through
 //! [`CACHE30_SCAN_IDX`] (`g_kuiCache30ScanIdx`).
 
-use super::context::{DecoderContext, MbType};
+use super::context::DecoderContext;
 
 /// `REF_NOT_AVAIL` (-2): neighbour macroblock outside the slice / picture.
 pub const REF_NOT_AVAIL: i8 = -2;
@@ -126,7 +126,6 @@ pub fn pred_inter8x16(
 
 /// One neighbour's contribution to the P_Skip MV derivation.
 struct SkipNeighbor {
-    avail: bool,
     is_inter: bool,
     mv: [i16; 2],
     ref_idx: i8,
@@ -140,16 +139,15 @@ impl SkipNeighbor {
                 if is_inter {
                     let base = (xy * 16 + block) * 2;
                     SkipNeighbor {
-                        avail: true,
                         is_inter: true,
                         mv: [ctx.mv[base], ctx.mv[base + 1]],
                         ref_idx: ctx.ref_idx[xy * 16 + block],
                     }
                 } else {
-                    SkipNeighbor { avail: true, is_inter: false, mv: [0, 0], ref_idx: REF_NOT_IN_LIST }
+                    SkipNeighbor { is_inter: false, mv: [0, 0], ref_idx: REF_NOT_IN_LIST }
                 }
             }
-            _ => SkipNeighbor { avail: false, is_inter: false, mv: [0, 0], ref_idx: REF_NOT_AVAIL },
+            _ => SkipNeighbor { is_inter: false, mv: [0, 0], ref_idx: REF_NOT_AVAIL },
         }
     }
 }

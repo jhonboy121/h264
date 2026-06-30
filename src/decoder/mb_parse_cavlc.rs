@@ -717,12 +717,12 @@ impl InterCache {
         let top = mb_y != 0 && avail(true, mb_xy - mb_width);
         let left_top = mb_x != 0 && mb_y != 0 && avail(true, mb_xy.wrapping_sub(mb_width + 1));
         let right_top =
-            mb_x != mb_width - 1 && mb_y != 0 && avail(true, mb_xy + 1 - mb_width);
+            mb_x != mb_width - 1 && mb_y != 0 && avail(true, (mb_xy + 1).wrapping_sub(mb_width));
 
         let left_xy = mb_xy.wrapping_sub(1);
         let top_xy = mb_xy.wrapping_sub(mb_width);
         let left_top_xy = mb_xy.wrapping_sub(mb_width + 1);
-        let right_top_xy = mb_xy + 1 - mb_width;
+        let right_top_xy = (mb_xy + 1).wrapping_sub(mb_width);
 
         let mut mv = [[0i16; 2]; 30];
         let mut ref_idx = [REF_NOT_AVAIL; 30];
