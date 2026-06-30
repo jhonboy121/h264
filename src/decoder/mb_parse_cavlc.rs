@@ -1660,6 +1660,8 @@ fn parse_b_motion(
                     }
                 }
             }
+            // Partition size in 4x4 units: 16x8 = 4 wide x 2 tall, 8x16 = 2x4.
+            let (pw, ph) = if is16x8 { (4, 2) } else { (2, 4) };
             for list in 0..2 {
                 for p in 0..2 {
                     let part_idx = if is16x8 { p << 3 } else { p << 2 };
@@ -1675,9 +1677,9 @@ fn parse_b_motion(
                         let dx = bs.read_se()? as i16;
                         let dy = bs.read_se()? as i16;
                         let mv = [mvp[0] + dx, mvp[1] + dy];
-                        cache.store(ctx, mb_xy, list, scan4, cache_idx, 2, 2, mv, r, bref.ref_pic_ids[list][r as usize]);
+                        cache.store(ctx, mb_xy, list, scan4, cache_idx, pw, ph, mv, r, bref.ref_pic_ids[list][r as usize]);
                     } else {
-                        cache.store(ctx, mb_xy, list, scan4, cache_idx, 2, 2, [0, 0], REF_NOT_IN_LIST, -1);
+                        cache.store(ctx, mb_xy, list, scan4, cache_idx, pw, ph, [0, 0], REF_NOT_IN_LIST, -1);
                     }
                 }
             }

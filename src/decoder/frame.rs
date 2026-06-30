@@ -479,6 +479,23 @@ fn decode_b_slice_cavlc(
             break;
         }
     }
+    let codes: Vec<u8> = (0..ctx.total_mb)
+        .map(|i| match ctx.mb_type[i] {
+            super::context::MbType::BSkip => b'S',
+            super::context::MbType::BDirect16x16 => b'D',
+            super::context::MbType::B16x16 => b'6',
+            super::context::MbType::B16x8 => b'H',
+            super::context::MbType::B8x16 => b'V',
+            super::context::MbType::B8x8 => b'8',
+            t if t.is_intra() => b'I',
+            _ => b'?',
+        })
+        .collect();
+    ctx.picture.dbg_mb = codes;
+    ctx.picture.dbg_mv = (0..ctx.total_mb)
+        .map(|i| [ctx.mv[i * 32], ctx.mv[i * 32 + 1], ctx.mv_l1[i * 32], ctx.mv_l1[i * 32 + 1]])
+        .collect();
+    ctx.picture.dbg_ref = (0..ctx.total_mb).map(|i| [ctx.ref_idx[i * 16], ctx.ref_idx_l1[i * 16]]).collect();
     Ok(())
 }
 

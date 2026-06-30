@@ -360,6 +360,107 @@ fn mb_bs_mv(ref_a: i32, ref_b: i32, mv_a: [i16; 2], mv_b: [i16; 2]) -> u8 {
     diff as u8
 }
 
+#[inline]
+fn mv_diff(a: [i16; 2], b: [i16; 2]) -> bool {
+    (a[0] as i32 - b[0] as i32).abs() >= 4 || (a[1] as i32 - b[1] as i32).abs() >= 4
+}
+
+/// Snapshot of one 4x4 block's bi-predictive reference identities + MVs.
+#[derive(Clone, Copy)]
+struct BBlk {
+    r0: i32,
+    r1: i32,
+    m0: [i16; 2],
+    m1: [i16; 2],
+}
+
+/// B-slice inter boundary strength (0 or 1) for two blocks `p`/`q`, allowing
+/// cross-list reference matching (`ON_MB_BS` / `IN_SMB_EDGE_MV`, spec 8.7.2.1).
+#[inline]
+fn b_bs_inter(p: BBlk, q: BBlk) -> u8 {
+    let matched = (p.r0 == q.r0 && p.r1 == q.r1) || (p.r0 == q.r1 && p.r1 == q.r0);
+    if !matched {
+        return 1;
+    }
+    let v = if p.r0 != p.r1 {
+        if p.r0 == q.r0 {
+            mv_diff(p.m0, q.m0) || mv_diff(p.m1, q.m1)
+        } else {
+            mv_diff(p.m0, q.m1) || mv_diff(p.m1, q.m0)
+        }
+    } else {
+        (mv_diff(p.m0, q.m0) || mv_diff(p.m1, q.m1)) && (mv_diff(p.m0, q.m1) || mv_diff(p.m1, q.m0))
+    };
+    v as u8
+}
+
+/// Compute the boundary-strength array for a B-slice inter MB, using both
+/// reference lists (`DeblockingBSliceBsMarginalMBAvcbase` +
+/// `DeblockingBSliceBSInsideMBNormal`).
+fn inter_bs_b(
+    ctx: &DecoderContext,
+    mb_xy: usize,
+    mb_width: usize,
+    left: bool,
+    top: bool,
+) -> [[[u8; 4]; 4]; 2] {
+    let mut nbs = [[[0u8; 4]; 4]; 2];
+    let nzc = |xy: usize, r: usize| ctx.nzc_luma[xy * 16 + r] as i32;
+    let blk = |xy: usize, r: usize| BBlk {
+        r0: ctx.ref_pic_id[xy * 16 + r],
+        r1: ctx.ref_pic_id_l1[xy * 16 + r],
+        m0: [ctx.mv[(xy * 16 + r) * 2], ctx.mv[(xy * 16 + r) * 2 + 1]],
+        m1: [ctx.mv_l1[(xy * 16 + r) * 2], ctx.mv_l1[(xy * 16 + r) * 2 + 1]],
+    };
+
+    // MB boundaries (edge 0).
+    for dir in 0..2 {
+        let avail = if dir == 0 { left } else { top };
+        if !avail {
+            continue;
+        }
+        let nb_xy = if dir == 0 { mb_xy - 1 } else { mb_xy - mb_width };
+        if ctx.mb_type[nb_xy].is_intra() {
+            nbs[dir][0] = [4, 4, 4, 4];
+            continue;
+        }
+        for i in 0..4 {
+            let cur = TABLE_B_IDX[dir][i];
+            let neigh = TABLE_B_IDX[dir][4 + i];
+            nbs[dir][0][i] = if nzc(mb_xy, cur) != 0 || nzc(nb_xy, neigh) != 0 {
+                2
+            } else {
+                b_bs_inter(blk(mb_xy, cur), blk(nb_xy, neigh))
+            };
+        }
+    }
+
+    // Internal edges (1,2,3) — vertical then horizontal.
+    for (e, edge) in nbs[0].iter_mut().enumerate().skip(1) {
+        for (seg, cell) in edge.iter_mut().enumerate() {
+            let idx = seg * 4 + e;
+            let nidx = seg * 4 + e - 1;
+            *cell = if nzc(mb_xy, idx) != 0 || nzc(mb_xy, nidx) != 0 {
+                2
+            } else {
+                b_bs_inter(blk(mb_xy, idx), blk(mb_xy, nidx))
+            };
+        }
+    }
+    for (e, edge) in nbs[1].iter_mut().enumerate().skip(1) {
+        for (s, cell) in edge.iter_mut().enumerate() {
+            let idx = e * 4 + s;
+            let nidx = (e - 1) * 4 + s;
+            *cell = if nzc(mb_xy, idx) != 0 || nzc(mb_xy, nidx) != 0 {
+                2
+            } else {
+                b_bs_inter(blk(mb_xy, idx), blk(mb_xy, nidx))
+            };
+        }
+    }
+    nbs
+}
+
 /// Compute the boundary-strength array `nbs[dir][edge][seg]` for an inter MB.
 /// `dir` 0 = vertical edges (left boundary + x=4,8,12), 1 = horizontal.
 fn inter_bs(
@@ -461,7 +562,11 @@ fn deblock_inter_mb(
     left: bool,
     top: bool,
 ) {
-    let nbs = inter_bs(ctx, mb_xy, mb_width, left, top);
+    let nbs = if ctx.is_b_slice {
+        inter_bs_b(ctx, mb_xy, mb_width, left, top)
+    } else {
+        inter_bs(ctx, mb_xy, mb_width, left, top)
+    };
 
     let aoff = ctx.deblock_alpha_off[mb_xy] as i32;
     let boff = ctx.deblock_beta_off[mb_xy] as i32;
