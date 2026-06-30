@@ -1810,15 +1810,13 @@ pub(super) fn apply_b_direct(
     direct_spatial: bool,
 ) {
     if !direct_spatial {
+        // `b_direct_temporal` already stores the correct per-block reference
+        // identities: L0 = `cur_ref0_ids[ref0]` (the `MapColToList0` result, which
+        // need not be index 0) and L1 = `col_id` (== list1[0]). The previous
+        // unconditional `ref_pic_id = ref_pic_ids[0][0]` overwrite clobbered the
+        // L0 identity to list-0 index 0, breaking the deblock boundary-strength
+        // reference comparison when `ref0 != 0`.
         super::bdirect::b_direct_temporal(ctx, mb_xy, !whole_mb, col);
-        for r in 0..16 {
-            if ctx.ref_idx[mb_xy * 16 + r] >= 0 && !ref_pic_ids[0].is_empty() {
-                ctx.ref_pic_id[mb_xy * 16 + r] = ref_pic_ids[0][0];
-            }
-            if ctx.ref_idx_l1[mb_xy * 16 + r] >= 0 && !ref_pic_ids[1].is_empty() {
-                ctx.ref_pic_id_l1[mb_xy * 16 + r] = ref_pic_ids[1][0];
-            }
-        }
         return;
     }
     ctx.direct_8x8[mb_xy] = col.resolved_8x8(mb_xy, !whole_mb);
@@ -1835,10 +1833,16 @@ pub(super) fn apply_b_direct(
             -1
         },
     ];
-    if info.mb16x16 {
+    // The colZeroFlag granularity follows the *resolved* partition mode: a whole-MB
+    // spatial-direct MB whose colocated MB forces 8x8 resolution (`direct_8x8`)
+    // must evaluate colZero per 8x8 sub-block, not once from block 0. Using
+    // `info.mb16x16` (which only reflects the syntax 16x16/8x8) zeroed the whole MB
+    // uniformly and lost the per-8x8 mvL1 variation the spec/oracle produce.
+    if info.mb16x16 && !ctx.direct_8x8[mb_xy] {
         fill_direct_16x16(ctx, mb_xy, &info, col, ref_pic);
     } else {
-        // B_8x8 with all sub-partitions direct: fill each 8x8.
+        // Fill each 8x8 with its own colZero (B_8x8 direct, or a 16x16 direct MB
+        // resolved to 8x8 by its colocated MB).
         for i in 0..4 {
             fill_direct_8x8(ctx, mb_xy, i, 1, 2, &info, col, ref_pic);
             ctx.sub_mb_type[mb_xy * 4 + i] = SubMbType::P8x8;

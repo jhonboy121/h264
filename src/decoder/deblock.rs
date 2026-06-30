@@ -471,6 +471,15 @@ fn inter_bs_b(
         }
     }
 
+    // Skip MBs (B_Skip / P_Skip) have no internal deblock edges: `WelsDeblockingMb`
+    // forces every internal bS to 0 for `IS_SKIP`, even when temporal-direct
+    // 8x8 sub-blocks reference different pictures (which would otherwise yield
+    // bS = 1 at the 8x8 boundary). Only the MB-boundary (marginal) edges above
+    // are kept.
+    if ctx.mb_type[mb_xy].is_skip() {
+        return nbs;
+    }
+
     // Internal edges (1,2,3) — vertical then horizontal.
     for (e, edge) in nbs[0].iter_mut().enumerate().skip(1) {
         for (seg, cell) in edge.iter_mut().enumerate() {

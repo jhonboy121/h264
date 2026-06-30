@@ -11,8 +11,8 @@ multi-ref, deblock, DPB — 28/54 BIT-EXACT vs C, 3875 frames) + encoder (baseli
 IPPP CAVLC, round-trip PSNR, no drift) + **SIMD (P10: NEON + wasm simd128, bit-exact)** +
 **refreshed perf report (P11)**. 139 tests, 0 warnings, 8 targets + no_std + wasm + simd.
 See `STATUS.md` for the final summary. Decoder now also does frame_cropping output +
-I_PCM (CAVLC+CABAC) → 40/54 BIT-EXACT, then **B-slice (bi-predictive) decode → 43/54
-BIT-EXACT**. Deferred (explicit, not gaps):
+I_PCM (CAVLC+CABAC) → 40/54 BIT-EXACT, then **B-slice (bi-predictive) decode → 43/54**,
+then **High-profile CAVLC temporal-direct (P14) → 46/54 BIT-EXACT**. Deferred (explicit, not gaps):
 transform8x8/High, FMO, error-conceal, SVC scalable-extension (NAL type 20); encoder
 sub-16x16, multi-ref, B, CABAC-encode, rate control; P8 processing; P9 threading;
 SIMD for deblock/mc_hor_ver22/x86.
@@ -223,9 +223,31 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
       direct subs via temporal direct (cache ref_idx=-1 so explicit subs exclude
       them from MV prediction), per-8×8 direct MC, implicit weighted bi-pred
       (`weighted_bipred_idc==2`), explicit P weighted pred. 0246b3e.
-- CAVLC VID temporal_direct streams: IDR + P + most B frames bit-exact. A residual
-  cross-list deblock discrepancy on direct-skip 8×8-boundary edges (top/bottom 8×8
-  reference different pictures, bS=1, tc0 ±1 on p1/q1) leaves them MISMATCH — the
-  colocated mapping / reorder / MV were all verified against the OpenH264 source.
 - CABAC VID streams: I_8×8 intra parse in place; the B CABAC path (multi-ref
   ref_idx + temporal direct) is not yet wired → ERROR/UNSUPPORTED.
+
+## P14 — CAVLC VID temporal-direct streams BIT-EXACT ✅ → 46/54 BIT-EXACT
+All three `VID_*_cavlc_temporal_direct` streams (1280×544, 1280×720, 1920×1080) are
+now bit-exact vs the OpenH264 oracle. Three root causes, all in the B-direct +
+deblock machinery (verified against the OpenH264 source by instrumenting the oracle
+to dump per-MB bS / per-block ref+MV and a per-decode-frame recon checksum):
+- [x] **Skip-MB internal deblock edges** (`deblock.rs inter_bs_b`): `WelsDeblockingMb`
+      forces every internal bS to 0 for `IS_SKIP` (P_Skip *and* B_Skip), even when
+      temporal-direct 8×8 sub-blocks reference different pictures. The B-slice bS path
+      lacked the skip early-return the P-slice path already had, so it filtered the
+      x=8/y=8 internal edges (bS=1) the oracle leaves untouched (±1 on p1/q1). Added
+      the `is_skip()` early-return after the MB-boundary (marginal) edges.
+- [x] **Direct ref_pic_id overwrite** (`mb_parse_cavlc.rs apply_b_direct`, temporal):
+      after `b_direct_temporal` correctly stored each block's L0 identity
+      (`cur_ref0_ids[ref0]`, `ref0` = `MapColToList0`, not necessarily 0), a stale loop
+      clobbered every block's L0 `ref_pic_id` to list-0 index 0. When `ref0 != 0` this
+      made the deblock boundary-strength reference comparison see two different ids for
+      one physical picture → wrong marginal bS. Removed the overwrite (L1 part was a
+      no-op since `col_id == ref_pic_ids[1][0]`).
+- [x] **Spatial-direct colZero granularity** (`apply_b_direct`, spatial): a whole-MB
+      spatial-direct MB (B_Skip / B_Direct_16x16) whose colocated MB forces 8×8
+      resolution must evaluate `colZeroFlag` **per 8×8 sub-block**, not once from
+      block 0. Branching on `info.mb16x16` (syntax-only) zeroed mvL1 uniformly across
+      the MB and lost the per-8×8 variation; now branch on `!direct_8x8` (the resolved
+      mode, same predicate the temporal path uses), filling per-8×8 colZero.
+- CABAC VID streams untouched (separate B-CABAC-multiref work) → still ERROR/UNSUPPORTED.

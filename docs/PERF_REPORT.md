@@ -32,35 +32,29 @@ Corpus: 54 streams (50 `*.264` + 4 `*.jsv`) from the OpenH264 conformance set.
 Each stream is decoded by the C oracle to reference I420 YUV and by our
 `decode_stream`; our visible (coded-size) I420 output is then compared
 **byte-for-byte** (and by MD5) against the oracle output. **Results are identical
-with and without `--features simd`** (verified: 43/54 BITEXACT either way).
+with and without `--features simd`** (verified: 46/54 BITEXACT either way).
 
 ### Summary
 
 | Outcome | Count |
 |---|---|
-| **BITEXACT** | **43** |
+| **BITEXACT** | **46** |
 | UNSUPPORTED (returns `DecodeError::Unsupported`) | 1 |
-| MISMATCH | 4 |
+| MISMATCH | 1 |
 | ERROR | 6 |
 | **Total** | **54** |
 
-**Frames decoded bit-exact: 5154** (sum over all BITEXACT streams).
+**Frames decoded bit-exact: 5659** (sum over all BITEXACT streams).
 
-The 43 bit-exact streams cover baseline CAVLC (I+P), Main-profile CABAC (I+P,
+The 46 bit-exact streams cover baseline CAVLC (I+P), Main-profile CABAC (I+P,
 multi-ref, multi-slice), B-slices (CAVLC + CABAC, spatial + temporal direct),
-I_PCM, QCIF/CIF/up-to-1280×720 resolutions, and a 1700-frame stream (`LS_SVA_D`).
+High-profile I_8×8 + inter 8×8 transform + temporal/spatial-direct multi-ref
+(the 3 `VID_*_cavlc_temporal_direct` streams at 1280×544 / 1280×720 / 1920×1080),
+I_PCM, QCIF/CIF/up-to-1080p resolutions, and a 1700-frame stream (`LS_SVA_D`).
 
 ### Unsupported / mismatch
 
-- **MISMATCH (4):** the SVC stream (`sps_subsetsps_bothVUI`, base layer only),
-  and the 3 CAVLC High-profile temporal_direct streams
-  (`VID_*_cavlc_temporal_direct`). The VID streams decode their IDR, P and most B
-  frames bit-exact (I_8×8, inter 8×8 transform, temporal-direct multi-ref,
-  implicit/explicit weighted prediction all implemented and validated); a residual
-  ±1 cross-list deblock discrepancy remains on temporal-direct skip 8×8-boundary
-  edges (top/bottom 8×8 reference different pictures → bS=1, tc0 ±1 on p1/q1) — the
-  colocated mapping, ref-list reorder, and scaled MVs were all verified against the
-  OpenH264 source.
+- **MISMATCH (1):** the SVC stream (`sps_subsetsps_bothVUI`, base layer only).
 - **UNSUPPORTED (1) / ERROR (2):** the 3 CABAC VID temporal_direct streams —
   I_8×8 intra parse is in place but the B CABAC path (multi-ref `ref_idx` + CABAC
   temporal direct) is not yet wired.
