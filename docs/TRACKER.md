@@ -81,8 +81,12 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
       dsp/expand.rs border replication. (POC/MMCO/long-term deferred — not needed for IPPP.)
 - [x] **★ BASELINE CAVLC DECODER CONFORMANT ★** — ALL 100 BANM frames (I+P) decode
       BIT-EXACT vs C oracle (0/3,801,600 bytes). 90 tests, 0 warnings, wasm ok.
-- [ ] **P3e CABAC MB syntax** — the deferred mb_type/mvd/cbp/intra-mode/skip CABAC decoders.
-      Validate on a CABAC stream (CVPCMNL1_SVA_C.264, profile 77) vs C oracle.
+- [x] **P3e CABAC MB syntax** ✅ — full CABAC MB decode (I+P, mb_type/skip/sub_mb/
+      intra-mode/ref_idx/mvd/cbp/delta_qp/cbf). BIT-EXACT vs C on test_cif_I_CABAC (300/300),
+      test_qcif_cabac I+P (30/30), test_cif_P_CABAC multi-ref (300/300). Fixed P_8x8 ref
+      cache + multi-ref deblock bugs. fc8b402. **Main profile CAVLC+CABAC I+P conformant.**
+- [⏸] **P3f** B-slices, transform8x8/High, I_PCM, FMO, error-conceal — deferred (guarded
+      Unsupported; not in baseline/Main-IP streams). Add when a target stream needs them.
 - [ ] **P3f FMO** (`fmo.rs`), **error concealment** (`error_conceal.rs`) — lower priority.
 - [ ] `dsp/expand.rs` border padding (deferred from P1) — needed by MC ref reads.
 
