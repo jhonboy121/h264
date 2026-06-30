@@ -67,7 +67,7 @@ fn qcif_cabac_all_frames_bit_exact_vs_c() {
 #[test]
 fn cif_intra_cabac_frame0_bit_exact_vs_c() {
     let pics = decode_stream(CIF_I).expect("decode test_cif_I_CABAC_slice.264");
-    assert!(pics.len() >= 1);
+    assert!(!pics.is_empty());
     let pic = &pics[0];
     assert_eq!(pic.width, 352);
     assert_eq!(pic.height, 288);

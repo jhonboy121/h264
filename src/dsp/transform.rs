@@ -245,7 +245,7 @@ pub fn quant_four4x4(dct: &mut [i16; 64], ff: &[i16; 8], mf: &[i16; 8]) {
 /// Port of `WelsQuantFour4x4Max_c`: quantize four 4x4 blocks and report the max
 /// (unsigned) quantized magnitude per block in `max[0..4]`.
 pub fn quant_four4x4_max(dct: &mut [i16; 64], ff: &[i16; 8], mf: &[i16; 8], max: &mut [i16; 4]) {
-    for k in 0..4 {
+    for (k, mk) in max.iter_mut().enumerate() {
         let mut max_abs = 0i16;
         let base = k * 16;
         for i in 0..16 {
@@ -259,7 +259,7 @@ pub fn quant_four4x4_max(dct: &mut [i16; 64], ff: &[i16; 8], mf: &[i16; 8], max:
             }
             dct[base + i] = ((sign ^ q as i32) - sign) as i16;
         }
-        max[k] = max_abs;
+        *mk = max_abs;
     }
 }
 
@@ -297,13 +297,13 @@ pub fn hadamard_quant2x2(rs: &mut [i16], ff: i16, mf: i16, dct: &mut [i16; 4], b
     dct[1] = s0.wrapping_sub(s2);
     dct[2] = s1.wrapping_add(s3);
     dct[3] = s1.wrapping_sub(s3);
-    for k in 0..4 {
-        dct[k] = wels_new_quant(dct[k], ff, mf);
+    for d in dct.iter_mut() {
+        *d = wels_new_quant(*d, ff, mf);
     }
     block[..4].copy_from_slice(&dct[..4]);
     let mut nzc = 0;
-    for k in 0..4 {
-        nzc += (block[k] != 0) as i32;
+    for &b in block.iter() {
+        nzc += (b != 0) as i32;
     }
     nzc
 }
@@ -709,15 +709,15 @@ mod tests {
     // Port of `WelsQuant4x4MaxAnchor` (returns signed quant, reports max magnitude).
     fn quant4x4_max_anchor(dct: &mut [i16; 16], ff: &[i16; 8], mf: &[i16; 8]) -> i16 {
         let mut max_abs = 0i16;
-        for i in 0..16 {
+        for (i, d) in dct.iter_mut().enumerate() {
             let j = i & 0x07;
-            let orig = dct[i] as i32;
+            let orig = *d as i32;
             let sign = orig >> 31;
             let q = (((ff[j] as i32 + ((sign ^ orig) - sign)) * mf[j] as i32) >> 16) as i16;
             if max_abs < q {
                 max_abs = q;
             }
-            dct[i] = ((sign ^ q as i32) - sign) as i16;
+            *d = ((sign ^ q as i32) - sign) as i16;
         }
         max_abs
     }
@@ -831,8 +831,8 @@ mod tests {
         dct[1] = s0.wrapping_sub(s2);
         dct[2] = s1.wrapping_add(s3);
         dct[3] = s1.wrapping_sub(s3);
-        for k in 0..4 {
-            dct[k] = wels_new_quant(dct[k], ff, mf);
+        for d in dct.iter_mut() {
+            *d = wels_new_quant(*d, ff, mf);
         }
         block.copy_from_slice(dct);
         (0..4).map(|i| (block[i] != 0) as i32).sum()

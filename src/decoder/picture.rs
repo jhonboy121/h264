@@ -102,7 +102,7 @@ mod tests {
         // The top-left neighbor of MB(0,0) (origin - stride - 1) is in bounds.
         let o = p.luma_mb_offset(0, 0);
         assert_eq!(o, p.luma_origin());
-        assert!(o >= p.luma_stride + 1);
+        assert!(o > p.luma_stride);
 
         // Adjacent macroblocks are 16 luma / 8 chroma samples apart.
         assert_eq!(p.luma_mb_offset(1, 0) - p.luma_mb_offset(0, 0), 16);

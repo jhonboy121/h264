@@ -1,11 +1,8 @@
 [package]
 name = "h264"
 version = "0.0.1"
-edition = "2021"
-rust-version = "1.74"
-description = "Pure-Rust port of Cisco OpenH264 (internal use)"
-license = "BSD-2-Clause"
-publish = false
+edition = "2024"
+description = "Pure-Rust port of Cisco OpenH264"
 
 [features]
 default = ["std", "decoder", "encoder"]
@@ -19,9 +16,10 @@ threads = ["std"]
 
 [dev-dependencies]
 
-[profile.release]
-opt-level = 3
-lto = "thin"
+[profile.opt]
+inherits = "release"
+strip = true
+lto = true
 codegen-units = 1
 
 [profile.bench]

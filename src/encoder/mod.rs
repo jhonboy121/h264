@@ -200,8 +200,8 @@ fn pad_plane(src: &[u8], src_stride: usize, w: usize, h: usize, dst_w: usize, ds
         let drow = &mut dst[y * dst_w..y * dst_w + dst_w];
         drow[..w].copy_from_slice(row);
         let edge = row[w - 1];
-        for x in w..dst_w {
-            drow[x] = edge;
+        for d in &mut drow[w..] {
+            *d = edge;
         }
     }
     (dst, dst_w)

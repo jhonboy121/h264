@@ -531,9 +531,9 @@ fn parse_ref_pic_list_reordering(
 
     // list0, then list1 for B slices.
     let num_lists = if slice_type == SliceType::B { 2 } else { 1 };
-    for list in 0..num_lists {
+    for (list, list_mod) in out.list.iter_mut().enumerate().take(num_lists) {
         let flag = bs.read_flag()?; // ref_pic_list_modification_flag_lX
-        out.list[list].flag = flag;
+        list_mod.flag = flag;
         if flag {
             let mut idx = 0;
             loop {
@@ -560,7 +560,7 @@ fn parse_ref_pic_list_reordering(
                 } else if idc == 2 {
                     entry.long_term_pic_num = bs.read_ue()?; // long_term_pic_num
                 }
-                out.list[list].entries.push(entry);
+                list_mod.entries.push(entry);
                 idx += 1;
             }
         }
@@ -591,7 +591,9 @@ fn parse_pred_weight_table(
     }
 
     let num_lists = if slice_type == SliceType::B { 2 } else { 1 };
-    for list in 0..num_lists {
+    let luma_denom = table.luma_log2_weight_denom;
+    let chroma_denom = table.chroma_log2_weight_denom;
+    for (list, list_entries) in table.list.iter_mut().enumerate().take(num_lists) {
         for _ in 0..ref_count[list] {
             // luma
             let luma_weight_flag = bs.read_flag()?;
@@ -606,12 +608,12 @@ fn parse_pred_weight_table(
                 }
                 (w, o)
             } else {
-                (1i32 << table.luma_log2_weight_denom, 0)
+                (1i32 << luma_denom, 0)
             };
 
             // chroma
             let mut chroma_weight_flag = false;
-            let mut chroma_weight = [1i32 << table.chroma_log2_weight_denom; 2];
+            let mut chroma_weight = [1i32 << chroma_denom; 2];
             let mut chroma_offset = [0i32; 2];
             if sps.chroma_array_type != 0 {
                 chroma_weight_flag = bs.read_flag()?;
@@ -631,7 +633,7 @@ fn parse_pred_weight_table(
                 }
             }
 
-            table.list[list].push(WeightEntry {
+            list_entries.push(WeightEntry {
                 luma_weight_flag,
                 luma_weight,
                 luma_offset,

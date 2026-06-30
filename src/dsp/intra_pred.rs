@@ -377,9 +377,9 @@ fn filt_top_full(plane: &[u8], o: isize, s: isize, b_tl: bool) -> [i32; 16] {
     } else {
         (g(-s) * 3 + g(1 - s) + 2) >> 2
     };
-    for i in 1..15 {
+    for (i, ti) in t.iter_mut().enumerate().take(15).skip(1) {
         let id = i as isize;
-        t[i] = (g(id - 1 - s) + (g(id - s) << 1) + g(id + 1 - s) + 2) >> 2;
+        *ti = (g(id - 1 - s) + (g(id - s) << 1) + g(id + 1 - s) + 2) >> 2;
     }
     t[15] = (g(14 - s) + g(15 - s) * 3 + 2) >> 2;
     t
@@ -396,13 +396,13 @@ fn filt_top_only(plane: &[u8], o: isize, s: isize, b_tl: bool) -> [i32; 16] {
     } else {
         (g(-s) * 3 + g(1 - s) + 2) >> 2
     };
-    for i in 1..7 {
+    for (i, ti) in t.iter_mut().enumerate().take(7).skip(1) {
         let id = i as isize;
-        t[i] = (g(id - 1 - s) + (g(id - s) << 1) + g(id + 1 - s) + 2) >> 2;
+        *ti = (g(id - 1 - s) + (g(id - s) << 1) + g(id + 1 - s) + 2) >> 2;
     }
     t[7] = (g(6 - s) + g(7 - s) * 3 + 2) >> 2;
-    for i in 8..16 {
-        t[i] = g(7 - s);
+    for ti in t.iter_mut().skip(8) {
+        *ti = g(7 - s);
     }
     t
 }
@@ -418,9 +418,9 @@ fn filt_top8(plane: &[u8], o: isize, s: isize, b_tl: bool, b_tr: bool) -> [i32; 
     } else {
         (g(-s) * 3 + g(1 - s) + 2) >> 2
     };
-    for i in 1..7 {
+    for (i, ti) in t.iter_mut().enumerate().take(7).skip(1) {
         let id = i as isize;
-        t[i] = (g(id - 1 - s) + (g(id - s) << 1) + g(id + 1 - s) + 2) >> 2;
+        *ti = (g(id - 1 - s) + (g(id - s) << 1) + g(id + 1 - s) + 2) >> 2;
     }
     t[7] = if b_tr {
         (g(6 - s) + (g(7 - s) << 1) + g(8 - s) + 2) >> 2
@@ -437,9 +437,9 @@ fn filt_top8_tl(plane: &[u8], o: isize, s: isize, b_tr: bool) -> [i32; 8] {
     let g = |d: isize| plane[(o + d) as usize] as i32;
     let mut t = [0i32; 8];
     t[0] = (g(-s - 1) + (g(-s) << 1) + g(1 - s) + 2) >> 2;
-    for i in 1..7 {
+    for (i, ti) in t.iter_mut().enumerate().take(7).skip(1) {
         let id = i as isize;
-        t[i] = (g(id - 1 - s) + (g(id - s) << 1) + g(id + 1 - s) + 2) >> 2;
+        *ti = (g(id - 1 - s) + (g(id - s) << 1) + g(id + 1 - s) + 2) >> 2;
     }
     t[7] = if b_tr {
         (g(6 - s) + (g(7 - s) << 1) + g(8 - s) + 2) >> 2
@@ -459,9 +459,9 @@ fn filt_left8(plane: &[u8], o: isize, s: isize, b_tl: bool) -> [i32; 8] {
     } else {
         (g(-1) * 3 + g(-1 + s) + 2) >> 2
     };
-    for i in 1..7 {
+    for (i, li) in l.iter_mut().enumerate().take(7).skip(1) {
         let id = i as isize;
-        l[i] = (g(-1 + (id - 1) * s) + (g(-1 + id * s) << 1) + g(-1 + (id + 1) * s) + 2) >> 2;
+        *li = (g(-1 + (id - 1) * s) + (g(-1 + id * s) << 1) + g(-1 + (id + 1) * s) + 2) >> 2;
     }
     l[7] = (g(-1 + 6 * s) + g(-1 + 7 * s) * 3 + 2) >> 2;
     l
@@ -474,9 +474,9 @@ fn filt_left8_tl(plane: &[u8], o: isize, s: isize) -> [i32; 8] {
     let g = |d: isize| plane[(o + d) as usize] as i32;
     let mut l = [0i32; 8];
     l[0] = (g(-s - 1) + (g(-1) << 1) + g(-1 + s) + 2) >> 2;
-    for i in 1..7 {
+    for (i, li) in l.iter_mut().enumerate().take(7).skip(1) {
         let id = i as isize;
-        l[i] = (g(-1 + (id - 1) * s) + (g(-1 + id * s) << 1) + g(-1 + (id + 1) * s) + 2) >> 2;
+        *li = (g(-1 + (id - 1) * s) + (g(-1 + id * s) << 1) + g(-1 + (id + 1) * s) + 2) >> 2;
     }
     l[7] = (g(-1 + 6 * s) + g(-1 + 7 * s) * 3 + 2) >> 2;
     l
@@ -523,7 +523,7 @@ pub fn i8x8_luma_pred_dc(plane: &mut [u8], offset: usize, stride: usize, b_tl: b
     for i in 0..8 {
         total += t[i] + l[i];
     }
-    let mean = ((total + 8) >> 4) as i32;
+    let mean = (total + 8) >> 4;
     for y in 0..8 {
         for x in 0..8 {
             put8(plane, o, s, y, x, mean);
@@ -865,7 +865,7 @@ pub fn i_chroma_pred_plane(plane: &mut [u8], offset: usize, stride: usize) {
     };
     for i in 0..8 {
         for j in 0..8 {
-            let tmp = (a + b * (j as i32 - 3) + c * (i as i32 - 3) + 16) >> 5;
+            let tmp = (a + b * (j - 3) + c * (i - 3) + 16) >> 5;
             plane[(o + (i as isize) * s + j as isize) as usize] = clip1(tmp);
         }
     }
@@ -987,7 +987,7 @@ pub fn i16x16_luma_pred_plane(plane: &mut [u8], offset: usize, stride: usize) {
     };
     for i in 0..16 {
         for j in 0..16 {
-            let tmp = (a + b * (j as i32 - 7) + c * (i as i32 - 7) + 16) >> 5;
+            let tmp = (a + b * (j - 7) + c * (i - 7) + 16) >> 5;
             plane[(o + (i as isize) * s + j as isize) as usize] = clip1(tmp);
         }
     }
@@ -1246,15 +1246,15 @@ mod tests {
     // (independent of the optimized kernel's list-permutation form).
     fn top4(p: &[u8], o: usize, s: isize) -> [i32; 8] {
         let mut t = [0i32; 8];
-        for x in 0..8 {
-            t[x] = g(p, o, -s + x as isize);
+        for (x, tx) in t.iter_mut().enumerate() {
+            *tx = g(p, o, -s + x as isize);
         }
         t
     }
     fn left4(p: &[u8], o: usize, s: isize) -> [i32; 4] {
         let mut l = [0i32; 4];
-        for y in 0..4 {
-            l[y] = g(p, o, -1 + (y as isize) * s);
+        for (y, ly) in l.iter_mut().enumerate() {
+            *ly = g(p, o, -1 + (y as isize) * s);
         }
         l
     }
@@ -1468,8 +1468,8 @@ mod tests {
         } else {
             (3 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2
         };
-        for i in 1..7 {
-            t[i] = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
+        for (i, ti) in t.iter_mut().enumerate().take(7).skip(1) {
+            *ti = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
         }
         t[7] = if b_tr {
             (rtop(p, o, s, 6) + 2 * rtop(p, o, s, 7) + rtop(p, o, s, 8) + 2) >> 2
@@ -1486,8 +1486,8 @@ mod tests {
         } else {
             (3 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2
         };
-        for i in 1..15 {
-            t[i] = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
+        for (i, ti) in t.iter_mut().enumerate().take(15).skip(1) {
+            *ti = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
         }
         t[15] = (rtop(p, o, s, 14) + 3 * rtop(p, o, s, 15) + 2) >> 2;
         t
@@ -1500,12 +1500,12 @@ mod tests {
         } else {
             (3 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2
         };
-        for i in 1..7 {
-            t[i] = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
+        for (i, ti) in t.iter_mut().enumerate().take(7).skip(1) {
+            *ti = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
         }
         t[7] = (rtop(p, o, s, 6) + 3 * rtop(p, o, s, 7) + 2) >> 2;
-        for i in 8..16 {
-            t[i] = rtop(p, o, s, 7);
+        for ti in t.iter_mut().skip(8) {
+            *ti = rtop(p, o, s, 7);
         }
         t
     }
@@ -1513,8 +1513,8 @@ mod tests {
     fn ft8_tl(p: &[u8], o: usize, s: usize, b_tr: bool) -> [i32; 8] {
         let mut t = [0i32; 8];
         t[0] = (rcorner(p, o, s) + 2 * rtop(p, o, s, 0) + rtop(p, o, s, 1) + 2) >> 2;
-        for i in 1..7 {
-            t[i] = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
+        for (i, ti) in t.iter_mut().enumerate().take(7).skip(1) {
+            *ti = (rtop(p, o, s, i as isize - 1) + 2 * rtop(p, o, s, i as isize) + rtop(p, o, s, i as isize + 1) + 2) >> 2;
         }
         t[7] = if b_tr {
             (rtop(p, o, s, 6) + 2 * rtop(p, o, s, 7) + rtop(p, o, s, 8) + 2) >> 2
@@ -1531,8 +1531,8 @@ mod tests {
         } else {
             (3 * rleft(p, o, s, 0) + rleft(p, o, s, 1) + 2) >> 2
         };
-        for i in 1..7 {
-            l[i] = (rleft(p, o, s, i as isize - 1) + 2 * rleft(p, o, s, i as isize) + rleft(p, o, s, i as isize + 1) + 2) >> 2;
+        for (i, li) in l.iter_mut().enumerate().take(7).skip(1) {
+            *li = (rleft(p, o, s, i as isize - 1) + 2 * rleft(p, o, s, i as isize) + rleft(p, o, s, i as isize + 1) + 2) >> 2;
         }
         l[7] = (rleft(p, o, s, 6) + 3 * rleft(p, o, s, 7) + 2) >> 2;
         l
@@ -1541,8 +1541,8 @@ mod tests {
     fn fl8_tl(p: &[u8], o: usize, s: usize) -> [i32; 8] {
         let mut l = [0i32; 8];
         l[0] = (rcorner(p, o, s) + 2 * rleft(p, o, s, 0) + rleft(p, o, s, 1) + 2) >> 2;
-        for i in 1..7 {
-            l[i] = (rleft(p, o, s, i as isize - 1) + 2 * rleft(p, o, s, i as isize) + rleft(p, o, s, i as isize + 1) + 2) >> 2;
+        for (i, li) in l.iter_mut().enumerate().take(7).skip(1) {
+            *li = (rleft(p, o, s, i as isize - 1) + 2 * rleft(p, o, s, i as isize) + rleft(p, o, s, i as isize + 1) + 2) >> 2;
         }
         l[7] = (rleft(p, o, s, 6) + 3 * rleft(p, o, s, 7) + 2) >> 2;
         l

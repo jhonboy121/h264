@@ -5,6 +5,7 @@
 //! throughput in two modes:
 //!   - INTRA: every frame forced to an IDR (all-intra coding).
 //!   - IPPP : one IDR then P frames (inter coding).
+//!
 //! Each is run at QP 26 and QP 32. We report ms/frame, frames/s, and MB/s
 //! (source I420 throughput = frames * W * H * 3/2 bytes / time).
 //!

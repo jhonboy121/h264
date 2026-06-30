@@ -291,7 +291,7 @@ mod tests {
         assert_eq!(n.top_xy, xy - 11);
 
         // Right-column MB has no top-right.
-        let xy = 1 * 11 + 10;
+        let xy = 11 + 10;
         let n = ctx.neighbors(xy);
         assert!(n.left && n.top && n.top_left && !n.top_right);
     }

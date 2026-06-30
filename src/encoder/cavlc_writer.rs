@@ -164,11 +164,11 @@ pub fn write_residual_block(
     let mut trailing_ones = 0usize;
     let mut sign = 0u32;
     let count = total_coeffs.min(3);
-    for i in 0..count {
-        if level[i].unsigned_abs() == 1 {
+    for &lv in level.iter().take(count) {
+        if lv.unsigned_abs() == 1 {
             trailing_ones += 1;
             sign <<= 1;
-            if level[i] < 0 {
+            if lv < 0 {
                 sign |= 1;
             }
         } else {
@@ -191,8 +191,8 @@ pub fn write_residual_block(
 
     // Levels.
     let mut suffix_length: i32 = (total_coeffs > 10 && trailing_ones < 3) as i32;
-    for i in trailing_ones..total_coeffs {
-        let val = level[i] as i32;
+    for (i, &lv) in level.iter().enumerate().take(total_coeffs).skip(trailing_ones) {
+        let val = lv as i32;
         let mut level_code = (val - 1) * 2;
         let s = level_code >> 31;
         level_code = (level_code ^ s) + (s << 1);
@@ -202,7 +202,7 @@ pub fn write_residual_block(
         let mut level_suffix_size = suffix_length;
         let mut level_suffix = level_code - (level_prefix << suffix_length);
 
-        if level_prefix >= 14 && level_prefix < 30 && suffix_length == 0 {
+        if (14..30).contains(&level_prefix) && suffix_length == 0 {
             level_prefix = 14;
             level_suffix = level_code - level_prefix;
             level_suffix_size = 4;
@@ -355,7 +355,7 @@ mod tests {
         for _ in 0..10000 {
             let mut c = [0i16; 16];
             for x in c.iter_mut().take(15) {
-                if r.next() % 3 == 0 {
+                if r.next().is_multiple_of(3) {
                     let mag = (r.next() % 20) as i16 + 1;
                     *x = if r.next() & 1 == 0 { mag } else { -mag };
                 }
@@ -364,7 +364,7 @@ mod tests {
 
             let mut cd = [0i16; 4];
             for x in cd.iter_mut() {
-                if r.next() % 2 == 0 {
+                if r.next().is_multiple_of(2) {
                     let mag = (r.next() % 10) as i16 + 1;
                     *x = if r.next() & 1 == 0 { mag } else { -mag };
                 }

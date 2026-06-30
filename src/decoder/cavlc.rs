@@ -156,7 +156,7 @@ fn get_level_val(
 
     let mut suffix_length: i32 = (total_coeff > 10 && trailing_ones < 3) as i32;
 
-    for i in trailing_ones..total_coeff {
+    for (i, lv) in level.iter_mut().enumerate().take(total_coeff).skip(trailing_ones) {
         let prefix_bits = read_prefix_len(bs)?;
         if prefix_bits > MAX_LEVEL_PREFIX + 1 {
             return Err(DecodeError::InvalidSyntax("cavlc level_prefix"));
@@ -187,7 +187,7 @@ fn get_level_val(
         if level_code & 1 != 0 {
             val = -val;
         }
-        level[i] = val;
+        *lv = val;
 
         suffix_length += (suffix_length == 0) as i32;
         let threshold = 3 << (suffix_length - 1);
@@ -371,7 +371,7 @@ mod tests {
                 bits.push(((value >> i) & 1) as u8);
             }
         }
-        while bits.len() % 8 != 0 {
+        while !bits.len().is_multiple_of(8) {
             bits.push(0);
         }
         let mut out: Vec<u8> = Vec::new();
@@ -382,7 +382,7 @@ mod tests {
             }
             out.push(b);
         }
-        out.extend(core::iter::repeat(0u8).take(pad_bytes));
+        out.extend(std::iter::repeat_n(0u8, pad_bytes));
         out
     }
 

@@ -209,14 +209,14 @@ fn classify(ours: &[u8], reference: &[u8], frames: &[Picture]) -> Outcome {
     for i in 0..n {
         if ours[i] != reference[i] {
             if first_diff < 0 {
-                first_diff = if frame_size > 0 { (i / frame_size) as i64 } else { 0 };
+                first_diff = i.checked_div(frame_size).unwrap_or(0) as i64;
             }
             diff_bytes += 1;
         }
     }
     if first_diff < 0 {
         // Common prefix matched; only the trailing length differs.
-        first_diff = if frame_size > 0 { (n / frame_size) as i64 } else { 0 };
+        first_diff = n.checked_div(frame_size).unwrap_or(0) as i64;
     }
     diff_bytes += ours.len().abs_diff(reference.len());
 
@@ -230,8 +230,8 @@ fn classify(ours: &[u8], reference: &[u8], frames: &[Picture]) -> Outcome {
 fn print_report(rows: &[Row]) {
     println!();
     println!(
-        "{:<46} {:>7} {:>9} {:>9}  {}",
-        "STREAM", "FRAMES", "OUR(ms)", "C(ms)", "RESULT"
+        "{:<46} {:>7} {:>9} {:>9}  RESULT",
+        "STREAM", "FRAMES", "OUR(ms)", "C(ms)"
     );
     println!("{}", "-".repeat(120));
 

@@ -100,7 +100,8 @@ impl Neigh {
             && mb_x != ctx.mb_width - 1
             && ctx.slice_idc[mb_xy - ctx.mb_width + 1] == cur;
 
-        let snap = |avail: bool, xy: usize| -> ([i8; 16], [i8; 8], [i8; 16], bool, i8, u8, u16, MbType, bool) {
+        type SnapResult = ([i8; 16], [i8; 8], [i8; 16], bool, i8, u8, u16, MbType, bool);
+        let snap = |avail: bool, xy: usize| -> SnapResult {
             if avail {
                 let mut nl = [0i8; 16];
                 let mut nc = [0i8; 8];
@@ -531,8 +532,8 @@ fn parse_residuals_cabac(
                 }
                 chroma_dc_idct(&mut coeffs[cbase..cbase + 64]);
                 let qmul = G_KUI_DEQUANT_COEFF[chroma_qp[c] as usize][0] as i32;
-                for k in 0..4 {
-                    let j = cbase + G_KUI_CHROMA_DC_SCAN[k] as usize;
+                for &scan in &G_KUI_CHROMA_DC_SCAN {
+                    let j = cbase + scan as usize;
                     coeffs[j] = ((coeffs[j] as i32 * qmul) >> 1) as i16;
                 }
             }
@@ -716,9 +717,10 @@ fn parse_transform_size_8x8(
     dec.decode_decision(ctxs.ctx(base)) != 0
 }
 
-/// CABAC `ParseIntra4x4Mode`: 16 luma modes (each via `ParseIntraPredModeLuma`)
-/// + the chroma mode. Mirrors the CAVLC `parse_intra4x4`, swapping the bit
-/// reads for CABAC. Returns the checked chroma mode.
+/// CABAC `ParseIntra4x4Mode`: 16 luma modes (each via
+/// `ParseIntraPredModeLuma`) + the chroma mode. Mirrors the CAVLC
+/// `parse_intra4x4`, swapping the bit reads for CABAC. Returns the checked
+/// chroma mode.
 #[allow(clippy::too_many_arguments)]
 fn parse_intra4x4_cabac(
     dec: &mut CabacDecoder,
@@ -864,8 +866,8 @@ impl InterCacheC {
             }
         } else {
             let r = if top { REF_NOT_IN_LIST_C } else { REF_NOT_AVAIL_C };
-            for c in 1..=4 {
-                ref_idx[c] = r;
+            for slot in &mut ref_idx[1..=4] {
+                *slot = r;
             }
         }
         if right_top && ctx.mb_type[right_top_xy].is_inter() {
@@ -1169,9 +1171,9 @@ fn parse_inter_motion_cabac(
                 r[i] = parse_ref_idx(dec, ctxs, cache, cur_ref, n, part, ref_count) as i8;
                 store_ref_block(ctx, cache, cur_ref, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], r[i], ref_pic_ids[r[i] as usize], 4, 2);
             }
-            for i in 0..2 {
+            for (i, &ri) in r.iter().enumerate() {
                 let part = i << 3;
-                let mvp = pred_inter16x8(&cache.mv, &cache.ref_idx, part, r[i]);
+                let mvp = pred_inter16x8(&cache.mv, &cache.ref_idx, part, ri);
                 let mx = parse_mvd(dec, ctxs, cache, part, 0);
                 let my = parse_mvd(dec, ctxs, cache, part, 1);
                 let mv = [mvp[0] + mx, mvp[1] + my];
@@ -1185,9 +1187,9 @@ fn parse_inter_motion_cabac(
                 r[i] = parse_ref_idx(dec, ctxs, cache, cur_ref, n, part, ref_count) as i8;
                 store_ref_block(ctx, cache, cur_ref, mb_xy, SCAN4[part], CACHE30_SCAN_IDX[part], r[i], ref_pic_ids[r[i] as usize], 2, 4);
             }
-            for i in 0..2 {
+            for (i, &ri) in r.iter().enumerate() {
                 let part = i << 2;
-                let mvp = pred_inter8x16(&cache.mv, &cache.ref_idx, part, r[i]);
+                let mvp = pred_inter8x16(&cache.mv, &cache.ref_idx, part, ri);
                 let mx = parse_mvd(dec, ctxs, cache, part, 0);
                 let my = parse_mvd(dec, ctxs, cache, part, 1);
                 let mv = [mvp[0] + mx, mvp[1] + my];

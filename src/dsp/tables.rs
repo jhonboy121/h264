@@ -658,15 +658,12 @@ mod tests {
     #[test]
     fn dequant_qp_periodicity() {
         // The 4x4 dequant table repeats every 6 QP steps, scaled by 1<<(qp/6).
-        for qp in 0..52usize {
+        for (qp, row) in G_KUI_DEQUANT_COEFF.iter().enumerate() {
             let base = qp % 6;
             let shift = (qp / 6) as u32;
-            for col in 0..8 {
-                assert_eq!(
-                    G_KUI_DEQUANT_COEFF[qp][col] as u32,
-                    (G_KUI_DEQUANT_COEFF[base][col] as u32) << shift,
-                    "qp={qp} col={col}"
-                );
+            let base_row = &G_KUI_DEQUANT_COEFF[base];
+            for (col, (&v, &bv)) in row.iter().zip(base_row.iter()).enumerate() {
+                assert_eq!(v as u32, (bv as u32) << shift, "qp={qp} col={col}");
             }
         }
     }
@@ -676,9 +673,9 @@ mod tests {
         // Unlike the 4x4 table, the 8x8 table stores only the QP%6 pattern and
         // repeats it identically every 6 QP steps; the `1 << (qp/6)` scaling is
         // applied separately in the dequant code path.
-        for qp in 0..52usize {
+        for (qp, row) in G_KUI_DEQUANT_COEFF8X8.iter().enumerate() {
             let base = qp % 6;
-            assert_eq!(G_KUI_DEQUANT_COEFF8X8[qp], G_KUI_DEQUANT_COEFF8X8[base], "qp={qp}");
+            assert_eq!(*row, G_KUI_DEQUANT_COEFF8X8[base], "qp={qp}");
         }
     }
 

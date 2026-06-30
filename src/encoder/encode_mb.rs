@@ -713,9 +713,7 @@ impl FrameEnc {
         if enc.has_dc {
             let mut dc_raster = [0i16; 16];
             // Undo scan: enc.luma_dc is scan order; place into block DC slots.
-            for s in 0..16 {
-                dc_raster[s] = enc.luma_dc[s];
-            }
+            dc_raster.copy_from_slice(&enc.luma_dc);
             // Place levels at block*16 offsets per the zig-zag, then dequant-IDCT.
             for s in 0..16 {
                 coeffs[G_KUI_LUMA_DC_ZIGZAG_SCAN[s] as usize] = dc_raster[s];
@@ -942,8 +940,8 @@ impl FrameEnc {
                 }
                 chroma_dc_idct(&mut coeffs);
                 let qmul = deq[0] as i32;
-                for k in 0..4 {
-                    let j = G_KUI_CHROMA_DC_SCAN[k] as usize;
+                for &scan in &G_KUI_CHROMA_DC_SCAN {
+                    let j = scan as usize;
                     coeffs[j] = ((coeffs[j] as i32 * qmul) >> 1) as i16;
                 }
             }

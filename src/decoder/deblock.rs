@@ -5,9 +5,9 @@
 //!
 //! This is the picture-level pass: after the whole frame is reconstructed it
 //! walks macroblocks in raster order and filters each MB's vertical edges
-//! (left boundary + internal x = 4, 8, 12) then horizontal edges (top boundary
-//! + internal y = 4, 8, 12), luma then chroma, reading already-filtered
-//! left/top neighbours.
+//! (left boundary + internal x = 4, 8, 12) then horizontal edges
+//! (top boundary + internal y = 4, 8, 12), luma then chroma, reading
+//! already-filtered left/top neighbours.
 //!
 //! Intra MBs use the fixed rule (bS = 4 on MB boundaries, bS = 3 on internal
 //! 4x4 edges). Inter MBs derive a per-4x4-edge boundary strength
@@ -395,18 +395,18 @@ fn inter_bs(
     if mb_type.is_inter_16x16() {
         // DeblockingBSInsideMBAvsbase: bS = 2 if either 4x4 block carries
         // coefficients, else 0 (the MV is uniform across a 16x16 partition).
-        for seg in 0..4 {
-            for e in 1..4 {
+        for (e, edge) in nbs[0].iter_mut().enumerate().skip(1) {
+            for (seg, cell) in edge.iter_mut().enumerate() {
                 let a = nzc(mb_xy, seg * 4 + e - 1);
                 let b = nzc(mb_xy, seg * 4 + e);
-                nbs[0][e][seg] = if (a | b) != 0 { 2 } else { 0 };
+                *cell = if (a | b) != 0 { 2 } else { 0 };
             }
         }
-        for s in 0..4 {
-            for e in 1..4 {
+        for (e, edge) in nbs[1].iter_mut().enumerate().skip(1) {
+            for (s, cell) in edge.iter_mut().enumerate() {
                 let a = nzc(mb_xy, (e - 1) * 4 + s);
                 let b = nzc(mb_xy, e * 4 + s);
-                nbs[1][e][s] = if (a | b) != 0 { 2 } else { 0 };
+                *cell = if (a | b) != 0 { 2 } else { 0 };
             }
         }
     } else {
@@ -417,18 +417,18 @@ fn inter_bs(
             let smb = mb_bs_mv(refp(idx), refp(nidx), mv(idx), mv(nidx));
             if bsx1 != 0 { 2 } else { smb }
         };
-        for seg in 0..4 {
-            for e in 1..4 {
+        for (e, edge) in nbs[0].iter_mut().enumerate().skip(1) {
+            for (seg, cell) in edge.iter_mut().enumerate() {
                 let idx = seg * 4 + e;
                 let nidx = seg * 4 + e - 1;
-                nbs[0][e][seg] = bs_edge(nzc(mb_xy, idx) | nzc(mb_xy, nidx), idx, nidx);
+                *cell = bs_edge(nzc(mb_xy, idx) | nzc(mb_xy, nidx), idx, nidx);
             }
         }
-        for s in 0..4 {
-            for e in 1..4 {
+        for (e, edge) in nbs[1].iter_mut().enumerate().skip(1) {
+            for (s, cell) in edge.iter_mut().enumerate() {
                 let idx = e * 4 + s;
                 let nidx = (e - 1) * 4 + s;
-                nbs[1][e][s] = bs_edge(nzc(mb_xy, idx) | nzc(mb_xy, nidx), idx, nidx);
+                *cell = bs_edge(nzc(mb_xy, idx) | nzc(mb_xy, nidx), idx, nidx);
             }
         }
     }
@@ -511,9 +511,9 @@ fn inter_luma(
     }
     let (a, b) = alpha_beta(cur_qp, aoff, boff);
     if (a | b) != 0 {
-        for e in 1..4 {
-            if nbs[0][e].iter().any(|&v| v != 0) {
-                let tc = tc_from_bs(cur_qp, aoff, &nbs[0][e], 0);
+        for (e, edge) in nbs[0].iter().enumerate().skip(1) {
+            if edge.iter().any(|&v| v != 0) {
+                let tc = tc_from_bs(cur_qp, aoff, edge, 0);
                 deblock_luma_lt4_h(y, y_off + e * 4, stride, a, b, &tc);
             }
         }
@@ -537,9 +537,9 @@ fn inter_luma(
         }
     }
     if (a | b) != 0 {
-        for e in 1..4 {
-            if nbs[1][e].iter().any(|&v| v != 0) {
-                let tc = tc_from_bs(cur_qp, aoff, &nbs[1][e], 0);
+        for (e, edge) in nbs[1].iter().enumerate().skip(1) {
+            if edge.iter().any(|&v| v != 0) {
+                let tc = tc_from_bs(cur_qp, aoff, edge, 0);
                 deblock_luma_lt4_v(y, y_off + e * 4 * stride, stride, a, b, &tc);
             }
         }

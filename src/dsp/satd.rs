@@ -34,11 +34,12 @@ fn satd4x4_at(s1: &[u8], o1: usize, st1: usize, s2: &[u8], o2: usize, st2: usize
     }
     // Vertical transform and accumulate transformed magnitudes.
     let mut sum = 0i32;
-    for i in 0..4 {
-        let a0 = m[0][i] + m[2][i];
-        let a1 = m[1][i] + m[3][i];
-        let a2 = m[0][i] - m[2][i];
-        let a3 = m[1][i] - m[3][i];
+    let [r0, r1, r2, r3] = &m;
+    for (((&v0, &v1), &v2), &v3) in r0.iter().zip(r1).zip(r2).zip(r3) {
+        let a0 = v0 + v2;
+        let a1 = v1 + v3;
+        let a2 = v0 - v2;
+        let a3 = v1 - v3;
         sum += (a0 + a1).abs() + (a2 + a3).abs() + (a2 - a3).abs() + (a0 - a1).abs();
     }
     (sum + 1) >> 1

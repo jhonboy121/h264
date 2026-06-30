@@ -593,8 +593,8 @@ fn parse_residuals(
             }
             chroma_dc_idct(&mut coeffs[cbase..cbase + 64]);
             let qmul = G_KUI_DEQUANT_COEFF[chroma_qp[c] as usize][0] as i32;
-            for k in 0..4 {
-                let j = cbase + G_KUI_CHROMA_DC_SCAN[k] as usize;
+            for &scan in &G_KUI_CHROMA_DC_SCAN {
+                let j = cbase + scan as usize;
                 coeffs[j] = ((coeffs[j] as i32 * qmul) >> 1) as i16;
             }
         }
@@ -762,8 +762,8 @@ impl InterCache {
             }
         } else {
             let r = if top { REF_NOT_IN_LIST } else { REF_NOT_AVAIL };
-            for c in 1..=4 {
-                ref_idx[c] = r;
+            for slot in &mut ref_idx[1..=4] {
+                *slot = r;
             }
         }
         // Right-top (cache 5 <- block 12).

@@ -909,9 +909,7 @@ mod tests {
         };
 
         push_bits(66, 8, &mut bits); // profile_idc
-        for _ in 0..6 {
-            bits.push(0); // constraint flags
-        }
+        bits.extend(core::iter::repeat_n(0, 6)); // constraint flags
         push_bits(0, 2, &mut bits); // reserved_zero_2bits
         push_bits(10, 8, &mut bits); // level_idc = 1.0 (10)
         push_ue(0, &mut bits); // sps_id

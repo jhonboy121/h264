@@ -19,17 +19,21 @@ use core::arch::aarch64::*;
 /// 16-wide row SAD accumulator step: `acc += sum_pairs(|a - b|)`.
 #[inline]
 unsafe fn sad_row16(acc: uint16x8_t, a: *const u8, b: *const u8) -> uint16x8_t {
-    let va = vld1q_u8(a);
-    let vb = vld1q_u8(b);
-    vpadalq_u8(acc, vabdq_u8(va, vb))
+    unsafe {
+        let va = vld1q_u8(a);
+        let vb = vld1q_u8(b);
+        vpadalq_u8(acc, vabdq_u8(va, vb))
+    }
 }
 
 /// 8-wide row SAD accumulator step.
 #[inline]
 unsafe fn sad_row8(acc: uint16x4_t, a: *const u8, b: *const u8) -> uint16x4_t {
-    let va = vld1_u8(a);
-    let vb = vld1_u8(b);
-    vpadal_u8(acc, vabd_u8(va, vb))
+    unsafe {
+        let va = vld1_u8(a);
+        let vb = vld1_u8(b);
+        vpadal_u8(acc, vabd_u8(va, vb))
+    }
 }
 
 /// NEON SAD for `w` in {8, 16}; any other width falls back to scalar. Bit-exact
@@ -76,35 +80,41 @@ unsafe fn transpose4_s16(
     c: int16x4_t,
     d: int16x4_t,
 ) -> (int16x4_t, int16x4_t, int16x4_t, int16x4_t) {
-    let t0 = vtrn_s16(a, b);
-    let t1 = vtrn_s16(c, d);
-    let u0 = vtrn_s32(vreinterpret_s32_s16(t0.0), vreinterpret_s32_s16(t1.0));
-    let u1 = vtrn_s32(vreinterpret_s32_s16(t0.1), vreinterpret_s32_s16(t1.1));
-    (
-        vreinterpret_s16_s32(u0.0),
-        vreinterpret_s16_s32(u1.0),
-        vreinterpret_s16_s32(u0.1),
-        vreinterpret_s16_s32(u1.1),
-    )
+    unsafe {
+        let t0 = vtrn_s16(a, b);
+        let t1 = vtrn_s16(c, d);
+        let u0 = vtrn_s32(vreinterpret_s32_s16(t0.0), vreinterpret_s32_s16(t1.0));
+        let u1 = vtrn_s32(vreinterpret_s32_s16(t0.1), vreinterpret_s32_s16(t1.1));
+        (
+            vreinterpret_s16_s32(u0.0),
+            vreinterpret_s16_s32(u1.0),
+            vreinterpret_s16_s32(u0.1),
+            vreinterpret_s16_s32(u1.1),
+        )
+    }
 }
 
 /// Load the 4 prediction bytes of row `r` (at `pred[r*stride..]`) as `i32x4`.
 #[inline]
 unsafe fn load_pred_row(pred: *const u8, off: usize) -> int32x4_t {
-    let mut tmp = [0u8; 8];
-    core::ptr::copy_nonoverlapping(pred.add(off), tmp.as_mut_ptr(), 4);
-    let b = vld1_u8(tmp.as_ptr());
-    let u16v = vget_low_u16(vmovl_u8(b));
-    vreinterpretq_s32_u32(vmovl_u16(u16v))
+    unsafe {
+        let mut tmp = [0u8; 8];
+        core::ptr::copy_nonoverlapping(pred.add(off), tmp.as_mut_ptr(), 4);
+        let b = vld1_u8(tmp.as_ptr());
+        let u16v = vget_low_u16(vmovl_u8(b));
+        vreinterpretq_s32_u32(vmovl_u16(u16v))
+    }
 }
 
 /// Clip an `i32x4` of (delta + pred) to `[0,255]` and store 4 bytes at `dst+off`.
 #[inline]
 unsafe fn store_clip_row(dst: *mut u8, off: usize, v: int32x4_t) {
-    let s16 = vqmovn_s32(v); // saturate i32 -> i16
-    let u8v = vqmovun_s16(vcombine_s16(s16, s16)); // saturate i16 -> u8 [0,255]
-    let lane = vget_lane_u32(vreinterpret_u32_u8(u8v), 0);
-    core::ptr::copy_nonoverlapping((&lane as *const u32) as *const u8, dst.add(off), 4);
+    unsafe {
+        let s16 = vqmovn_s32(v); // saturate i32 -> i16
+        let u8v = vqmovun_s16(vcombine_s16(s16, s16)); // saturate i16 -> u8 [0,255]
+        let lane = vget_lane_u32(vreinterpret_u32_u8(u8v), 0);
+        core::ptr::copy_nonoverlapping((&lane as *const u32) as *const u8, dst.add(off), 4);
+    }
 }
 
 /// Bit-exact NEON port of `idct4x4_add`. Horizontal pass uses wrapping `i16`
@@ -171,7 +181,7 @@ pub fn idct4x4_add(pred: &mut [u8], stride: usize, rs: &[i16; 16]) {
 /// Widen 8 bytes to `int16x8_t` (values 0..255 stay positive).
 #[inline]
 unsafe fn widen8(p: *const u8) -> int16x8_t {
-    vreinterpretq_s16_u16(vmovl_u8(vld1_u8(p)))
+    unsafe { vreinterpretq_s16_u16(vmovl_u8(vld1_u8(p))) }
 }
 
 /// 6-tap on six `int16x8_t` tap vectors: `(a+f) - 5*(b+e) + 20*(c+d)`.
@@ -184,37 +194,43 @@ unsafe fn tap6(
     e: int16x8_t,
     f: int16x8_t,
 ) -> int16x8_t {
-    let s05 = vaddq_s16(a, f);
-    let s14 = vaddq_s16(b, e);
-    let s23 = vaddq_s16(c, d);
-    // Range fits i16 (max ~10710, min ~-2550), matching the scalar i32 result.
-    let t = vsubq_s16(s05, vmulq_n_s16(s14, 5));
-    vaddq_s16(t, vmulq_n_s16(s23, 20))
+    unsafe {
+        let s05 = vaddq_s16(a, f);
+        let s14 = vaddq_s16(b, e);
+        let s23 = vaddq_s16(c, d);
+        // Range fits i16 (max ~10710, min ~-2550), matching the scalar i32 result.
+        let t = vsubq_s16(s05, vmulq_n_s16(s14, 5));
+        vaddq_s16(t, vmulq_n_s16(s23, 20))
+    }
 }
 
 /// One 8-wide horizontal half-pel output row at `src[base..]` -> `dst[doff..]`.
 #[inline]
 unsafe fn hor8(dst: *mut u8, doff: usize, src: *const u8, base: isize) {
-    let a = widen8(src.offset(base - 2));
-    let b = widen8(src.offset(base - 1));
-    let c = widen8(src.offset(base));
-    let d = widen8(src.offset(base + 1));
-    let e = widen8(src.offset(base + 2));
-    let f = widen8(src.offset(base + 3));
-    // (t + 16) >> 5 with unsigned saturation == clip1((v + 16) >> 5).
-    vst1_u8(dst.add(doff), vqrshrun_n_s16(tap6(a, b, c, d, e, f), 5));
+    unsafe {
+        let a = widen8(src.offset(base - 2));
+        let b = widen8(src.offset(base - 1));
+        let c = widen8(src.offset(base));
+        let d = widen8(src.offset(base + 1));
+        let e = widen8(src.offset(base + 2));
+        let f = widen8(src.offset(base + 3));
+        // (t + 16) >> 5 with unsigned saturation == clip1((v + 16) >> 5).
+        vst1_u8(dst.add(doff), vqrshrun_n_s16(tap6(a, b, c, d, e, f), 5));
+    }
 }
 
 /// One 8-wide vertical half-pel output row at `src[base..]` -> `dst[doff..]`.
 #[inline]
 unsafe fn ver8(dst: *mut u8, doff: usize, src: *const u8, base: isize, ss: isize) {
-    let a = widen8(src.offset(base - 2 * ss));
-    let b = widen8(src.offset(base - ss));
-    let c = widen8(src.offset(base));
-    let d = widen8(src.offset(base + ss));
-    let e = widen8(src.offset(base + 2 * ss));
-    let f = widen8(src.offset(base + 3 * ss));
-    vst1_u8(dst.add(doff), vqrshrun_n_s16(tap6(a, b, c, d, e, f), 5));
+    unsafe {
+        let a = widen8(src.offset(base - 2 * ss));
+        let b = widen8(src.offset(base - ss));
+        let c = widen8(src.offset(base));
+        let d = widen8(src.offset(base + ss));
+        let e = widen8(src.offset(base + 2 * ss));
+        let f = widen8(src.offset(base + 3 * ss));
+        vst1_u8(dst.add(doff), vqrshrun_n_s16(tap6(a, b, c, d, e, f), 5));
+    }
 }
 
 /// Bit-exact NEON `mc_hor_ver20` (horizontal half-pel) for w in {8,16}.

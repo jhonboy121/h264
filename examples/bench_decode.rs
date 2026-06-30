@@ -7,6 +7,7 @@
 //!   - ms/frame
 //!   - frames/s
 //!   - MB/s  (decoded I420 output throughput = frames * w * h * 3/2 bytes)
+//!
 //! The C binary is timed the same way via std::process + Instant (its number
 //! therefore includes process spawn and the YUV file write — a small handicap
 //! that is called out in the report).

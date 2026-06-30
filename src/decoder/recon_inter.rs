@@ -113,12 +113,12 @@ pub fn recon_inter_mb(
             base_mc(&mut ctx.picture, rp(ref_idx[2]), mb_x, mb_y, 8, 0, mv[2], 8, 16);
         }
         MbType::Inter8x8 | MbType::Inter8x8Ref0 => {
-            for i in 0..4 {
+            for (i, &sub) in subs.iter().enumerate() {
                 let i_idx = ((i >> 1) << 3) + ((i & 1) << 1); // raster top-left of 8x8
                 let blk8x = (i & 1) << 3;
                 let blk8y = (i >> 1) << 3;
                 let r = rp(ref_idx[i_idx]);
-                match subs[i] {
+                match sub {
                     SubMbType::P8x8 => {
                         base_mc(&mut ctx.picture, r, mb_x, mb_y, blk8x, blk8y, mv[i_idx], 8, 8);
                     }

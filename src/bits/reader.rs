@@ -54,7 +54,7 @@ impl<'a> BitReader<'a> {
     /// True if the next bit is on a byte boundary.
     #[inline]
     pub fn byte_aligned(&self) -> bool {
-        self.pos % 8 == 0
+        self.pos.is_multiple_of(8)
     }
 
     /// Read a single bit without bounds-checking helpers (internal).

@@ -186,10 +186,10 @@ pub fn mc_hor_ver22(
 ) {
     let mut tmp = [0i16; 16 + 5];
     for i in 0..h {
-        for j in 0..w + 5 {
+        for (j, t) in tmp.iter_mut().enumerate().take(w + 5) {
             // C: FilterInput8bitWithStride_c(pSrc - 2 + j, iSrcStride)
             let pos = (so + i * ss) as isize - 2 + j as isize;
-            tmp[j] = filter_input_8bit(src, pos as usize, ss as isize) as i16;
+            *t = filter_input_8bit(src, pos as usize, ss as isize) as i16;
         }
         for k in 0..w {
             dst[do_ + i * ds + k] = clip1((hor_filter_input_16bit(&tmp, k) + 512) >> 10);
