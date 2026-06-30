@@ -351,7 +351,19 @@ fn finalize_into(mut c: CurPic, dpb: &mut Dpb, next_id: &mut i32) -> Frame {
             ),
             None => (false, false, &[][..]),
         };
-        dpb.mark_and_insert(pic.clone(), c.frame_num, id, c.is_idr, lt_flag, adaptive, mmco, c.poc, col);
+        dpb.mark_and_insert(
+            pic.clone(),
+            crate::decoder::dpb::RefMark {
+                frame_num: c.frame_num,
+                id,
+                is_idr: c.is_idr,
+                long_term_reference_flag: lt_flag,
+                adaptive,
+                mmco,
+                poc: c.poc,
+                col,
+            },
+        );
         Frame::new(pic, region)
     } else {
         Frame::new(c.ctx.picture, region)

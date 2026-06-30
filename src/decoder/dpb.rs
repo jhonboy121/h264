@@ -49,6 +49,27 @@ pub struct ColMotion {
     pub ref0_id: Vec<i32>,
 }
 
+/// Reference-marking parameters for [`Dpb::mark_and_insert`]: the freshly
+/// decoded picture's identity plus its `dec_ref_pic_marking` decision.
+pub struct RefMark<'a> {
+    /// `frame_num` from the slice header.
+    pub frame_num: i32,
+    /// Monotonic decode-order identity.
+    pub id: i32,
+    /// IDR picture (selects the IDR marking path).
+    pub is_idr: bool,
+    /// IDR `long_term_reference_flag`.
+    pub long_term_reference_flag: bool,
+    /// `adaptive_ref_pic_marking_mode_flag` (MMCO present).
+    pub adaptive: bool,
+    /// Memory-management control operations (when `adaptive`).
+    pub mmco: &'a [MmcoEntry],
+    /// Picture order count.
+    pub poc: i32,
+    /// Colocated motion of this picture for B direct prediction.
+    pub col: ColMotion,
+}
+
 /// One decoded reference frame held in the DPB.
 pub struct RefFrame {
     /// Reconstructed, border-extended picture.
@@ -267,19 +288,17 @@ impl Dpb {
     /// Apply `dec_ref_pic_marking` for a freshly decoded reference picture and
     /// insert it (`WelsMarkAsRef`). `is_idr` selects the IDR path; otherwise
     /// `marking` carries the sliding-window/adaptive (MMCO) decision.
-    #[allow(clippy::too_many_arguments)]
-    pub fn mark_and_insert(
-        &mut self,
-        pic: Picture,
-        frame_num: i32,
-        id: i32,
-        is_idr: bool,
-        long_term_reference_flag: bool,
-        adaptive: bool,
-        mmco: &[MmcoEntry],
-        poc: i32,
-        col: ColMotion,
-    ) {
+    pub fn mark_and_insert(&mut self, pic: Picture, mark: RefMark<'_>) {
+        let RefMark {
+            frame_num,
+            id,
+            is_idr,
+            long_term_reference_flag,
+            adaptive,
+            mmco,
+            poc,
+            col,
+        } = mark;
         if is_idr {
             // The caller has already cleared the DPB for the IDR.
             if long_term_reference_flag {
@@ -476,6 +495,19 @@ mod tests {
         RefListReorder::default()
     }
 
+    fn mark(frame_num: i32, id: i32, is_idr: bool, lt: bool) -> RefMark<'static> {
+        RefMark {
+            frame_num,
+            id,
+            is_idr,
+            long_term_reference_flag: lt,
+            adaptive: false,
+            mmco: &[],
+            poc: 0,
+            col: ColMotion::default(),
+        }
+    }
+
     #[test]
     fn p_list_descending_picnum() {
         let mut dpb = Dpb::new(4, 4); // max_frame_num = 16
@@ -501,9 +533,9 @@ mod tests {
     #[test]
     fn sliding_window_drops_oldest() {
         let mut dpb = Dpb::new(2, 4);
-        dpb.mark_and_insert(Picture::new(1, 1), 0, 0, false, false, false, &[], 0, ColMotion::default());
-        dpb.mark_and_insert(Picture::new(1, 1), 1, 1, false, false, false, &[], 0, ColMotion::default());
-        dpb.mark_and_insert(Picture::new(1, 1), 2, 2, false, false, false, &[], 0, ColMotion::default());
+        dpb.mark_and_insert(Picture::new(1, 1), mark(0, 0, false, false));
+        dpb.mark_and_insert(Picture::new(1, 1), mark(1, 1, false, false));
+        dpb.mark_and_insert(Picture::new(1, 1), mark(2, 2, false, false));
         assert_eq!(dpb.refs.len(), 2);
         let mut ids: Vec<i32> = dpb.refs.iter().map(|r| r.id).collect();
         ids.sort();
@@ -534,10 +566,10 @@ mod tests {
     fn long_term_selected_by_reorder() {
         let mut dpb = Dpb::new(4, 4);
         // IDR as long-term idx 0.
-        dpb.mark_and_insert(Picture::new(1, 1), 0, 0, true, true, false, &[], 0, ColMotion::default());
+        dpb.mark_and_insert(Picture::new(1, 1), mark(0, 0, true, true));
         // A couple short-term refs.
-        dpb.mark_and_insert(Picture::new(1, 1), 1, 1, false, false, false, &[], 0, ColMotion::default());
-        dpb.mark_and_insert(Picture::new(1, 1), 2, 2, false, false, false, &[], 0, ColMotion::default());
+        dpb.mark_and_insert(Picture::new(1, 1), mark(1, 1, false, false));
+        dpb.mark_and_insert(Picture::new(1, 1), mark(2, 2, false, false));
         // reorder idc 2 -> long-term pic num 0 at front.
         let reorder = RefListReorder {
             flag: true,
