@@ -7,3 +7,5 @@
 
 pub mod cavlc_writer;
 pub mod intra_pred;
+pub mod nal_encap;
+pub mod paraset;
