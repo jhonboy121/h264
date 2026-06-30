@@ -1746,7 +1746,7 @@ fn parse_b_8x8(
             if sinfo.direct {
                 if let Some(d) = &direct {
                     irefs[i] = d.iref[list];
-                    set_8x8_ref(ctx, cache, mb_xy, i, list, d.iref[list], direct_refpic.unwrap()[list]);
+                    set_8x8_ref(ctx, mb_xy, i, list, d.iref[list], direct_refpic.unwrap()[list]);
                 }
             } else if dir_uses(sinfo.dir, list) {
                 let n = bref.ref_count[list];
@@ -1755,9 +1755,9 @@ fn parse_b_8x8(
                     return Err(DecodeError::InvalidSyntax("B 8x8 ref_idx"));
                 }
                 irefs[i] = v as i8;
-                set_8x8_ref(ctx, cache, mb_xy, i, list, v as i8, bref.ref_pic_ids[list][v as usize]);
+                set_8x8_ref(ctx, mb_xy, i, list, v as i8, bref.ref_pic_ids[list][v as usize]);
             } else {
-                set_8x8_ref(ctx, cache, mb_xy, i, list, REF_NOT_IN_LIST, -1);
+                set_8x8_ref(ctx, mb_xy, i, list, REF_NOT_IN_LIST, -1);
             }
         }
     }
@@ -1765,6 +1765,12 @@ fn parse_b_8x8(
     // mvd for non-direct sub-partitions.
     for list in 0..2 {
         for (i, &s) in subs.iter().enumerate() {
+            // Set this 8x8's neighbour-cache ref-index now (C sets it per-8x8 at
+            // the start of the mvd loop, so a later 8x8 doesn't affect this one).
+            let cache8 = CACHE30_SCAN_IDX[i << 2];
+            for &c in &[cache8, cache8 + 1, cache8 + 6, cache8 + 7] {
+                cache.ref_idx[list][c] = iref[list][i];
+            }
             let sinfo = &B_SUB_INFO[s];
             if sinfo.direct {
                 continue;
@@ -1796,10 +1802,12 @@ fn parse_b_8x8(
     Ok(())
 }
 
-/// Set the reference index for a whole 8x8 (4 blocks) in both ctx and cache.
+/// Set the reference index for a whole 8x8 (4 blocks) in `ctx` only. The
+/// neighbour cache's ref-index is set per-8x8 inside the mvd loop (matching the
+/// C decoder, so that a later 8x8's ref does not pollute an earlier partition's
+/// MV prediction).
 fn set_8x8_ref(
     ctx: &mut DecoderContext,
-    cache: &mut BInterCache,
     mb_xy: usize,
     idx8: usize,
     list: usize,
@@ -1807,10 +1815,6 @@ fn set_8x8_ref(
     ref_pic: i32,
 ) {
     let base_part = idx8 << 2;
-    let cache8 = CACHE30_SCAN_IDX[base_part];
-    for &c in &[cache8, cache8 + 1, cache8 + 6, cache8 + 7] {
-        cache.ref_idx[list][c] = iref;
-    }
     let scan8 = SCAN4[base_part];
     for &raster in &[scan8, scan8 + 1, scan8 + 4, scan8 + 5] {
         if list == 0 {

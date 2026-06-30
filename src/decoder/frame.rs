@@ -97,6 +97,9 @@ struct CurPic {
     is_idr: bool,
     /// Picture order count (display order).
     poc: i32,
+    /// Coded-video-sequence index (increments at each IDR), the primary output
+    /// reordering key (POC is reset per CVS).
+    cvs: i32,
     /// `dec_ref_pic_marking` from the first slice of this picture (reference
     /// pictures only), driving sliding-window vs adaptive (MMCO) marking.
     marking: Option<super::slice_header::RefPicMarking>,
@@ -231,11 +234,12 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
         }
     }
 
-    let mut output: Vec<Picture> = Vec::new();
+    let mut output: Vec<(i32, i32, Picture)> = Vec::new();
     let mut dpb: Option<Dpb> = None;
     let mut next_id: i32 = 0;
     let mut cur: Option<CurPic> = None;
     let mut poc_state = PocState::default();
+    let mut cvs: i32 = -1;
 
     for nal in &nals {
         if !nal.unit_type.is_vcl() {
@@ -262,6 +266,10 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
             }
             if is_idr {
                 dpb.as_mut().unwrap().clear();
+                cvs += 1;
+            }
+            if cvs < 0 {
+                cvs = 0;
             }
             let mb_width = sps.mb_width as usize;
             let mb_height = sps.mb_height as usize;
@@ -272,6 +280,7 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
                 is_ref: nal.ref_idc != 0,
                 is_idr,
                 poc,
+                cvs,
                 marking: sh.dec_ref_pic_marking.clone(),
                 slice_index: 0,
                 region: region_from_sps(&sps),
@@ -281,7 +290,7 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
         let cp = cur.as_mut().ok_or(DecodeError::InvalidSyntax("slice before picture start"))?;
         if pps.entropy_coding_mode_flag {
             decode_one_slice_cabac(
-                &mut cp.ctx, &mut bs, &nal.rbsp, &sh, &pps, cp.slice_index, dpb.as_ref().unwrap(),
+                &mut cp.ctx, &mut bs, &nal.rbsp, &sh, &pps, cp.slice_index, dpb.as_ref().unwrap(), cp.poc, sps.direct_8x8_inference_flag,
             )?;
         } else {
             decode_one_slice(&mut cp.ctx, &mut bs, &sh, &pps, cp.slice_index, dpb.as_ref().unwrap(), cp.poc, sps.direct_8x8_inference_flag)?;
@@ -292,12 +301,16 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
     if let Some(c) = cur.take() {
         finalize_picture(c, dpb.as_mut().unwrap(), &mut output, &mut next_id);
     }
-    Ok(output)
+    // Reorder into display order: POC ascending within each coded video sequence
+    // (a stable sort, so I/P streams with monotonic POC keep decode order).
+    output.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    Ok(output.into_iter().map(|(_, _, p)| p).collect())
 }
 
 /// Deblock, optionally border-extend + insert into the DPB, and emit.
-fn finalize_picture(c: CurPic, dpb: &mut Dpb, output: &mut Vec<Picture>, next_id: &mut i32) {
-    output.push(finalize_into(c, dpb, next_id).into_picture());
+fn finalize_picture(c: CurPic, dpb: &mut Dpb, output: &mut Vec<(i32, i32, Picture)>, next_id: &mut i32) {
+    let (cvs, poc) = (c.cvs, c.poc);
+    output.push((cvs, poc, finalize_into(c, dpb, next_id).into_picture()));
 }
 
 /// Deblock, optionally border-extend + insert into the DPB, and return the
@@ -485,6 +498,7 @@ fn decode_b_slice_cavlc(
 /// Decode one CABAC slice's macroblocks (parse + reconstruct) into `ctx`.
 /// `rbsp` is the full slice NAL RBSP; `bs` is positioned just past the slice
 /// header, used to find the `cabac_alignment_one_bit` boundary.
+#[allow(clippy::too_many_arguments)]
 fn decode_one_slice_cabac(
     ctx: &mut DecoderContext,
     bs: &mut BitReader<'_>,
@@ -493,12 +507,14 @@ fn decode_one_slice_cabac(
     pps: &Pps,
     slice_index: i32,
     dpb: &Dpb,
+    cur_poc: i32,
+    direct_8x8_inference: bool,
 ) -> Result<(), DecodeError> {
     use super::cabac::{CabacContexts, CabacDecoder};
     use super::mb_parse_cabac::{decode_mb_cabac_islice, decode_mb_cabac_pslice};
 
     if sh.slice_type == super::slice_header::SliceType::B {
-        return Err(DecodeError::Unsupported("B slice (CABAC)"));
+        return decode_b_slice_cabac(ctx, bs, rbsp, sh, pps, slice_index, dpb, cur_poc, direct_8x8_inference);
     }
 
     // cabac_alignment_one_bit: consume 1-bits to the next byte boundary.
@@ -567,6 +583,98 @@ fn decode_one_slice_cabac(
             recon_intra_mb(ctx, mb_xy, &coeffs);
         } else {
             recon_inter_mb(ctx, mb_xy, &coeffs, &ref_pics);
+        }
+        mb_xy += 1;
+        if eos {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Decode one B slice's macroblocks (CABAC).
+#[allow(clippy::too_many_arguments)]
+fn decode_b_slice_cabac(
+    ctx: &mut DecoderContext,
+    bs: &mut BitReader<'_>,
+    rbsp: &[u8],
+    sh: &SliceHeader,
+    pps: &Pps,
+    slice_index: i32,
+    dpb: &Dpb,
+    cur_poc: i32,
+    direct_8x8_inference: bool,
+) -> Result<(), DecodeError> {
+    use super::cabac::{CabacContexts, CabacDecoder};
+    use super::mb_parse_cabac::{decode_mb_cabac_bslice, BRefsCabac};
+    use super::recon_inter::recon_b_mb;
+
+    if !sh.direct_spatial_mv_pred_flag {
+        return Err(DecodeError::Unsupported("B temporal direct (CABAC)"));
+    }
+
+    let (blist0, blist1) = dpb.b_ref_lists(
+        sh.frame_num as i32,
+        cur_poc,
+        sh.num_ref_idx_active[0] as usize,
+        sh.num_ref_idx_active[1] as usize,
+        &sh.ref_pic_list_reordering.list[0],
+        &sh.ref_pic_list_reordering.list[1],
+    );
+    if blist0.is_empty() || blist1.is_empty() {
+        return Err(DecodeError::InvalidSyntax("B slice with no references"));
+    }
+    let ref_pic_ids0: Vec<i32> = blist0.iter().map(|&i| dpb.refs[i].id).collect();
+    let ref_pic_ids1: Vec<i32> = blist1.iter().map(|&i| dpb.refs[i].id).collect();
+    let ref_pics0: Vec<&Picture> = blist0.iter().map(|&i| &dpb.refs[i].pic).collect();
+    let ref_pics1: Vec<&Picture> = blist1.iter().map(|&i| &dpb.refs[i].pic).collect();
+    let col_frame = &dpb.refs[blist1[0]];
+    ctx.is_b_slice = true;
+
+    while !bs.byte_aligned() {
+        if bs.read_bit()? != 1 {
+            return Err(DecodeError::InvalidSyntax("cabac_alignment_one_bit"));
+        }
+    }
+    let byte_offset = bs.bit_pos() / 8;
+    let mut dec = CabacDecoder::new(rbsp, byte_offset)?;
+    let mut ctxs = CabacContexts::init(sh.slice_type, sh.cabac_init_idc, sh.slice_qp);
+
+    let total_mb = ctx.total_mb;
+    let mut last_mb_qp = sh.slice_qp;
+    let mut last_delta_qp = 0i32;
+    let mut coeffs = [0i16; 384];
+
+    let mut mb_xy = sh.first_mb_in_slice as usize;
+    while mb_xy < total_mb {
+        set_mb_deblock(ctx, mb_xy, sh, slice_index);
+        coeffs.iter_mut().for_each(|c| *c = 0);
+        let bref = BRefsCabac {
+            ref_pic_ids: [&ref_pic_ids0, &ref_pic_ids1],
+            ref_count: [blist0.len(), blist1.len()],
+            col: super::bdirect::ColRef {
+                col: &col_frame.col,
+                is_long: col_frame.is_long_term,
+                inference: direct_8x8_inference,
+                mv_scale: &[],
+                ref0_count: blist0.len(),
+            },
+        };
+        let eos = decode_mb_cabac_bslice(
+            &mut dec,
+            &mut ctxs,
+            super::mb_parse_cabac::MbCtx { ctx: &mut *ctx, mb_xy, pps },
+            super::mb_parse_cabac::QpState {
+                last_mb_qp: &mut last_mb_qp,
+                last_delta_qp: &mut last_delta_qp,
+            },
+            &bref,
+            &mut coeffs,
+        )?;
+        if ctx.mb_type[mb_xy].is_intra() {
+            recon_intra_mb(ctx, mb_xy, &coeffs);
+        } else {
+            recon_b_mb(ctx, mb_xy, &coeffs, [&ref_pics0, &ref_pics1]);
         }
         mb_xy += 1;
         if eos {
@@ -661,6 +769,7 @@ pub(crate) struct StreamDecoder {
     next_id: i32,
     cur: Option<CurPic>,
     poc_state: PocState,
+    cvs: i32,
 }
 
 impl StreamDecoder {
@@ -672,6 +781,7 @@ impl StreamDecoder {
             next_id: 0,
             cur: None,
             poc_state: PocState::default(),
+            cvs: -1,
         }
     }
 
@@ -729,6 +839,10 @@ impl StreamDecoder {
             }
             if is_idr {
                 self.dpb.as_mut().unwrap().clear();
+                self.cvs += 1;
+            }
+            if self.cvs < 0 {
+                self.cvs = 0;
             }
             let poc = self.poc_state.compute(&sps, &sh, &pps, is_idr, nal.ref_idc);
             self.cur = Some(CurPic {
@@ -742,6 +856,7 @@ impl StreamDecoder {
                 is_ref: nal.ref_idc != 0,
                 is_idr,
                 poc,
+                cvs: self.cvs,
                 marking: sh.dec_ref_pic_marking.clone(),
                 slice_index: 0,
                 region: region_from_sps(&sps),
@@ -754,7 +869,7 @@ impl StreamDecoder {
             .as_mut()
             .ok_or(DecodeError::InvalidSyntax("slice before picture start"))?;
         if pps.entropy_coding_mode_flag {
-            decode_one_slice_cabac(&mut cp.ctx, &mut bs, &nal.rbsp, &sh, &pps, cp.slice_index, dpb)?;
+            decode_one_slice_cabac(&mut cp.ctx, &mut bs, &nal.rbsp, &sh, &pps, cp.slice_index, dpb, cp.poc, sps.direct_8x8_inference_flag)?;
         } else {
             decode_one_slice(&mut cp.ctx, &mut bs, &sh, &pps, cp.slice_index, dpb, cp.poc, sps.direct_8x8_inference_flag)?;
         }

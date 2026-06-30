@@ -1473,3 +1473,26 @@ fn store_mvmvd_block(
         }
     }
 }
+
+// ===================== B-slice (CABAC) — stub pending implementation ========
+
+use super::bdirect::ColRef;
+
+/// Reference data for one CABAC B slice.
+pub struct BRefsCabac<'a> {
+    pub ref_pic_ids: [&'a [i32]; 2],
+    pub ref_count: [usize; 2],
+    pub col: ColRef<'a>,
+}
+
+/// Decode one B-slice macroblock (CABAC). Placeholder until implemented.
+pub fn decode_mb_cabac_bslice(
+    _dec: &mut CabacDecoder,
+    _ctxs: &mut CabacContexts,
+    _mb: MbCtx,
+    _qp: QpState,
+    _bref: &BRefsCabac,
+    _coeffs: &mut [i16; 384],
+) -> Result<bool> {
+    Err(DecodeError::Unsupported("B slice (CABAC)"))
+}
