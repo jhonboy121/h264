@@ -2294,10 +2294,19 @@ fn parse_b_8x8_cabac(
                     irefs[i] = d.iref[list];
                     set_8x8_ref_ctx(ctx, mb_xy, i, list, d.iref[list], direct_refpic.unwrap()[list]);
                 } else {
-                    // Temporal: the neighbour-prediction cache treats a direct
-                    // sub-partition as not-in-list (the C leaves `ref_idx_list`
-                    // at its -1 init); `ctx` keeps the real ref for recon/deblock.
-                    irefs[i] = REF_NOT_IN_LIST_C;
+                    // Temporal direct: the colocated-derived reference index is
+                    // also the neighbour-prediction value. The C reference writes
+                    // it into both the layer and the MV-prediction ref cache
+                    // (`Update8x8RefIdx` + `UpdateP8x8RefCacheIdxCabac`, the
+                    // temporal branch of `ParseInterBMotionInfoCabac`), and the
+                    // later non-direct ref loop leaves it untouched. `ctx` already
+                    // holds it (set by `b_direct_temporal_sub` above).
+                    let scan8 = SCAN4[i << 2];
+                    irefs[i] = if list == 0 {
+                        ctx.ref_idx[mb_xy * 16 + scan8]
+                    } else {
+                        ctx.ref_idx_l1[mb_xy * 16 + scan8]
+                    };
                 }
             } else if dir_uses(sinfo.dir, list) {
                 let r = parse_ref_idx_b(

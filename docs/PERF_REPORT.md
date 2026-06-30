@@ -32,32 +32,33 @@ Corpus: 54 streams (50 `*.264` + 4 `*.jsv`) from the OpenH264 conformance set.
 Each stream is decoded by the C oracle to reference I420 YUV and by our
 `decode_stream`; our visible (coded-size) I420 output is then compared
 **byte-for-byte** (and by MD5) against the oracle output. **Results are identical
-with and without `--features simd`** (verified: 46/54 BITEXACT either way).
+with and without `--features simd`** (verified: 49/54 BITEXACT either way).
 
 ### Summary
 
 | Outcome | Count |
 |---|---|
-| **BITEXACT** | **46** |
-| MISMATCH | 4 |
+| **BITEXACT** | **49** |
+| MISMATCH | 1 |
 | ERROR | 4 |
 | **Total** | **54** |
 
-**Frames decoded bit-exact: 5659** (sum over all BITEXACT streams).
+**Frames decoded bit-exact: 6164** (sum over all BITEXACT streams).
 
-The 46 bit-exact streams cover baseline CAVLC (I+P), Main-profile CABAC (I+P,
+The 49 bit-exact streams cover baseline CAVLC (I+P), Main-profile CABAC (I+P,
 multi-ref, multi-slice), B-slices (CAVLC + CABAC, spatial + temporal direct),
 High-profile I_8×8 + inter 8×8 transform + temporal/spatial-direct multi-ref
-(the 3 `VID_*_cavlc_temporal_direct` streams at 1280×544 / 1280×720 / 1920×1080),
-I_PCM, QCIF/CIF/up-to-1080p resolutions, and a 1700-frame stream (`LS_SVA_D`).
+(all 6 `VID_*_temporal_direct` streams — CAVLC + CABAC — at 1280×544 / 1280×720 /
+1920×1080), I_PCM, QCIF/CIF/up-to-1080p resolutions, and a 1700-frame stream
+(`LS_SVA_D`).
 
 ### Mismatch / error
 
-- **MISMATCH (4):** the SVC stream (`sps_subsetsps_bothVUI`, base layer only) and the
-  3 CABAC VID temporal_direct streams. The CABAC VID streams now decode fully (B
-  multi-ref `ParseRefIdxCabac`, B temporal-direct 8×8, inter `transform_size_8x8_flag`,
-  and a `mb_qp_delta` sign fix are wired — TRACKER.md P15); their I-frame is bit-exact
-  but a localized inter-frame recon divergence remains.
+- **MISMATCH (1):** the SVC stream (`sps_subsetsps_bothVUI`, base layer only). The 3
+  CABAC VID temporal_direct streams are now fully bit-exact (TRACKER.md P15: the final
+  fix seeds a temporal-direct 8×8 sub-partition's MV-prediction reference cache with
+  its real colocated-derived `ref_idx`, so a later non-direct sub-partition's `PredMv`
+  single-match neighbour rule fires).
 - **ERROR (4):** deliberately corrupted error-resilience streams + a missing-PPS
   stream.
 

@@ -12,7 +12,8 @@ IPPP CAVLC, round-trip PSNR, no drift) + **SIMD (P10: NEON + wasm simd128, bit-e
 **refreshed perf report (P11)**. 139 tests, 0 warnings, 8 targets + no_std + wasm + simd.
 See `STATUS.md` for the final summary. Decoder now also does frame_cropping output +
 I_PCM (CAVLC+CABAC) → 40/54 BIT-EXACT, then **B-slice (bi-predictive) decode → 43/54**,
-then **High-profile CAVLC temporal-direct (P14) → 46/54 BIT-EXACT**. Deferred (explicit, not gaps):
+then **High-profile CAVLC temporal-direct (P14) → 46/54 BIT-EXACT**, then **CABAC
+temporal-direct (P15) → 49/54 BIT-EXACT**. Deferred (explicit, not gaps):
 transform8x8/High, FMO, error-conceal, SVC scalable-extension (NAL type 20); encoder
 sub-16x16, multi-ref, B, CABAC-encode, rate control; P8 processing; P9 threading;
 SIMD for deblock/mc_hor_ver22/x86.
@@ -34,12 +35,10 @@ SIMD for deblock/mc_hor_ver22/x86.
 - [x] **B deblock bS** (cross-list reference/MV comparison, `IN_SMB_EDGE_MV`/`ON_MB_BS`).
 - [x] Bit-exact on all three corpus B streams (CAVLC Adobe 1024x768, CAVLC + CABAC
       Men_whisper 640x320).
-- [~] **Temporal direct**: implemented (POC MV scaling, 16x16 + 8x8) but **unvalidated** —
-      the only corpus temporal-direct streams (`VID_*_temporal_direct`) require
-      transform_8x8 (out of scope), and `MapColToList0` for multi-ref needs the
-      colocated picture's own reference-list POCs which the DPB does not retain
-      (single-reference case is exact). B_8x8 mixed-direct-sub temporal still uses the
-      spatial computation (dead code remainder).
+- [x] **Temporal direct** (POC MV scaling, 16x16 + 8x8): now fully validated and
+      bit-exact on all six `VID_*_temporal_direct` streams (CAVLC P14 + CABAC P15),
+      including High-profile `transform_8x8`, `MapColToList0` multi-ref, and B_8x8
+      mixed-direct-sub temporal prediction.
 - [⏸] Explicit weighted bipred (`weighted_bipred_idc != 0`): not needed (corpus B
       streams use idc 0 / default averaging).
 
@@ -252,12 +251,10 @@ to dump per-MB bS / per-block ref+MV and a per-decode-frame recon checksum):
       mode, same predicate the temporal path uses), filling per-8×8 colZero.
 - CABAC VID streams untouched (separate B-CABAC-multiref work) → still ERROR/UNSUPPORTED.
 
-## P15 — CABAC VID temporal-direct: parse wired, I-frame bit-exact (46/54, in progress)
-The three `VID_*_cabac_temporal_direct` streams now **decode fully** (151/300/54 frames)
-where before they hit `UNSUPPORTED("B CABAC multi-ref ref_idx")` / a P-frame desync. The
-I-frame and a subset of inter frames are bit-exact; the streams are still `MISMATCH`
-(not yet fully bit-exact). Work done, all verified against an instrumented OpenH264 oracle
-(per-MB mb_type / ref_idx ctxInc / dequantised-coeff / MV traces):
+## P15 — CABAC VID temporal-direct streams BIT-EXACT ✅ → 49/54 BIT-EXACT
+All three `VID_*_cabac_temporal_direct` streams (1280×544 / 1280×720 / 1920×1080) are now
+fully bit-exact (151 / 300 / 54 frames). Work done, all verified against an instrumented
+OpenH264 oracle (per-MB mb_type / ref_idx ctxInc / dequantised-coeff / MV traces):
 - [x] **`mb_qp_delta` sign bug** (`mb_parse_cabac.rs parse_delta_qp`) — the dominant fix.
       The C maps `uiCode = unary+1`, magnitude `(uiCode+1)>>1`, sign from the parity of
       `uiCode` (negative when even). Our code did `code = unary+2` and used *that* for both
@@ -276,8 +273,17 @@ I-frame and a subset of inter frames are bit-exact; the streams are still `MISMA
       partitions so the next partition's ctx sees it.
 - [x] **B temporal-direct 8x8 (CABAC)** — `parse_b_8x8_cabac` now branches spatial vs
       temporal (`b_direct_temporal_sub`) like the CAVLC path, instead of always spatial.
-- Remaining: a localized inter-frame recon divergence (P/B) that grows over the GOP.
-      Sampled MBs (e.g. P poc8 MB119: type/qp/cbp/t8/coeffs/MVs) all match the oracle, and
-      the recon primitives (idct8x8, MC, dequant) are individually bit-exact, so the root
-      cause is not yet isolated; the shared recon is validated by the bit-exact CAVLC VID
-      streams. Not faked — honest 46/54.
+- [x] **Temporal-direct 8×8 sub-partition MV-predictor neighbour ref (the final fix)** —
+      `parse_b_8x8_cabac` was seeding the MV-prediction ref cache of a *temporal*-direct
+      8×8 sub-partition to `REF_NOT_IN_LIST` (-1). The C reference instead writes the
+      colocated-derived `ref_idx` (`iRef[LIST_0]`=`MapColToList0`, `iRef[LIST_1]`=0) into
+      both the layer and the MV-prediction ref cache (`Update8x8RefIdx` +
+      `UpdateP8x8RefCacheIdxCabac`, temporal branch of `ParseInterBMotionInfoCabac`), and
+      its later non-direct ref loop leaves it untouched. With our -1, a subsequent
+      non-direct sub-partition whose only ref-matching neighbour was a direct one fell out
+      of the single-match `PredMv` rule into the 3-way median, yielding a wrong predictor
+      (e.g. 1280×544 B-poc4 MB38 partition-3 L0: predictor `(2,-3)`→`(0,0)`). Fixed by
+      seeding `iref` from the real `ctx.ref_idx`/`ctx.ref_idx_l1` that `b_direct_temporal_sub`
+      already stored. Isolated by a systematic per-MB field diff (mb_type / cbp / qp / t8 /
+      ref0 / ref1 / mv0 / mv1 / mvd / nzc) of the first intrinsically-diverging decode-order
+      picture (POC 4, a B-reference slice whose own references were all bit-exact).

@@ -25,12 +25,12 @@ See `TRACKER.md` for the phase-by-phase detail and `PERF_REPORT.md` for numbers.
 - In-loop **deblocking** filter (boundary-strength derivation, luma+chroma).
 - **DPB** with sliding-window short-term refs and **multi-reference** P lists;
   border expansion for sub-pel MC.
-- **Conformance: 28/54 corpus streams BIT-EXACT** vs the C oracle (3875 frames),
-  covering baseline CAVLC (I+P), Main CABAC (I+P, multi-ref, multi-slice), QCIF →
-  1280×720, and a 1700-frame stream. Results are **identical with `--features
-  simd`**. The other 26 are cleanly classified: 11 UNSUPPORTED (guarded
-  `DecodeError::Unsupported`), 11 MISMATCH (crop/interlace length or remaining
-  decode gaps), 4 ERROR (corrupted error-resilience streams).
+- **Conformance: 49/54 corpus streams BIT-EXACT** vs the C oracle (6164 frames),
+  covering baseline CAVLC (I+P), Main CABAC (I+P, multi-ref, multi-slice), B-slices
+  (CAVLC + CABAC, spatial + temporal direct), High-profile 8×8 transform, QCIF →
+  1920×1080, and a 1700-frame stream. Results are **identical with `--features
+  simd`**. The other 5 are cleanly classified: 1 MISMATCH (SVC base-layer-only
+  `sps_subsetsps_bothVUI`) and 4 ERROR (corrupted error-resilience streams).
 
 ### Encoder — baseline intra + IPPP, CAVLC
 
@@ -93,16 +93,16 @@ always available.)
 
 **Decoder (implemented since the original scope):** B-slices (CAVLC + CABAC,
 spatial + temporal direct), I_PCM, and High-profile 8×8 transform / I_8×8 + inter
-8×8 + temporal-direct multi-ref + weighted prediction (CAVLC) — see `TRACKER.md`
-P12/P13/P14. All 3 CAVLC High-profile `VID_*_cavlc_temporal_direct` streams
-(1280×544 / 1280×720 / 1920×1080) are now bit-exact. **46/54 conformance streams
-are bit-exact.**
+8×8 + temporal-direct multi-ref + weighted prediction (CAVLC + CABAC) — see
+`TRACKER.md` P12/P13/P14/P15. All 6 High-profile `VID_*_temporal_direct` streams
+(CAVLC + CABAC, 1280×544 / 1280×720 / 1920×1080) are now bit-exact. **49/54
+conformance streams are bit-exact.**
 
-The 3 High-profile `VID_*_cabac_temporal_direct` streams now **decode fully** (CABAC
-B multi-ref `ParseRefIdxCabac`, B temporal-direct 8×8, inter `transform_size_8x8_flag`,
-and a `mb_qp_delta` sign fix are wired — see `TRACKER.md` P15). Their I-frame is
-bit-exact but they are still `MISMATCH` (a localized inter-frame recon divergence
-remains unresolved); they no longer count as `UNSUPPORTED`.
+The 3 CABAC `VID_*_cabac_temporal_direct` streams are fully bit-exact as of P15: the
+final fix seeds the MV-prediction reference cache of a *temporal*-direct 8×8
+sub-partition with its real colocated-derived `ref_idx` (rather than -1), matching
+the C `Update8x8RefIdx`/`UpdateP8x8RefCacheIdxCabac` so a later non-direct
+sub-partition's `PredMv` single-match neighbour rule fires correctly.
 
 **Decoder (still deferred):** FMO/ASO, error concealment, monochrome / non-4:2:0
 / >8-bit, SVC scalable extension. (Guarded behind clean `DecodeError::Unsupported`
