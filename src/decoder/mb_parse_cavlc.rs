@@ -518,7 +518,6 @@ fn parse_intra4x4(
 /// block, replicated to its four 4x4 sub-blocks) plus the chroma mode. Returns
 /// `(chroma_mode, i8_avail_flag)`. Mirrors [`parse_intra4x4`] but iterates the
 /// four 8x8 blocks in raster order and uses the 8x8 right-top neighbour rule.
-#[allow(clippy::too_many_arguments)]
 fn parse_intra8x8(
     bs: &mut BitReader<'_>,
     neigh: &NeighborAvail,
@@ -1567,6 +1566,16 @@ pub struct BRefs<'a> {
     pub col: ColRef<'a>,
 }
 
+/// Motion of one prediction list to store: list index, vector, reference index
+/// (slice-local) and the reference picture's decode id.
+#[derive(Clone, Copy)]
+struct Motion {
+    list: usize,
+    mv: [i16; 2],
+    iref: i8,
+    ref_pic: i32,
+}
+
 /// The 30-entry list-0 + list-1 neighbour MV / ref-index cache for B
 /// (`WelsFillCacheInter`, both lists).
 struct BInterCache {
@@ -1654,20 +1663,9 @@ impl BInterCache {
     }
 
     /// Store one block of motion for `list` into both `ctx` and the cache.
-    #[allow(clippy::too_many_arguments)]
-    fn store(
-        &mut self,
-        ctx: &mut DecoderContext,
-        mb_xy: usize,
-        list: usize,
-        scan4: usize,
-        cache_idx: usize,
-        w: usize,
-        h: usize,
-        mv: [i16; 2],
-        iref: i8,
-        ref_pic: i32,
-    ) {
+    fn store(&mut self, ctx: &mut DecoderContext, mb_xy: usize, place: BlockPlace, m: Motion) {
+        let BlockPlace { scan4, cache_idx, w, h } = place;
+        let Motion { list, mv, iref, ref_pic } = m;
         for by in 0..h {
             for bx in 0..w {
                 let raster = scan4 + by * 4 + bx;
@@ -1851,7 +1849,6 @@ pub(super) fn apply_b_direct(
 }
 
 /// Parse `ParseInterBInfo`: ref_idx + mvd for the non-direct B partition kinds.
-#[allow(clippy::needless_range_loop)]
 fn parse_b_motion(
     bs: &mut BitReader<'_>,
     ctx: &mut DecoderContext,
@@ -1873,42 +1870,42 @@ fn parse_b_motion(
     match info.shape {
         BShape::P16x16 => {
             let mut iref = [0i8; 2];
-            for list in 0..2 {
+            for (list, slot) in iref.iter_mut().enumerate() {
                 if dir_uses(info.dir[0], list) {
-                    iref[list] = read_ref(bs, list)?;
+                    *slot = read_ref(bs, list)?;
                 }
             }
-            for list in 0..2 {
+            for (list, &iref_l) in iref.iter().enumerate() {
                 if dir_uses(info.dir[0], list) {
-                    let mvp = pred_mv(&cache.mv[list], &cache.ref_idx[list], 0, 4, iref[list]);
+                    let mvp = pred_mv(&cache.mv[list], &cache.ref_idx[list], 0, 4, iref_l);
                     let dx = bs.read_se()? as i16;
                     let dy = bs.read_se()? as i16;
                     let mv = [mvp[0] + dx, mvp[1] + dy];
-                    cache.store(ctx, mb_xy, list, 0, 0, 4, 4, mv, iref[list], bref.ref_pic_ids[list][iref[list] as usize]);
+                    cache.store(ctx, mb_xy, BlockPlace { scan4: 0, cache_idx: 0, w: 4, h: 4 }, Motion { list, mv, iref: iref_l, ref_pic: bref.ref_pic_ids[list][iref_l as usize] });
                 } else {
-                    cache.store(ctx, mb_xy, list, 0, 0, 4, 4, [0, 0], REF_NOT_IN_LIST, -1);
+                    cache.store(ctx, mb_xy, BlockPlace { scan4: 0, cache_idx: 0, w: 4, h: 4 }, Motion { list, mv: [0, 0], iref: REF_NOT_IN_LIST, ref_pic: -1 });
                 }
             }
         }
         BShape::P16x8 | BShape::P8x16 => {
             let is16x8 = info.shape == BShape::P16x8;
+            // `iref[list][p]` (list-major to match the bitstream read order).
             let mut iref = [[REF_NOT_IN_LIST; 2]; 2];
-            for list in 0..2 {
-                for p in 0..2 {
+            for (list, row) in iref.iter_mut().enumerate() {
+                for (p, slot) in row.iter_mut().enumerate() {
                     if dir_uses(info.dir[p], list) {
-                        iref[p][list] = read_ref(bs, list)?;
+                        *slot = read_ref(bs, list)?;
                     }
                 }
             }
             // Partition size in 4x4 units: 16x8 = 4 wide x 2 tall, 8x16 = 2x4.
             let (pw, ph) = if is16x8 { (4, 2) } else { (2, 4) };
-            for list in 0..2 {
-                for p in 0..2 {
+            for (list, row) in iref.iter().enumerate() {
+                for (p, &r) in row.iter().enumerate() {
                     let part_idx = if is16x8 { p << 3 } else { p << 2 };
                     let scan4 = SCAN4[part_idx];
                     let cache_idx = CACHE30_SCAN_IDX[part_idx];
                     if dir_uses(info.dir[p], list) {
-                        let r = iref[p][list];
                         let mvp = if is16x8 {
                             pred_inter16x8(&cache.mv[list], &cache.ref_idx[list], part_idx, r)
                         } else {
@@ -1917,9 +1914,9 @@ fn parse_b_motion(
                         let dx = bs.read_se()? as i16;
                         let dy = bs.read_se()? as i16;
                         let mv = [mvp[0] + dx, mvp[1] + dy];
-                        cache.store(ctx, mb_xy, list, scan4, cache_idx, pw, ph, mv, r, bref.ref_pic_ids[list][r as usize]);
+                        cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx, w: pw, h: ph }, Motion { list, mv, iref: r, ref_pic: bref.ref_pic_ids[list][r as usize] });
                     } else {
-                        cache.store(ctx, mb_xy, list, scan4, cache_idx, pw, ph, [0, 0], REF_NOT_IN_LIST, -1);
+                        cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx, w: pw, h: ph }, Motion { list, mv: [0, 0], iref: REF_NOT_IN_LIST, ref_pic: -1 });
                     }
                 }
             }
@@ -1938,7 +1935,6 @@ pub(super) fn dir_uses(d: (bool, bool), list: usize) -> bool {
 }
 
 /// Parse the four 8x8 sub-partitions of a B_8x8 macroblock.
-#[allow(clippy::needless_range_loop)]
 fn parse_b_8x8(
     bs: &mut BitReader<'_>,
     ctx: &mut DecoderContext,
@@ -2019,19 +2015,19 @@ fn parse_b_8x8(
     }
 
     // mvd for non-direct sub-partitions.
-    for list in 0..2 {
+    for (list, irefs) in iref.iter().enumerate() {
         for (i, &s) in subs.iter().enumerate() {
             // Set this 8x8's neighbour-cache ref-index now (C sets it per-8x8 at
             // the start of the mvd loop, so a later 8x8 doesn't affect this one).
             let cache8 = CACHE30_SCAN_IDX[i << 2];
             for &c in &[cache8, cache8 + 1, cache8 + 6, cache8 + 7] {
-                cache.ref_idx[list][c] = iref[list][i];
+                cache.ref_idx[list][c] = irefs[i];
             }
             let sinfo = &B_SUB_INFO[s];
             if sinfo.direct {
                 continue;
             }
-            let r = iref[list][i];
+            let r = irefs[i];
             let uses = dir_uses(sinfo.dir, list);
             for j in 0..sinfo.part_count {
                 let part_idx = (i << 2) + j * sinfo.part_w;
@@ -2048,9 +2044,9 @@ fn parse_b_8x8(
                     let dx = bs.read_se()? as i16;
                     let dy = bs.read_se()? as i16;
                     let mv = [mvp[0] + dx, mvp[1] + dy];
-                    cache.store(ctx, mb_xy, list, scan4, cache_idx, w, h, mv, r, if r >= 0 { bref.ref_pic_ids[list][r as usize] } else { -1 });
+                    cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx, w, h }, Motion { list, mv, iref: r, ref_pic: if r >= 0 { bref.ref_pic_ids[list][r as usize] } else { -1 } });
                 } else {
-                    cache.store(ctx, mb_xy, list, scan4, cache_idx, w, h, [0, 0], REF_NOT_IN_LIST, -1);
+                    cache.store(ctx, mb_xy, BlockPlace { scan4, cache_idx, w, h }, Motion { list, mv: [0, 0], iref: REF_NOT_IN_LIST, ref_pic: -1 });
                 }
             }
         }
