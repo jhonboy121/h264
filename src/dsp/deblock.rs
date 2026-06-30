@@ -18,6 +18,16 @@ fn abs_i32(x: i32) -> i32 {
     x.abs()
 }
 
+/// The two chroma planes (Cb/Cr) and their per-plane sample offsets, bundled so
+/// the two-plane chroma edge filters stay within the argument-count budget.
+/// Holds `&mut` borrows, so it is moved (not copied) into each filter call.
+pub struct ChromaPair<'a> {
+    pub cb: &'a mut [u8],
+    pub cb_off: usize,
+    pub cr: &'a mut [u8],
+    pub cr_off: usize,
+}
+
 /// Luma `Lt4` edge filter, generic strides (`DeblockLumaLt4_c`). `stride_x` steps
 /// across the edge (p/q direction), `stride_y` along it; 16 lines, `tc[line>>2]`.
 pub fn deblock_luma_lt4(
@@ -155,16 +165,14 @@ fn chroma_eq4_one(pix: &mut [u8], base: isize, stride_x: isize, alpha: i32, beta
 /// Two-plane chroma `Lt4` edge filter (`DeblockChromaLt4_c`); 8 lines, `tc[line>>1]`,
 /// applied only when `tc0 > 0`.
 pub fn deblock_chroma_lt4(
-    cb: &mut [u8],
-    cb_off: usize,
-    cr: &mut [u8],
-    cr_off: usize,
+    planes: ChromaPair,
     stride_x: isize,
     stride_y: isize,
     alpha: i32,
     beta: i32,
     tc: &[i8],
 ) {
+    let ChromaPair { cb, cb_off, cr, cr_off } = planes;
     for i in 0..8i32 {
         let tc0 = tc[(i >> 1) as usize] as i32;
         if tc0 > 0 {
@@ -178,15 +186,13 @@ pub fn deblock_chroma_lt4(
 
 /// Two-plane chroma `Eq4` edge filter (`DeblockChromaEq4_c`).
 pub fn deblock_chroma_eq4(
-    cb: &mut [u8],
-    cb_off: usize,
-    cr: &mut [u8],
-    cr_off: usize,
+    planes: ChromaPair,
     stride_x: isize,
     stride_y: isize,
     alpha: i32,
     beta: i32,
 ) {
+    let ChromaPair { cb, cb_off, cr, cr_off } = planes;
     for i in 0..8i32 {
         let bb = cb_off as isize + i as isize * stride_y;
         let bc = cr_off as isize + i as isize * stride_y;
@@ -196,20 +202,20 @@ pub fn deblock_chroma_eq4(
 }
 
 /// Vertical two-plane chroma `Lt4` (`DeblockChromaLt4V_c`).
-pub fn deblock_chroma_lt4_v(cb: &mut [u8], cb_off: usize, cr: &mut [u8], cr_off: usize, stride: usize, alpha: i32, beta: i32, tc: &[i8]) {
-    deblock_chroma_lt4(cb, cb_off, cr, cr_off, stride as isize, 1, alpha, beta, tc);
+pub fn deblock_chroma_lt4_v(planes: ChromaPair, stride: usize, alpha: i32, beta: i32, tc: &[i8]) {
+    deblock_chroma_lt4(planes, stride as isize, 1, alpha, beta, tc);
 }
 /// Horizontal two-plane chroma `Lt4` (`DeblockChromaLt4H_c`).
-pub fn deblock_chroma_lt4_h(cb: &mut [u8], cb_off: usize, cr: &mut [u8], cr_off: usize, stride: usize, alpha: i32, beta: i32, tc: &[i8]) {
-    deblock_chroma_lt4(cb, cb_off, cr, cr_off, 1, stride as isize, alpha, beta, tc);
+pub fn deblock_chroma_lt4_h(planes: ChromaPair, stride: usize, alpha: i32, beta: i32, tc: &[i8]) {
+    deblock_chroma_lt4(planes, 1, stride as isize, alpha, beta, tc);
 }
 /// Vertical two-plane chroma `Eq4` (`DeblockChromaEq4V_c`).
 pub fn deblock_chroma_eq4_v(cb: &mut [u8], cb_off: usize, cr: &mut [u8], cr_off: usize, stride: usize, alpha: i32, beta: i32) {
-    deblock_chroma_eq4(cb, cb_off, cr, cr_off, stride as isize, 1, alpha, beta);
+    deblock_chroma_eq4(ChromaPair { cb, cb_off, cr, cr_off }, stride as isize, 1, alpha, beta);
 }
 /// Horizontal two-plane chroma `Eq4` (`DeblockChromaEq4H_c`).
 pub fn deblock_chroma_eq4_h(cb: &mut [u8], cb_off: usize, cr: &mut [u8], cr_off: usize, stride: usize, alpha: i32, beta: i32) {
-    deblock_chroma_eq4(cb, cb_off, cr, cr_off, 1, stride as isize, alpha, beta);
+    deblock_chroma_eq4(ChromaPair { cb, cb_off, cr, cr_off }, 1, stride as isize, alpha, beta);
 }
 
 /// Single-plane chroma `Lt4` edge filter (`DeblockChromaLt42_c`), for interleaved
@@ -323,7 +329,15 @@ mod tests {
         }
     }
 
-    fn anchor_chroma_normal(cb: &mut [u8], cr: &mut [u8], off: usize, sx: isize, sy: isize, alpha: i32, beta: i32, tc: &[i8]) {
+    #[derive(Clone, Copy)]
+    struct EdgeGeom {
+        off: usize,
+        sx: isize,
+        sy: isize,
+    }
+
+    fn anchor_chroma_normal(cb: &mut [u8], cr: &mut [u8], geom: EdgeGeom, alpha: i32, beta: i32, tc: &[i8]) {
+        let EdgeGeom { off, sx, sy } = geom;
         for line in 0..8i32 {
             let itc = tc[(line >> 1) as usize] as i32;
             let base = off as isize + line as isize * sy;
@@ -441,8 +455,8 @@ mod tests {
             let (mut cb_base, a, b, tc) = generate(&mut lcg, n, 8);
             let (mut cr_base, _, _, _) = generate(&mut lcg, n, 8);
             let (mut cb_ref, mut cr_ref) = (cb_base.clone(), cr_base.clone());
-            anchor_chroma_normal(&mut cb_base, &mut cr_base, 4, 1, 8, a, b, &tc);
-            deblock_chroma_lt4(&mut cb_ref, 4, &mut cr_ref, 4, 1, 8, a, b, &tc);
+            anchor_chroma_normal(&mut cb_base, &mut cr_base, EdgeGeom { off: 4, sx: 1, sy: 8 }, a, b, &tc);
+            deblock_chroma_lt4(ChromaPair { cb: &mut cb_ref, cb_off: 4, cr: &mut cr_ref, cr_off: 4 }, 1, 8, a, b, &tc);
             assert_eq!(cb_base, cb_ref, "chroma lt4 H cb num={num}");
             assert_eq!(cr_base, cr_ref, "chroma lt4 H cr num={num}");
 
@@ -450,8 +464,8 @@ mod tests {
             let (mut cb_base, a, b, tc) = generate(&mut lcg, n, 8);
             let (mut cr_base, _, _, _) = generate(&mut lcg, n, 8);
             let (mut cb_ref, mut cr_ref) = (cb_base.clone(), cr_base.clone());
-            anchor_chroma_normal(&mut cb_base, &mut cr_base, 32, 8, 1, a, b, &tc);
-            deblock_chroma_lt4(&mut cb_ref, 32, &mut cr_ref, 32, 8, 1, a, b, &tc);
+            anchor_chroma_normal(&mut cb_base, &mut cr_base, EdgeGeom { off: 32, sx: 8, sy: 1 }, a, b, &tc);
+            deblock_chroma_lt4(ChromaPair { cb: &mut cb_ref, cb_off: 32, cr: &mut cr_ref, cr_off: 32 }, 8, 1, a, b, &tc);
             assert_eq!(cb_base, cb_ref, "chroma lt4 V cb num={num}");
             assert_eq!(cr_base, cr_ref, "chroma lt4 V cr num={num}");
         }
@@ -466,7 +480,7 @@ mod tests {
             let (mut cr_base, _, _, _) = generate(&mut lcg, n, 8);
             let (mut cb_ref, mut cr_ref) = (cb_base.clone(), cr_base.clone());
             anchor_chroma_intra(&mut cb_base, &mut cr_base, 4, 1, 8, a, b);
-            deblock_chroma_eq4(&mut cb_ref, 4, &mut cr_ref, 4, 1, 8, a, b);
+            deblock_chroma_eq4(ChromaPair { cb: &mut cb_ref, cb_off: 4, cr: &mut cr_ref, cr_off: 4 }, 1, 8, a, b);
             assert_eq!(cb_base, cb_ref, "chroma eq4 H cb num={num}");
             assert_eq!(cr_base, cr_ref, "chroma eq4 H cr num={num}");
 
@@ -474,7 +488,7 @@ mod tests {
             let (mut cr_base, _, _, _) = generate(&mut lcg, n, 8);
             let (mut cb_ref, mut cr_ref) = (cb_base.clone(), cr_base.clone());
             anchor_chroma_intra(&mut cb_base, &mut cr_base, 32, 8, 1, a, b);
-            deblock_chroma_eq4(&mut cb_ref, 32, &mut cr_ref, 32, 8, 1, a, b);
+            deblock_chroma_eq4(ChromaPair { cb: &mut cb_ref, cb_off: 32, cr: &mut cr_ref, cr_off: 32 }, 8, 1, a, b);
             assert_eq!(cb_base, cb_ref, "chroma eq4 V cb num={num}");
             assert_eq!(cr_base, cr_ref, "chroma eq4 V cr num={num}");
         }
