@@ -10,6 +10,7 @@ pub mod cavlc;
 pub mod cavlc_tables;
 pub mod context;
 pub mod deblock;
+pub mod dpb;
 pub mod frame;
 pub mod mb_parse_cavlc;
 pub mod mv_pred;
