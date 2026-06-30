@@ -29,20 +29,20 @@ type Result<T> = core::result::Result<T, DecodeError>;
 // --- Per-MB 4x4 block geometry (luma) -------------------------------------
 // Block scan index i (the order residuals are coded, == g_kuiScan8 order) maps
 // to a raster position (bx,by) within the macroblock.
-const BLOCK_RASTER: [usize; 16] = [0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15];
-const BLOCK_BX: [usize; 16] = [0, 1, 0, 1, 2, 3, 2, 3, 0, 1, 0, 1, 2, 3, 2, 3];
-const BLOCK_BY: [usize; 16] = [0, 0, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 2, 2, 3, 3];
+pub(super) const BLOCK_RASTER: [usize; 16] = [0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15];
+pub(super) const BLOCK_BX: [usize; 16] = [0, 1, 0, 1, 2, 3, 2, 3, 0, 1, 0, 1, 2, 3, 2, 3];
+pub(super) const BLOCK_BY: [usize; 16] = [0, 0, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 2, 2, 3, 3];
 
 // g_kuiCache30ScanIdx: block i -> position in the 30-entry (6-wide) sample
 // availability grid used by CheckIntraNxNPredMode.
-const CACHE30_SCAN_IDX: [usize; 16] = [7, 8, 13, 14, 9, 10, 15, 16, 19, 20, 25, 26, 21, 22, 27, 28];
+pub(super) const CACHE30_SCAN_IDX: [usize; 16] = [7, 8, 13, 14, 9, 10, 15, 16, 19, 20, 25, 26, 21, 22, 27, 28];
 
 // g_kuiI16CbpTable.
-const I16_CBP_TABLE: [u8; 6] = [0, 16, 32, 15, 31, 47];
+pub(super) const I16_CBP_TABLE: [u8; 6] = [0, 16, 32, 15, 31, 47];
 
 // g_kuiIntra4x4CbpTable (chroma_format_idc != 0).
 #[rustfmt::skip]
-const INTRA4X4_CBP_TABLE: [u8; 48] = [
+pub(super) const INTRA4X4_CBP_TABLE: [u8; 48] = [
     47, 31, 15,  0, 23, 27, 29, 30,  7, 11, 13, 14, 39, 43, 45, 46,
     16,  3,  5, 10, 12, 19, 21, 26, 28, 35, 37, 42, 44,  1,  2,  4,
      8, 17, 18, 20, 24,  6,  9, 22, 25, 32, 33, 34, 36, 40, 38, 41,
@@ -50,7 +50,7 @@ const INTRA4X4_CBP_TABLE: [u8; 48] = [
 
 // g_kuiChromaQpTable.
 #[rustfmt::skip]
-const CHROMA_QP_TABLE: [u8; 52] = [
+pub(super) const CHROMA_QP_TABLE: [u8; 52] = [
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
     12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
     28, 29, 29, 30, 31, 32, 32, 33, 34, 34, 35, 35, 36, 36, 37, 37,
@@ -85,7 +85,7 @@ const I4_PRED_INFO: [(i8, i32, i32, i32); 9] = [
 ];
 
 #[inline]
-fn clip3(x: i32, lo: i32, hi: i32) -> i32 {
+pub(super) fn clip3(x: i32, lo: i32, hi: i32) -> i32 {
     x.clamp(lo, hi)
 }
 
@@ -380,7 +380,7 @@ fn parse_intra4x4(
 
 /// `CheckIntraNxNPredMode` (4x4): validate `mode` against availability, return
 /// the final mode (with DC / DDL_TOP / VL_TOP variants resolved).
-fn check_intra_nxn_mode(sample_avail: &[i32; 30], mode: i8, i: usize) -> Result<i8> {
+pub(super) fn check_intra_nxn_mode(sample_avail: &[i32; 30], mode: i8, i: usize) -> Result<i8> {
     if !(0..=8).contains(&mode) {
         return Err(DecodeError::InvalidSyntax("intra4x4 pred mode"));
     }
@@ -417,7 +417,7 @@ fn check_intra_nxn_mode(sample_avail: &[i32; 30], mode: i8, i: usize) -> Result<
 }
 
 /// `CheckIntra16x16PredMode`. `neigh_avail` = (left<<2)|(left_top<<1)|top.
-fn check_intra16x16_mode(neigh_avail: i32, mode: &mut i8) -> Result<()> {
+pub(super) fn check_intra16x16_mode(neigh_avail: i32, mode: &mut i8) -> Result<()> {
     let left = neigh_avail & 0x04;
     let left_top = neigh_avail & 0x02;
     let top = neigh_avail & 0x01;
@@ -444,7 +444,7 @@ fn check_intra16x16_mode(neigh_avail: i32, mode: &mut i8) -> Result<()> {
 }
 
 /// `CheckIntraChromaPredMode`. `neigh_avail` = (left<<2)|(left_top<<1)|top.
-fn check_intra_chroma_mode(neigh_avail: i32, mode: &mut i8) -> Result<()> {
+pub(super) fn check_intra_chroma_mode(neigh_avail: i32, mode: &mut i8) -> Result<()> {
     let left = neigh_avail & 0x04;
     let left_top = neigh_avail & 0x02;
     let top = neigh_avail & 0x01;
@@ -627,7 +627,7 @@ fn parse_residuals(
 
 /// `WelsLumaDcDequantIdct`: inverse Hadamard + dequant of the 16 luma DC
 /// coefficients (scattered at element offsets `block*16` within `coeffs`).
-fn luma_dc_dequant_idct(coeffs: &mut [i16; 384], qp: i32) {
+pub(super) fn luma_dc_dequant_idct(coeffs: &mut [i16; 384], qp: i32) {
     const STRIDE: usize = 16;
     let qmul = (G_KUI_DEQUANT_COEFF[qp as usize][0] as i32) << 4;
     let x_off = [0usize, STRIDE, STRIDE << 2, 5 * STRIDE];
@@ -665,7 +665,7 @@ fn luma_dc_dequant_idct(coeffs: &mut [i16; 384], qp: i32) {
 
 /// `WelsChromaDcIdct`: inverse 2x2 Hadamard of the chroma DC block (samples at
 /// element offsets {0,16,32,48} within `block`).
-fn chroma_dc_idct(block: &mut [i16]) {
+pub(super) fn chroma_dc_idct(block: &mut [i16]) {
     let x = 16usize;
     let s = 32usize;
     let s1 = x + s;

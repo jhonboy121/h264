@@ -136,9 +136,6 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
         if sps.chroma_format_idc != 1 || sps.bit_depth_luma != 8 || sps.bit_depth_chroma != 8 {
             return Err(DecodeError::Unsupported("non-4:2:0 / non-8-bit"));
         }
-        if pps.entropy_coding_mode_flag {
-            return Err(DecodeError::Unsupported("CABAC entropy coding"));
-        }
         let is_idr = nal.unit_type.is_idr();
         let pps = pps.clone();
         let sps = sps.clone();
@@ -168,7 +165,13 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
         }
 
         let cp = cur.as_mut().ok_or(DecodeError::InvalidSyntax("slice before picture start"))?;
-        decode_one_slice(&mut cp.ctx, &mut bs, &sh, &pps, cp.slice_index, dpb.as_ref().unwrap())?;
+        if pps.entropy_coding_mode_flag {
+            decode_one_slice_cabac(
+                &mut cp.ctx, &mut bs, &nal.rbsp, &sh, &pps, cp.slice_index, dpb.as_ref().unwrap(),
+            )?;
+        } else {
+            decode_one_slice(&mut cp.ctx, &mut bs, &sh, &pps, cp.slice_index, dpb.as_ref().unwrap())?;
+        }
         cp.slice_index += 1;
     }
 
@@ -247,6 +250,82 @@ fn decode_one_slice(
         mb_xy += 1;
         // A pending skip run keeps consuming MBs without reading more bits.
         if skip_run <= 0 && !bs.more_rbsp_data() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Decode one CABAC slice's macroblocks (parse + reconstruct) into `ctx`.
+/// `rbsp` is the full slice NAL RBSP; `bs` is positioned just past the slice
+/// header, used to find the `cabac_alignment_one_bit` boundary.
+fn decode_one_slice_cabac(
+    ctx: &mut DecoderContext,
+    bs: &mut BitReader<'_>,
+    rbsp: &[u8],
+    sh: &SliceHeader,
+    pps: &Pps,
+    slice_index: i32,
+    dpb: &Dpb,
+) -> Result<(), DecodeError> {
+    use super::cabac::{CabacContexts, CabacDecoder};
+    use super::mb_parse_cabac::{decode_mb_cabac_islice, decode_mb_cabac_pslice};
+
+    if sh.slice_type == super::slice_header::SliceType::B {
+        return Err(DecodeError::Unsupported("B slice (CABAC)"));
+    }
+
+    // cabac_alignment_one_bit: consume 1-bits to the next byte boundary.
+    while !bs.byte_aligned() {
+        if bs.read_bit()? != 1 {
+            return Err(DecodeError::InvalidSyntax("cabac_alignment_one_bit"));
+        }
+    }
+    let byte_offset = bs.bit_pos() / 8;
+    let mut dec = CabacDecoder::new(rbsp, byte_offset)?;
+    let mut ctxs = CabacContexts::init(sh.slice_type, sh.cabac_init_idc, sh.slice_qp);
+
+    let total_mb = ctx.total_mb;
+    let mut last_mb_qp = sh.slice_qp;
+    let mut last_delta_qp = 0i32;
+    let mut coeffs = [0i16; 384];
+
+    // Reference list (P slices only).
+    let (ref_pic_ids, ref_pics): (Vec<i32>, Vec<&Picture>) = if sh.slice_type.is_p() {
+        let list = dpb.p_ref_list(sh.frame_num as i32);
+        let ref_count = (sh.num_ref_idx_active[0] as usize).min(list.len());
+        if ref_count == 0 {
+            return Err(DecodeError::InvalidSyntax("P slice with no references"));
+        }
+        (
+            (0..ref_count).map(|k| dpb.refs[list[k]].id).collect(),
+            (0..ref_count).map(|k| &dpb.refs[list[k]].pic).collect(),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    let mut mb_xy = sh.first_mb_in_slice as usize;
+    while mb_xy < total_mb {
+        set_mb_deblock(ctx, mb_xy, sh, slice_index);
+        coeffs.iter_mut().for_each(|c| *c = 0);
+        let eos = if sh.slice_type.is_intra() {
+            decode_mb_cabac_islice(
+                &mut dec, &mut ctxs, ctx, mb_xy, pps, &mut last_mb_qp, &mut last_delta_qp, &mut coeffs,
+            )?
+        } else {
+            decode_mb_cabac_pslice(
+                &mut dec, &mut ctxs, ctx, mb_xy, pps, &mut last_mb_qp, &mut last_delta_qp,
+                &ref_pic_ids, &mut coeffs,
+            )?
+        };
+        if ctx.mb_type[mb_xy].is_intra() {
+            recon_intra_mb(ctx, mb_xy, &coeffs);
+        } else {
+            recon_inter_mb(ctx, mb_xy, &coeffs, &ref_pics);
+        }
+        mb_xy += 1;
+        if eos {
             break;
         }
     }

@@ -130,6 +130,11 @@ pub struct DecoderContext {
     pub chroma_mode: Vec<i8>,
     /// Coded block pattern (`cbp_luma | cbp_chroma << 4`).
     pub cbp: Vec<u8>,
+    /// Per-MB CABAC `coded_block_flag` DC state (`pCbfDc`): bit `iResProperty`
+    /// set when that DC block had a non-zero `coded_block_flag`. Bits used:
+    /// 1 = luma DC, 7 = Cb DC, 8 = Cr DC. Read by the CABAC cbf neighbour
+    /// derivation; unused by CAVLC.
+    pub cbf_dc: Vec<u16>,
     pub luma_qp: Vec<i8>,
     /// Per-MB chroma QP, 2 per MB (Cb then Cr), derived from luma QP via the
     /// chroma QP mapping + `chroma_qp_index_offset`. Used by the deblocker.
@@ -190,6 +195,7 @@ impl DecoderContext {
             i16_mode: vec![0; total_mb],
             chroma_mode: vec![0; total_mb],
             cbp: vec![0; total_mb],
+            cbf_dc: vec![0; total_mb],
             luma_qp: vec![0; total_mb],
             chroma_qp: vec![0; total_mb * 2],
             deblock_idc: vec![0; total_mb],
