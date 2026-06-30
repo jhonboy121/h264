@@ -6,11 +6,13 @@ Legend: ✅ done & tested · 🚧 in progress · ⬜ not started · ⏸ deferred
 The C source for it is in `reference/` (see `REFERENCE_MAP.md` for the exact file).
 Port it, add tests, run `cargo test`, then check it off here with a one-line note.
 
-Last updated: **DECODER DONE (P1-P4)**. Baseline CAVLC + Main CABAC, I+P, multi-ref,
-deblock, DPB — 28/54 corpus streams BIT-EXACT vs C (3875 frames). Rusty API + perf report.
-99 tests, 0 warnings, 7 targets + no_std + wasm. **NEXT: ENCODER (P5 DSP → P6 core → P7
-round-trip), then SIMD (P10) + final perf report (P11).** Decoder follow-ups (deferred,
-optional): B-slices, transform8x8/High, PCM, FMO — all cleanly gated Unsupported.
+Last updated: **PROJECT COMPLETE (P1-P11)**. Decoder (baseline CAVLC + Main CABAC, I+P,
+multi-ref, deblock, DPB — 28/54 BIT-EXACT vs C, 3875 frames) + encoder (baseline intra +
+IPPP CAVLC, round-trip PSNR, no drift) + **SIMD (P10: NEON + wasm simd128, bit-exact)** +
+**refreshed perf report (P11)**. 139 tests, 0 warnings, 8 targets + no_std + wasm + simd.
+See `STATUS.md` for the final summary. Deferred (explicit, not gaps): decoder B-slices,
+transform8x8/High, PCM, FMO, error-conceal; encoder sub-16x16, multi-ref, B, CABAC-encode,
+rate control; P8 processing; P9 threading; SIMD for deblock/mc_hor_ver22/x86.
 
 ---
 
@@ -134,8 +136,26 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
 
 ## P8 — Processing ⏸  (downsample/denoise/scenechange/vaa)
 ## P9 — Threading ⏸  (slice MT + thread pool; std-only, wasm off)
-## P10 — SIMD ⏸  (NEON / wasm128 / SSE-AVX behind `simd`, runtime detect)
-## P11 — Perf report ⬜ → `docs/PERF_REPORT.md`
+
+## P10 — SIMD ✅  (NEON + wasm128 behind `simd`, bit-exact)
+- [x] **simd.1 NEON** ✅ — `dsp/simd/{mod,neon}.rs`. aarch64 baseline (no runtime
+      detect); each public kernel keeps a `*_scalar` body + cfg dispatch so callers
+      are unchanged. NEON: `idct4x4_add` (dual 4x4 transpose), luma half-pel
+      `mc_hor_ver20`/`mc_hor_ver02` + `pixel_avg` (vqrshrun / vrhadd) → quarter-pel
+      positions accelerated transitively, and `sad` (vabd+vpadal). 2e46e10.
+- [x] **simd.2 wasm simd128** ✅ — `dsp/simd/wasm.rs`: v128 `idct4x4_add` + `sad`.
+      Builds with `-C target-feature=+simd128`; scalar fallback otherwise. Bit-exact
+      cross-checked vs scalar under Node (50k IDCT + 12k SAD cases, 0 mismatch). a68c343.
+- [x] **Bit-exact verified** — full conformance corpus stays 28/54 BITEXACT and all
+      139 tests pass unchanged with `--features simd`. Kept scalar (bit-exactness):
+      deblock filters, centre half-pel `mc_hor_ver22`, `mc_copy`. x86 SSE/AVX deferred.
+
+## P11 — Perf report ✅ → `docs/PERF_REPORT.md`
+- [x] Decode scalar-vs-SIMD-vs-C table (SIMD self-speedup 1.03-1.38x; BANM reaches
+      ~parity with C NEON). Encoder section via `examples/bench_encode.rs` (IPPP
+      ~1.74x SIMD speedup) + round-trip PSNR / I-vs-P bitrate. 78152da.
+- [x] **`docs/STATUS.md`** — final honest project summary (ported/conformant, API,
+      build+test matrix, deferred list).
 
 ---
 
