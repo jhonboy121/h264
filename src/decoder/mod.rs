@@ -10,6 +10,7 @@ pub mod cavlc;
 pub mod cavlc_tables;
 pub mod nal;
 pub mod params;
+pub mod picture;
 pub mod slice_header;
 
 // Added per phase:

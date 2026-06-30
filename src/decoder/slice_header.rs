@@ -253,7 +253,19 @@ pub fn parse_slice_header(
     pps: &Pps,
 ) -> Result<SliceHeader> {
     let mut bs = BitReader::new(rbsp);
+    parse_slice_header_in_place(&mut bs, nal_ref_idc, is_idr, sps, pps)
+}
 
+/// As [`parse_slice_header`] but reads from a caller-owned [`BitReader`], which
+/// is left positioned at the first slice-data bit. The MB decode loop uses this
+/// to continue reading macroblock syntax after the header.
+pub fn parse_slice_header_in_place(
+    bs: &mut BitReader<'_>,
+    nal_ref_idc: u8,
+    is_idr: bool,
+    sps: &Sps,
+    pps: &Pps,
+) -> Result<SliceHeader> {
     // first_mb_in_slice
     let first_mb_in_slice = bs.read_ue()?;
     if first_mb_in_slice > SLICE_HEADER_FIRST_MB_MAX {
@@ -388,14 +400,14 @@ pub fn parse_slice_header(
 
     // ref_pic_list_modification (a.k.a. reordering)
     let ref_pic_list_reordering =
-        parse_ref_pic_list_reordering(&mut bs, slice_type, sps, &num_ref_idx_active)?;
+        parse_ref_pic_list_reordering(bs, slice_type, sps, &num_ref_idx_active)?;
 
     // pred_weight_table
     let weighted = (pps.weighted_pred_flag && slice_type == SliceType::P)
         || (pps.weighted_bipred_idc == 1 && slice_type == SliceType::B);
     let pred_weight_table = if weighted {
         Some(parse_pred_weight_table(
-            &mut bs,
+            bs,
             slice_type,
             sps,
             &num_ref_idx_active,
@@ -406,7 +418,7 @@ pub fn parse_slice_header(
 
     // dec_ref_pic_marking
     let dec_ref_pic_marking = if nal_ref_idc != 0 {
-        Some(parse_dec_ref_pic_marking(&mut bs, is_idr, sps, frame_num)?)
+        Some(parse_dec_ref_pic_marking(bs, is_idr, sps, frame_num)?)
     } else {
         None
     };
