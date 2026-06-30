@@ -21,27 +21,18 @@ tables → dsp/tables.rs, and the luma/chroma DC dequant-IDCT (decode_slice.cpp:
 - [x] Cargo crate `h264`, no_std+alloc, feature flags, lib skeleton
 - [x] 7-target `cargo build` smoke check
 
-## P1 — Foundations / DSP 🚧
-- [x] `bits/reader.rs` — MSB-first bit reader + more_rbsp_data + trailing bits (6 tests)
-- [x] `bits/golomb.rs` — Exp-Golomb ue/se/te (3 tests)
-- [x] `bits/writer.rs` — bit writer + ue/se write (3 tests, roundtrip-verified)
+## P1 — Foundations / DSP ✅
+- [x] `bits/{reader,golomb,writer}.rs` — MSB-first reader/writer + Exp-Golomb (12 tests)
 - [x] crate scaffold builds for all 7 targets + no_std + wasm
-- [ ] `dsp/tables.rs` + core consts/types (`wels_const.h`, `codec_def.h`)
-- [ ] `dsp/transform.rs` — IDCT 4x4/8x8, dequant, DC transforms (port `decode_mb_aux.cpp`)
-      · anchor test: `DecUT_IdctResAddPred.cpp`
 - [x] `dsp/transform.rs` — idct4x4_add, idct8x8_add (5 tests, faithful i16 trunc)
 - [x] `dsp/intra_pred.rs` — 44 kernels (4x4/8x8/16x16/chroma) + tests vs ref (4 test groups)
 - [x] `dsp/mc.rs` — luma 6-tap + 16 quarter-pel + chroma bilinear (4 tests, bit-exact)
       · anchor: `EncUT_MotionCompensation.cpp` ✓
 - [x] `dsp/deblock.rs` — luma/chroma Lt4 & Eq4 edge filters H&V (6 tests, bit-exact)
       · anchor: `DecUT_DeblockCommon.cpp` ✓
-- [x] `dsp/copy.rs` — copy_block + named sizes (2 tests) [STAGED, unwired]
-- [x] `dsp/sad.rs` — sad + named sizes (3 tests) [STAGED, unwired]
+- [x] `dsp/copy.rs` (2 tests), `dsp/sad.rs` (3 tests)
 - [⏸] `dsp/expand.rs` — DEFERRED to P3 (coupled to padded Plane buffer)
-
-### Staged-but-unwired files (wire into mod.rs after intra agent returns, then test):
-- src/dsp/copy.rs, src/dsp/sad.rs  → add `pub mod copy; pub mod sad;` to src/dsp/mod.rs
-- src/decoder/nal.rs (Annex-B framing, EBSP→RBSP, NAL types; 4 tests) → needs src/decoder/mod.rs + `pub mod decoder;` in lib.rs
+- [ ] `dsp/tables.rs` — dequant/scan tables — moved to P2 (needed by CAVLC residual)
 
 ## P2 — Decoder parsing 🚧
 - [x] `decoder/nal.rs` — Annex-B framing, NAL header, EPB strip (4 tests)
