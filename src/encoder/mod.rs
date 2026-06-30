@@ -233,6 +233,176 @@ fn write_p_slice_header(bw: &mut BitWriter, cfg: &ParamConfig, frame_index: u32,
     bw.write_ue(1); // disable_deblocking_filter_idc = 1 (off; output == recon)
 }
 
+/// One input frame for the all-intra frame-parallel encode path: borrowed
+/// planar I420 planes with their strides (`u`/`v` quarter-resolution, 4:2:0).
+#[cfg(feature = "threads")]
+pub struct FrameInput<'a> {
+    pub y: &'a [u8],
+    pub y_stride: usize,
+    pub u: &'a [u8],
+    pub v: &'a [u8],
+    pub c_stride: usize,
+}
+
+#[cfg(feature = "threads")]
+impl Encoder {
+    /// Slice-parallel sibling of [`encode_frame`](Self::encode_frame): encode
+    /// the frame's `slices` independent slices concurrently with
+    /// [`std::thread::scope`] (up to `available_parallelism` worker threads),
+    /// then concatenate the slice NALs in order. Frames stay serial (a P frame
+    /// references the previous reconstruction); slices within a frame run in
+    /// parallel. The output is **byte-identical** to `encode_frame` — each slice
+    /// is fully independent (deblocking off, neighbours gated at the boundary),
+    /// so the order of execution cannot change a single bit.
+    pub fn encode_frame_parallel(&mut self, y: &[u8], y_stride: usize, u: &[u8], v: &[u8], c_stride: usize) -> Vec<u8> {
+        let mb_width = self.cfg.mb_width as usize;
+        let mb_height = self.cfg.mb_height as usize;
+        let qp = self.cfg.qp as i32;
+
+        let (src_y, sy_stride) = pad_plane(y, y_stride, self.width as usize, self.height as usize, mb_width * 16, mb_height * 16);
+        let cw = self.width as usize >> 1;
+        let ch = self.height as usize >> 1;
+        let (src_u, sc_stride) = pad_plane(u, c_stride, cw, ch, mb_width * 8, mb_height * 8);
+        let (src_v, _) = pad_plane(v, c_stride, cw, ch, mb_width * 8, mb_height * 8);
+
+        let reference = self.reference.take();
+        let is_p = reference.is_some();
+        let (ref_y, ref_u, ref_v): (&[u8], &[u8], &[u8]) = match &reference {
+            Some(r) => (&r.y, &r.u, &r.v),
+            None => (&[], &[], &[]),
+        };
+
+        let dims = MbDims { width: mb_width, height: mb_height };
+        let job = SliceJob {
+            dims,
+            qp,
+            src: PlaneRefs { y: &src_y, u: &src_u, v: &src_v },
+            sy_stride,
+            sc_stride,
+            refs: PlaneRefs { y: ref_y, u: ref_u, v: ref_v },
+            cfg: self.cfg,
+            frame_index: self.frame_index,
+            is_p,
+        };
+        let bands = slice_bands(mb_height, self.slices);
+        let nbands = bands.len();
+        let par = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let nthreads = nbands.min(par).max(1);
+
+        // Encode each band on a worker (contiguous static chunking, so results
+        // come back in band order regardless of thread count).
+        let results: Vec<(Vec<u8>, FrameEnc)> = std::thread::scope(|scope| {
+            let bands = &bands;
+            let handles: Vec<_> = (0..nthreads)
+                .map(|w| {
+                    let lo = w * nbands / nthreads;
+                    let hi = (w + 1) * nbands / nthreads;
+                    scope.spawn(move || {
+                        (lo..hi).map(|bi| encode_one_band(job, bands[bi])).collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+
+        // Assemble the access unit in slice order.
+        let mut out = Vec::new();
+        if !is_p {
+            append_annexb_nal(&mut out, 3, NAL_SPS, &paraset::write_sps(&self.cfg));
+            append_annexb_nal(&mut out, 3, NAL_PPS, &paraset::write_pps(&self.cfg));
+        }
+        let (ref_idc, nal_type) = if is_p { (2, NAL_NON_IDR_SLICE) } else { (3, NAL_IDR_SLICE) };
+        for (rbsp, _) in &results {
+            append_annexb_nal(&mut out, ref_idc, nal_type, rbsp);
+        }
+
+        // Stitch the per-slice reconstructions into one frame, border-extend,
+        // and keep it as the next reference (the serial deblock/expand step).
+        let mut unified = encode_mb::RecPlanes::new(dims);
+        for ((_, fe), &(fy, ly)) in results.iter().zip(bands.iter()) {
+            fe.copy_band_into(&mut unified, fy, ly);
+        }
+        encode_mb::expand_reference(&mut unified.y, &mut unified.u, &mut unified.v, dims, unified.ystride, unified.cstride);
+        self.reference = Some(RefPlanes { y: unified.y, u: unified.u, v: unified.v });
+        self.frame_index = self.frame_index.wrapping_add(1);
+        out
+    }
+
+    /// Frame-parallel all-intra encode: encode `frames` as independent IDR
+    /// access units concurrently (each its own encoder state) and return the
+    /// AUs in input order. Each AU is byte-identical to encoding that frame on a
+    /// fresh single encoder, so the result matches the serial all-intra path
+    /// exactly. Uses up to `available_parallelism` worker threads.
+    pub fn encode_frames_parallel(&self, frames: &[FrameInput<'_>]) -> Vec<Vec<u8>> {
+        let n = frames.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        let par = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1);
+        let nthreads = n.min(par).max(1);
+        let (w, h, qp, slices, fps) = (self.width, self.height, self.cfg.qp, self.slices, self.cfg.fps);
+        std::thread::scope(|scope| {
+            let frames = &frames;
+            let handles: Vec<_> = (0..nthreads)
+                .map(|t| {
+                    let lo = t * n / nthreads;
+                    let hi = (t + 1) * n / nthreads;
+                    scope.spawn(move || {
+                        (lo..hi)
+                            .map(|i| {
+                                let mut enc = Encoder::new_with_slices(w, h, qp, slices).unwrap();
+                                if let Some(fps) = fps {
+                                    enc.set_frame_rate(fps);
+                                }
+                                let f = &frames[i];
+                                enc.encode_frame(f.y, f.y_stride, f.u, f.v, f.c_stride)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        })
+    }
+}
+
+/// The constant inputs for encoding one slice band, bundled so the threaded
+/// slice-parallel path can hand a single `Copy` value to each worker (the only
+/// per-band variable is the MB-row range). All fields are `Copy`: the planes
+/// are borrowed (`PlaneRefs`) and `ParamConfig` is small + `Copy`.
+#[cfg(feature = "threads")]
+#[derive(Clone, Copy)]
+struct SliceJob<'a> {
+    dims: MbDims,
+    qp: i32,
+    src: PlaneRefs<'a>,
+    sy_stride: usize,
+    sc_stride: usize,
+    refs: PlaneRefs<'a>,
+    cfg: ParamConfig,
+    frame_index: u32,
+    is_p: bool,
+}
+
+/// Encode a single slice band into its own [`FrameEnc`] (independent
+/// reconstruction + bitstream), returning the slice RBSP and the frame encoder
+/// holding the reconstructed band. Shared by the threaded slice-parallel path.
+#[cfg(feature = "threads")]
+fn encode_one_band<'a>(job: SliceJob<'a>, band: (usize, usize)) -> (Vec<u8>, FrameEnc<'a>) {
+    let (first_mb_y, last_mb_y) = band;
+    let mut fe = FrameEnc::new(job.dims, job.qp, job.src, job.sy_stride, job.sc_stride, job.refs);
+    let mut bw = BitWriter::new();
+    let first_mb = (first_mb_y * job.dims.width) as u32;
+    if job.is_p {
+        write_p_slice_header(&mut bw, &job.cfg, job.frame_index, first_mb);
+    } else {
+        write_idr_slice_header(&mut bw, &job.cfg, first_mb);
+    }
+    fe.encode_band(&mut bw, first_mb_y, last_mb_y, job.is_p);
+    bw.write_trailing_bits();
+    (bw.finish(), fe)
+}
+
 /// Copy `src` (`w`x`h`, row stride `src_stride`) into a tightly-strided
 /// `dst_w`x`dst_h` buffer, replicating the right/bottom edges into the padding.
 fn pad_plane(src: &[u8], src_stride: usize, w: usize, h: usize, dst_w: usize, dst_h: usize) -> (Vec<u8>, usize) {

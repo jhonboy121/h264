@@ -156,6 +156,28 @@ pub(crate) struct MbDims {
     pub height: usize,
 }
 
+/// A unified, owned set of reconstruction planes (luma + 2 chroma) plus their
+/// strides — the assembly target for the threaded slice-parallel path, where
+/// each slice reconstructs into its own [`FrameEnc`] and the bands are stitched
+/// back together here before border extension.
+#[cfg(feature = "threads")]
+pub(crate) struct RecPlanes {
+    pub y: Vec<u8>,
+    pub u: Vec<u8>,
+    pub v: Vec<u8>,
+    pub ystride: usize,
+    pub cstride: usize,
+}
+
+#[cfg(feature = "threads")]
+impl RecPlanes {
+    /// Allocate blank (border-padded) reconstruction planes for a frame.
+    pub(crate) fn new(dims: MbDims) -> Self {
+        let (ystride, cstride, ylen, clen) = rec_dims(dims.width, dims.height);
+        RecPlanes { y: vec![0u8; ylen], u: vec![0u8; clen], v: vec![0u8; clen], ystride, cstride }
+    }
+}
+
 /// Reconstruction-plane geometry for a frame: `(ystride, cstride, ylen, clen)`,
 /// each plane carrying a [`BORDER`]-wide pad on every side.
 pub(crate) fn rec_dims(mb_width: usize, mb_height: usize) -> (usize, usize, usize, usize) {
@@ -333,6 +355,28 @@ impl<'a> FrameEnc<'a> {
             self.cstride,
         );
         (self.rec_y, self.rec_u, self.rec_v)
+    }
+
+    /// Copy this slice encoder's reconstructed band (visible rows
+    /// `[first_mb_y, last_mb_y)`) into the matching rows of a unified
+    /// reconstruction plane set (same dimensions / strides). Used by the
+    /// threaded slice-parallel path to stitch per-slice reconstructions back
+    /// into one frame before border extension.
+    #[cfg(feature = "threads")]
+    pub(crate) fn copy_band_into(&self, dst: &mut RecPlanes, first_mb_y: usize, last_mb_y: usize) {
+        let lo = BORDER * self.ystride + BORDER;
+        let co = BORDER * self.cstride + BORDER;
+        let lw = self.mb_width * 16;
+        let cw = self.mb_width * 8;
+        for ly in first_mb_y * 16..last_mb_y * 16 {
+            let s = lo + ly * self.ystride;
+            dst.y[s..s + lw].copy_from_slice(&self.rec_y[s..s + lw]);
+        }
+        for cy in first_mb_y * 8..last_mb_y * 8 {
+            let s = co + cy * self.cstride;
+            dst.u[s..s + cw].copy_from_slice(&self.rec_u[s..s + cw]);
+            dst.v[s..s + cw].copy_from_slice(&self.rec_v[s..s + cw]);
+        }
     }
 
     /// Encode the macroblocks of one slice (MB-rows `[first_mb_y, last_mb_y)`)
