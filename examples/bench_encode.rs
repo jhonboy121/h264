@@ -11,7 +11,6 @@
 //!
 //! Usage: `cargo run --release --example bench_encode`
 //! (Add `--features simd` to exercise the SIMD SAD/MC kernels the encoder uses.)
-#![allow(unused_assignments)] // bench loop reassigns the byte tally each rep
 
 use std::time::Instant;
 
@@ -88,24 +87,34 @@ fn main() {
 
     for &qp in &[26u8, 32u8] {
         for intra in [true, false] {
-            // Measure encode of the whole sequence, auto-scaled.
-            let mut times = Vec::new();
-            let mut au_total = 0usize;
-            let start = Instant::now();
-            let mut reps = 0u32;
-            loop {
+            // The encoded size is deterministic, so measure it once (outside the
+            // timing loop, which only re-runs the encode to gather timings).
+            let au_total = {
                 let mut enc = Encoder::new(w as u32, h as u32, qp).unwrap();
-                let t = Instant::now();
                 let mut bytes = 0usize;
                 for (k, f) in frames.iter().enumerate() {
                     if intra && k > 0 {
                         enc.force_idr();
                     }
-                    let au = enc.encode_frame(&f.y, f.ys, &f.u, &f.v, f.cs);
-                    bytes += au.len();
+                    bytes += enc.encode_frame(&f.y, f.ys, &f.u, &f.v, f.cs).len();
+                }
+                bytes
+            };
+
+            // Measure encode of the whole sequence, auto-scaled.
+            let mut times = Vec::new();
+            let start = Instant::now();
+            let mut reps = 0u32;
+            loop {
+                let mut enc = Encoder::new(w as u32, h as u32, qp).unwrap();
+                let t = Instant::now();
+                for (k, f) in frames.iter().enumerate() {
+                    if intra && k > 0 {
+                        enc.force_idr();
+                    }
+                    let _ = enc.encode_frame(&f.y, f.ys, &f.u, &f.v, f.cs);
                 }
                 times.push(t.elapsed().as_secs_f64() * 1e3);
-                au_total = bytes;
                 reps += 1;
                 if reps >= MAX_REPS {
                     break;
