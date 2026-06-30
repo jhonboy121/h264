@@ -21,13 +21,13 @@ pub fn clip1(x: i32) -> u8 {
 ///
 /// Dispatches to a bit-exact SIMD kernel when `--features simd` is enabled on a
 /// supported target (NEON / wasm `simd128`), otherwise the scalar reference.
-#[allow(unreachable_code)]
 pub fn idct4x4_add(pred: &mut [u8], stride: usize, rs: &[i16; 16]) {
-    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    #[cfg(simd_neon)]
     return crate::dsp::simd::neon::idct4x4_add(pred, stride, rs);
-    #[cfg(all(feature = "simd", target_arch = "wasm32", target_feature = "simd128"))]
+    #[cfg(simd_wasm128)]
     return crate::dsp::simd::wasm::idct4x4_add(pred, stride, rs);
-    idct4x4_add_scalar(pred, stride, rs)
+    #[cfg(no_simd)]
+    return idct4x4_add_scalar(pred, stride, rs);
 }
 
 /// Scalar reference for [`idct4x4_add`] (the conformance baseline / SIMD fallback).

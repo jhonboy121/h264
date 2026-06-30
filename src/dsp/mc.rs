@@ -55,7 +55,6 @@ fn hor_filter_input_16bit(tmp: &[i16], k: usize) -> i32 {
 ///
 /// Dispatches to a bit-exact NEON kernel under `--features simd` on aarch64.
 #[allow(clippy::too_many_arguments)]
-#[allow(unreachable_code)]
 pub(crate) fn pixel_avg(
     dst: &mut [u8],
     do_: usize,
@@ -69,9 +68,10 @@ pub(crate) fn pixel_avg(
     w: usize,
     h: usize,
 ) {
-    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    #[cfg(simd_neon)]
     return crate::dsp::simd::neon::pixel_avg(dst, do_, ds, a, ao, as_, b, bo, bs, w, h);
-    pixel_avg_scalar(dst, do_, ds, a, ao, as_, b, bo, bs, w, h)
+    #[cfg(not(simd_neon))]
+    return pixel_avg_scalar(dst, do_, ds, a, ao, as_, b, bo, bs, w, h);
 }
 
 /// Scalar reference for [`pixel_avg`] (the conformance baseline / SIMD fallback).
@@ -117,11 +117,11 @@ pub fn mc_copy(
 /// Horizontal half-pel filter, quarter-pel position (2,0) (`McHorVer20_c`).
 ///
 /// Dispatches to a bit-exact NEON kernel under `--features simd` on aarch64.
-#[allow(unreachable_code)]
 pub fn mc_hor_ver20(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss: usize, w: usize, h: usize) {
-    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    #[cfg(simd_neon)]
     return crate::dsp::simd::neon::mc_hor_ver20(dst, do_, ds, src, so, ss, w, h);
-    mc_hor_ver20_scalar(dst, do_, ds, src, so, ss, w, h)
+    #[cfg(not(simd_neon))]
+    return mc_hor_ver20_scalar(dst, do_, ds, src, so, ss, w, h);
 }
 
 /// Scalar reference for [`mc_hor_ver20`].
@@ -146,11 +146,11 @@ pub(crate) fn mc_hor_ver20_scalar(
 /// Vertical half-pel filter, quarter-pel position (0,2) (`McHorVer02_c`).
 ///
 /// Dispatches to a bit-exact NEON kernel under `--features simd` on aarch64.
-#[allow(unreachable_code)]
 pub fn mc_hor_ver02(dst: &mut [u8], do_: usize, ds: usize, src: &[u8], so: usize, ss: usize, w: usize, h: usize) {
-    #[cfg(all(feature = "simd", target_arch = "aarch64"))]
+    #[cfg(simd_neon)]
     return crate::dsp::simd::neon::mc_hor_ver02(dst, do_, ds, src, so, ss, w, h);
-    mc_hor_ver02_scalar(dst, do_, ds, src, so, ss, w, h)
+    #[cfg(not(simd_neon))]
+    return mc_hor_ver02_scalar(dst, do_, ds, src, so, ss, w, h);
 }
 
 /// Scalar reference for [`mc_hor_ver02`].

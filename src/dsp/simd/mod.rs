@@ -21,8 +21,8 @@
 //! plain memcpy the compiler already lowers well), and the deblock edge filters
 //! (per-line data-dependent branching that does not map to a bit-exact mask).
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(simd_neon)]
 pub mod neon;
 
-#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[cfg(simd_wasm128)]
 pub mod wasm;
