@@ -112,10 +112,15 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
       NAL encap, intra mode decision (SATD), fwd DCT/quant, in-place reconstruct.
       **Round-trip PSNR (encode→OUR decoder): QP26 Y=41.16dB, QP32 Y=37.27dB**, monotonic.
       134 tests. ed82638. Files: encoder/{cavlc_writer,paraset,nal_encap,encode_mb,mod}.rs.
-- [ ] **P-frame encode** — motion estimation (svc_motion_estimate.cpp, EncUT_MotionEstimate),
-      inter mode decision, enc mv_pred, inter MB encode → IPPP round-trip PSNR.
-- [ ] rate control (ratectl.cpp) for target bitrate (optional; fixed-QP works).
-- [⏸] CABAC encode (set_mb_syn_cabac.cpp) — deferred (CAVLC encode works).
+- [x] **P-frame encode** ✅ — motion_est.rs (diamond + sub-pel, SATD), inter mode decision
+      (P_Skip/P_16x16/intra), enc mv_pred (bit-identical to decoder), inter MB encode.
+      **IPPP round-trip: QP26 I=40.4dB P≈41dB, P frames 10-16× smaller, NO drift.** 887aae2.
+- [⏸] rate control, sub-16x16 partitions, multi-ref, CABAC-encode, B-encode — deferred
+      (fixed-QP baseline IPPP works; encoder freedom — not correctness gaps).
+
+## P7 — Encoder API + round-trip ✅
+- [x] `Encoder::new(w,h,qp)`/`encode_frame`/`force_idr`; tests/encode_roundtrip.rs
+      (intra + IPPP, encode→OUR-decoder PSNR). 139 tests, 7 targets + no_std + wasm.
 
 ## P6 — Encoder core ⬜
 - [ ] `bits/writer.rs` + Exp-Golomb write · `EncUT_ExpGolomb`
@@ -126,8 +131,6 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
 - [ ] NAL encap, paraset gen · `EncUT_ParameterSetStrategy`
 - [ ] CABAC encode
 
-## P7 — Encoder API + round-trip ⬜
-- [ ] `Encoder` facade; encode→decode PSNR tests (`test/api/encode_decode_*`)
 
 ## P8 — Processing ⏸  (downsample/denoise/scenechange/vaa)
 ## P9 — Threading ⏸  (slice MT + thread pool; std-only, wasm off)
