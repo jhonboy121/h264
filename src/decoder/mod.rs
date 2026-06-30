@@ -8,6 +8,7 @@ pub mod cabac_mb;
 pub mod cabac_tables;
 pub mod cavlc;
 pub mod cavlc_tables;
+pub mod context;
 pub mod nal;
 pub mod params;
 pub mod picture;
