@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 
 use crate::bits::BitWriter;
 use crate::error::EncodeError;
-use encode_mb::FrameEnc;
+use encode_mb::{FrameEnc, MbDims, PlaneRefs};
 use nal_encap::append_annexb_nal;
 use paraset::ParamConfig;
 
@@ -49,24 +49,40 @@ pub struct Encoder {
     reference: Option<RefPlanes>,
     /// Display/decode-order frame counter (0 == the leading IDR).
     frame_index: u32,
+    /// Slices per frame (>= 1). Each frame is partitioned into this many
+    /// contiguous MB-row bands, every band emitted as its own slice NAL with an
+    /// independent CAVLC bitstream and prediction state reset at the boundary.
+    /// Capped at the MB height (one slice can never be fewer than one MB row).
+    slices: u32,
 }
 
 impl Encoder {
     /// Create an encoder for `width`x`height` frames at a fixed quantiser `qp`
     /// (0..=51). Returns an error for empty dimensions or an out-of-range QP.
     pub fn new(width: u32, height: u32, qp: u8) -> Result<Self, EncodeError> {
+        Self::new_with_slices(width, height, qp, 1)
+    }
+
+    /// Like [`new`](Self::new) but partitions every frame into `slices`
+    /// contiguous slices (MB-row bands). `slices` is clamped to `[1, mb_height]`.
+    /// Multi-slice streams stay bit-exact through this crate's decoder and are
+    /// the unit of parallelism for the `threads`-gated encode paths.
+    pub fn new_with_slices(width: u32, height: u32, qp: u8, slices: u32) -> Result<Self, EncodeError> {
         if width == 0 || height == 0 {
             return Err(EncodeError::InvalidConfig("zero dimension"));
         }
         if qp > 51 {
             return Err(EncodeError::InvalidConfig("qp out of range"));
         }
+        let cfg = ParamConfig::new(width, height, qp);
+        let slices = slices.clamp(1, cfg.mb_height);
         Ok(Encoder {
             width,
             height,
-            cfg: ParamConfig::new(width, height, qp),
+            cfg,
             reference: None,
             frame_index: 0,
+            slices,
         })
     }
 
@@ -75,6 +91,16 @@ impl Encoder {
     }
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    /// Slices emitted per frame (after clamping to the MB height).
+    pub fn slices(&self) -> u32 {
+        self.slices
+    }
+
+    /// Set the number of slices per frame (clamped to `[1, mb_height]`).
+    pub fn set_slices(&mut self, slices: u32) {
+        self.slices = slices.clamp(1, self.cfg.mb_height);
     }
 
     /// Advertise `fps` in the SPS VUI timing info so raw Annex-B players
@@ -118,50 +144,43 @@ impl Encoder {
         let (src_u, sc_stride) = pad_plane(u, c_stride, cw, ch, mb_width * 8, mb_height * 8);
         let (src_v, _) = pad_plane(v, c_stride, cw, ch, mb_width * 8, mb_height * 8);
 
-        let is_p = self.reference.is_some();
-        let (ref_y, ref_u, ref_v) = match self.reference.take() {
-            Some(r) => (r.y, r.u, r.v),
-            None => (Vec::new(), Vec::new(), Vec::new()),
+        let reference = self.reference.take();
+        let is_p = reference.is_some();
+        let (ref_y, ref_u, ref_v): (&[u8], &[u8], &[u8]) = match &reference {
+            Some(r) => (&r.y, &r.u, &r.v),
+            None => (&[], &[], &[]),
         };
 
+        let dims = MbDims { width: mb_width, height: mb_height };
         let mut frame = FrameEnc::new(
-            encode_mb::MbDims { width: mb_width, height: mb_height },
+            dims,
             qp,
-            encode_mb::PlaneSet { y: src_y, u: src_u, v: src_v },
+            PlaneRefs { y: &src_y, u: &src_u, v: &src_v },
             sy_stride,
             sc_stride,
-            encode_mb::PlaneSet { y: ref_y, u: ref_u, v: ref_v },
+            PlaneRefs { y: ref_y, u: ref_u, v: ref_v },
         );
 
+        // IDR access unit (re)transmits the parameter sets ahead of its slices.
         let mut out = Vec::new();
-        let mut bw = BitWriter::new();
-
-        if is_p {
-            self.write_p_slice_header(&mut bw);
-            let mut pending = 0u32;
-            for mb_y in 0..mb_height {
-                for mb_x in 0..mb_width {
-                    frame.encode_mb_p(&mut bw, mb_x, mb_y, &mut pending);
-                }
-            }
-            // Flush any trailing skipped macroblocks.
-            if pending > 0 {
-                bw.write_ue(pending);
-            }
-            bw.write_trailing_bits();
-            append_annexb_nal(&mut out, 2, NAL_NON_IDR_SLICE, &bw.finish());
-        } else {
-            // IDR access unit: (re)transmit the parameter sets, then the I slice.
+        if !is_p {
             append_annexb_nal(&mut out, 3, NAL_SPS, &paraset::write_sps(&self.cfg));
             append_annexb_nal(&mut out, 3, NAL_PPS, &paraset::write_pps(&self.cfg));
-            self.write_idr_slice_header(&mut bw);
-            for mb_y in 0..mb_height {
-                for mb_x in 0..mb_width {
-                    frame.encode_mb(&mut bw, mb_x, mb_y);
-                }
+        }
+
+        // Encode each slice (MB-row band) into its own NAL, serially.
+        for &(first_mb_y, last_mb_y) in &slice_bands(mb_height, self.slices) {
+            let mut bw = BitWriter::new();
+            let first_mb = (first_mb_y * mb_width) as u32;
+            if is_p {
+                write_p_slice_header(&mut bw, &self.cfg, self.frame_index, first_mb);
+            } else {
+                write_idr_slice_header(&mut bw, &self.cfg, first_mb);
             }
+            frame.encode_band(&mut bw, first_mb_y, last_mb_y, is_p);
             bw.write_trailing_bits();
-            append_annexb_nal(&mut out, 3, NAL_IDR_SLICE, &bw.finish());
+            let (ref_idc, nal_type) = if is_p { (2, NAL_NON_IDR_SLICE) } else { (3, NAL_IDR_SLICE) };
+            append_annexb_nal(&mut out, ref_idc, nal_type, &bw.finish());
         }
 
         // Keep this frame's (border-extended) reconstruction as the next ref.
@@ -171,38 +190,47 @@ impl Encoder {
 
         out
     }
+}
 
-    /// Write the IDR I-slice header (CAVLC, frame-only, single slice).
-    fn write_idr_slice_header(&self, bw: &mut BitWriter) {
-        bw.write_ue(0); // first_mb_in_slice
-        bw.write_ue(7); // slice_type = I (7 -> "all I" form)
-        bw.write_ue(0); // pic_parameter_set_id
-        bw.write_bits(0, self.cfg.log2_max_frame_num); // frame_num = 0
-        bw.write_ue(0); // idr_pic_id
-        bw.write_bits(0, self.cfg.log2_max_poc_lsb); // pic_order_cnt_lsb = 0
-        // dec_ref_pic_marking (IDR): no_output_of_prior_pics + long_term_reference.
-        bw.write_flag(false);
-        bw.write_flag(false);
-        bw.write_se(0); // slice_qp_delta (slice qp == pic_init_qp)
-        bw.write_ue(1); // disable_deblocking_filter_idc = 1 (off; output == recon)
-    }
+/// Partition a frame's `mb_height` MB-rows into `slices` contiguous bands as
+/// evenly as possible (band sizes differ by at most one MB row). Returns
+/// `[(first_mb_y, last_mb_y), ...]` half-open row ranges.
+fn slice_bands(mb_height: usize, slices: u32) -> Vec<(usize, usize)> {
+    let s = (slices as usize).clamp(1, mb_height.max(1));
+    (0..s).map(|b| (b * mb_height / s, (b + 1) * mb_height / s)).collect()
+}
 
-    /// Write a P-slice header (CAVLC, single slice, single short-term reference).
-    fn write_p_slice_header(&self, bw: &mut BitWriter) {
-        let max_fn = 1u32 << self.cfg.log2_max_frame_num;
-        let max_poc = 1u32 << self.cfg.log2_max_poc_lsb;
-        bw.write_ue(0); // first_mb_in_slice
-        bw.write_ue(5); // slice_type = P (5 -> "all P" form)
-        bw.write_ue(0); // pic_parameter_set_id
-        bw.write_bits(self.frame_index % max_fn, self.cfg.log2_max_frame_num); // frame_num
-        bw.write_bits((self.frame_index.wrapping_mul(2)) % max_poc, self.cfg.log2_max_poc_lsb); // poc_lsb
-        bw.write_flag(false); // num_ref_idx_active_override_flag (use PPS default = 1)
-        bw.write_flag(false); // ref_pic_list_modification_flag_l0
-        // dec_ref_pic_marking (non-IDR, nal_ref_idc != 0): adaptive flag off.
-        bw.write_flag(false);
-        bw.write_se(0); // slice_qp_delta
-        bw.write_ue(1); // disable_deblocking_filter_idc = 1 (off; output == recon)
-    }
+/// Write an IDR I-slice header (CAVLC, frame-only) starting at `first_mb`.
+fn write_idr_slice_header(bw: &mut BitWriter, cfg: &ParamConfig, first_mb: u32) {
+    bw.write_ue(first_mb); // first_mb_in_slice
+    bw.write_ue(7); // slice_type = I (7 -> "all I" form)
+    bw.write_ue(0); // pic_parameter_set_id
+    bw.write_bits(0, cfg.log2_max_frame_num); // frame_num = 0
+    bw.write_ue(0); // idr_pic_id
+    bw.write_bits(0, cfg.log2_max_poc_lsb); // pic_order_cnt_lsb = 0
+    // dec_ref_pic_marking (IDR): no_output_of_prior_pics + long_term_reference.
+    bw.write_flag(false);
+    bw.write_flag(false);
+    bw.write_se(0); // slice_qp_delta (slice qp == pic_init_qp)
+    bw.write_ue(1); // disable_deblocking_filter_idc = 1 (off; output == recon)
+}
+
+/// Write a P-slice header (CAVLC, single short-term reference) starting at
+/// `first_mb`. All slices of a picture share `frame_index` (frame_num / POC).
+fn write_p_slice_header(bw: &mut BitWriter, cfg: &ParamConfig, frame_index: u32, first_mb: u32) {
+    let max_fn = 1u32 << cfg.log2_max_frame_num;
+    let max_poc = 1u32 << cfg.log2_max_poc_lsb;
+    bw.write_ue(first_mb); // first_mb_in_slice
+    bw.write_ue(5); // slice_type = P (5 -> "all P" form)
+    bw.write_ue(0); // pic_parameter_set_id
+    bw.write_bits(frame_index % max_fn, cfg.log2_max_frame_num); // frame_num
+    bw.write_bits((frame_index.wrapping_mul(2)) % max_poc, cfg.log2_max_poc_lsb); // poc_lsb
+    bw.write_flag(false); // num_ref_idx_active_override_flag (use PPS default = 1)
+    bw.write_flag(false); // ref_pic_list_modification_flag_l0
+    // dec_ref_pic_marking (non-IDR, nal_ref_idc != 0): adaptive flag off.
+    bw.write_flag(false);
+    bw.write_se(0); // slice_qp_delta
+    bw.write_ue(1); // disable_deblocking_filter_idc = 1 (off; output == recon)
 }
 
 /// Copy `src` (`w`x`h`, row stride `src_stride`) into a tightly-strided

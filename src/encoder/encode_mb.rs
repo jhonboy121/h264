@@ -139,11 +139,14 @@ static QUANT_INTRA_FF: [[i16; 8]; 52] = [
 /// same samples the decoder will, guaranteeing bit-identical reconstruction.
 const BORDER: usize = 32;
 
-/// A YUV triple of plane buffers (source or reference).
-pub(crate) struct PlaneSet {
-    pub y: Vec<u8>,
-    pub u: Vec<u8>,
-    pub v: Vec<u8>,
+/// A YUV triple of borrowed plane buffers (source or reference). The frame
+/// encoder reads these but never mutates them, so several per-slice encoders can
+/// share the same source + reference across `std::thread::scope` workers.
+#[derive(Clone, Copy)]
+pub(crate) struct PlaneRefs<'a> {
+    pub y: &'a [u8],
+    pub u: &'a [u8],
+    pub v: &'a [u8],
 }
 
 /// Frame dimensions in macroblocks.
@@ -151,6 +154,31 @@ pub(crate) struct PlaneSet {
 pub(crate) struct MbDims {
     pub width: usize,
     pub height: usize,
+}
+
+/// Reconstruction-plane geometry for a frame: `(ystride, cstride, ylen, clen)`,
+/// each plane carrying a [`BORDER`]-wide pad on every side.
+pub(crate) fn rec_dims(mb_width: usize, mb_height: usize) -> (usize, usize, usize, usize) {
+    let ystride = mb_width * 16 + 2 * BORDER;
+    let cstride = mb_width * 8 + 2 * BORDER;
+    let ylen = ystride * (mb_height * 16 + 2 * BORDER);
+    let clen = cstride * (mb_height * 8 + 2 * BORDER);
+    (ystride, cstride, ylen, clen)
+}
+
+/// Border-extend reconstruction planes in place (edge replication, matching the
+/// decoder's `expand_picture`).
+pub(crate) fn expand_reference(rec_y: &mut [u8], rec_u: &mut [u8], rec_v: &mut [u8], dims: MbDims, ystride: usize, cstride: usize) {
+    use crate::dsp::expand::expand_plane;
+    let lw = dims.width * 16;
+    let lh = dims.height * 16;
+    let cw = dims.width * 8;
+    let ch = dims.height * 8;
+    let lo = BORDER * ystride + BORDER;
+    let co = BORDER * cstride + BORDER;
+    expand_plane(rec_y, ystride, BORDER, lw, lh, lo);
+    expand_plane(rec_u, cstride, BORDER, cw, ch, co);
+    expand_plane(rec_v, cstride, BORDER, cw, ch, co);
 }
 
 /// Macroblock position (in MB units).
@@ -179,29 +207,34 @@ struct NeighAvail {
 /// Per-frame encoder state: padded reconstruction + source planes plus the
 /// neighbour context (non-zero counts, I4x4 modes, MB types) needed to mirror
 /// the decoder's CAVLC nC prediction and intra-mode prediction.
-pub(crate) struct FrameEnc {
+pub(crate) struct FrameEnc<'a> {
     pub mb_width: usize,
     mb_height: usize,
-    rec_y: Vec<u8>,
-    rec_u: Vec<u8>,
-    rec_v: Vec<u8>,
-    ystride: usize,
-    cstride: usize,
-    src_y: Vec<u8>,
-    src_u: Vec<u8>,
-    src_v: Vec<u8>,
+    pub(crate) rec_y: Vec<u8>,
+    pub(crate) rec_u: Vec<u8>,
+    pub(crate) rec_v: Vec<u8>,
+    pub(crate) ystride: usize,
+    pub(crate) cstride: usize,
+    src_y: &'a [u8],
+    src_u: &'a [u8],
+    src_v: &'a [u8],
     src_ystride: usize,
     src_cstride: usize,
     qp: i32,
+    /// First MB-row of the slice currently being encoded. Neighbour
+    /// availability above this row is suppressed so prediction / nC / mvd never
+    /// reach across a slice boundary — exactly as the decoder gates on its
+    /// per-MB `slice_idc`. `0` for the whole-frame (single-slice) case.
+    slice_top_y: usize,
     // Neighbour context, indexed per MB.
     nzc_luma: Vec<i8>,   // mb_count * 16 (raster)
     nzc_chroma: Vec<i8>, // mb_count * 8
     best_mode: Vec<i8>,  // mb_count * 16 (raster) I4x4 best modes (-1 if not nxn)
     is_nxn: Vec<bool>,   // per MB
     // --- Inter (P-slice) state ---
-    ref_y: Vec<u8>, // border-extended reference planes (empty for I frames)
-    ref_u: Vec<u8>,
-    ref_v: Vec<u8>,
+    ref_y: &'a [u8], // border-extended reference planes (empty for I frames)
+    ref_u: &'a [u8],
+    ref_v: &'a [u8],
     mv: Vec<[i16; 2]>, // mb_count * 16 (raster), signalled list-0 MVs (qpel)
     ref_idx: Vec<i8>,  // mb_count * 16 (raster); -1 == REF_NOT_IN_LIST (intra)
     mb_inter: Vec<bool>, // per MB: true if coded as inter (incl. P_Skip)
@@ -239,22 +272,19 @@ fn nc_average(na: i32, nb: i32) -> i32 {
     nc
 }
 
-impl FrameEnc {
+impl<'a> FrameEnc<'a> {
     pub fn new(
         dims: MbDims,
         qp: i32,
-        src: PlaneSet,
+        src: PlaneRefs<'a>,
         src_ystride: usize,
         src_cstride: usize,
-        refs: PlaneSet,
+        refs: PlaneRefs<'a>,
     ) -> Self {
         let MbDims { width: mb_width, height: mb_height } = dims;
-        let PlaneSet { y: src_y, u: src_u, v: src_v } = src;
-        let PlaneSet { y: ref_y, u: ref_u, v: ref_v } = refs;
-        let ystride = mb_width * 16 + 2 * BORDER;
-        let cstride = mb_width * 8 + 2 * BORDER;
-        let ylen = ystride * (mb_height * 16 + 2 * BORDER);
-        let clen = cstride * (mb_height * 8 + 2 * BORDER);
+        let PlaneRefs { y: src_y, u: src_u, v: src_v } = src;
+        let PlaneRefs { y: ref_y, u: ref_u, v: ref_v } = refs;
+        let (ystride, cstride, ylen, clen) = rec_dims(mb_width, mb_height);
         let mb_count = mb_width * mb_height;
         FrameEnc {
             mb_width,
@@ -270,6 +300,7 @@ impl FrameEnc {
             src_ystride,
             src_cstride,
             qp,
+            slice_top_y: 0,
             nzc_luma: vec![0i8; mb_count * 16],
             nzc_chroma: vec![0i8; mb_count * 8],
             best_mode: vec![-1i8; mb_count * 16],
@@ -283,21 +314,51 @@ impl FrameEnc {
         }
     }
 
+    /// First MB-row above which neighbours are unavailable (slice boundary).
+    #[inline]
+    fn top_avail(&self, mb_y: usize) -> bool {
+        mb_y > self.slice_top_y
+    }
+
     /// Border-extend the reconstructed planes (edge replication, matching the
     /// decoder's `expand_picture`) and return them for use as the next frame's
     /// reference. Consumes the frame encoder.
     pub fn into_reference(mut self) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        use crate::dsp::expand::expand_plane;
-        let lw = self.mb_width * 16;
-        let lh = self.mb_height * 16;
-        let cw = self.mb_width * 8;
-        let ch = self.mb_height * 8;
-        let lo = BORDER * self.ystride + BORDER;
-        let co = BORDER * self.cstride + BORDER;
-        expand_plane(&mut self.rec_y, self.ystride, BORDER, lw, lh, lo);
-        expand_plane(&mut self.rec_u, self.cstride, BORDER, cw, ch, co);
-        expand_plane(&mut self.rec_v, self.cstride, BORDER, cw, ch, co);
+        expand_reference(
+            &mut self.rec_y,
+            &mut self.rec_u,
+            &mut self.rec_v,
+            MbDims { width: self.mb_width, height: self.mb_height },
+            self.ystride,
+            self.cstride,
+        );
         (self.rec_y, self.rec_u, self.rec_v)
+    }
+
+    /// Encode the macroblocks of one slice (MB-rows `[first_mb_y, last_mb_y)`)
+    /// into `bw`, which already holds the slice header. `slice_top_y` is set so
+    /// neighbour prediction never reaches above the slice's first row. Writes
+    /// the MB layer only (the caller appends rbsp_trailing_bits). For P slices
+    /// the trailing `mb_skip_run` is flushed here, at the slice end.
+    pub(crate) fn encode_band(&mut self, bw: &mut BitWriter, first_mb_y: usize, last_mb_y: usize, is_p: bool) {
+        self.slice_top_y = first_mb_y;
+        if is_p {
+            let mut pending = 0u32;
+            for mb_y in first_mb_y..last_mb_y {
+                for mb_x in 0..self.mb_width {
+                    self.encode_mb_p(bw, mb_x, mb_y, &mut pending);
+                }
+            }
+            if pending > 0 {
+                bw.write_ue(pending);
+            }
+        } else {
+            for mb_y in first_mb_y..last_mb_y {
+                for mb_x in 0..self.mb_width {
+                    self.encode_mb(bw, mb_x, mb_y);
+                }
+            }
+        }
     }
 
     #[inline]
@@ -322,7 +383,7 @@ impl FrameEnc {
     pub fn encode_mb(&mut self, bw: &mut BitWriter, mb_x: usize, mb_y: usize) {
         let mb_xy = mb_y * self.mb_width + mb_x;
         let left = mb_x > 0;
-        let top = mb_y > 0;
+        let top = self.top_avail(mb_y);
 
         let mut enc = MbEnc::default();
         self.intra_encode(mb_x, mb_y, &mut enc);
@@ -335,7 +396,7 @@ impl FrameEnc {
     /// (used by the P-slice mode decision to weigh intra against inter).
     fn intra_encode(&mut self, mb_x: usize, mb_y: usize, enc: &mut MbEnc) -> i32 {
         let left = mb_x > 0;
-        let top = mb_y > 0;
+        let top = self.top_avail(mb_y);
         let left_top = left && top;
         let top_right = top && mb_x + 1 < self.mb_width;
 
@@ -384,7 +445,7 @@ impl FrameEnc {
     pub fn encode_mb_p(&mut self, bw: &mut BitWriter, mb_x: usize, mb_y: usize, pending: &mut u32) {
         let mb_xy = mb_y * self.mb_width + mb_x;
         let left = mb_x > 0;
-        let top = mb_y > 0;
+        let top = self.top_avail(mb_y);
 
         // ---- Inter candidate: predict the MV, search, score. ----
         let (cmv, cref) = self.build_inter_cache(mb_x, mb_y);
@@ -428,10 +489,11 @@ impl FrameEnc {
     fn build_inter_cache(&self, mb_x: usize, mb_y: usize) -> ([[i16; 2]; 30], [i8; 30]) {
         let mb_width = self.mb_width;
         let mb_xy = mb_y * mb_width + mb_x;
+        let top_row = self.top_avail(mb_y);
         let left = mb_x != 0;
-        let top = mb_y != 0;
-        let left_top = mb_x != 0 && mb_y != 0;
-        let right_top = mb_x != mb_width - 1 && mb_y != 0;
+        let top = top_row;
+        let left_top = mb_x != 0 && top_row;
+        let right_top = mb_x != mb_width - 1 && top_row;
 
         let left_xy = mb_xy.wrapping_sub(1);
         let top_xy = mb_xy.wrapping_sub(mb_width);
@@ -496,10 +558,11 @@ impl FrameEnc {
                 (REF_NOT_AVAIL, [0, 0])
             }
         };
+        let top_row = self.top_avail(mb_y);
         let left_a = mb_x != 0;
-        let top_a = mb_y != 0;
-        let lt_a = mb_x != 0 && mb_y != 0;
-        let rt_a = mb_x != mb_width - 1 && mb_y != 0;
+        let top_a = top_row;
+        let lt_a = mb_x != 0 && top_row;
+        let rt_a = mb_x != mb_width - 1 && top_row;
 
         let (lref, lmv) = fetch(left_a, mb_xy.wrapping_sub(1), 3);
         if lref == REF_NOT_AVAIL || (lref == 0 && lmv == [0, 0]) {
@@ -543,14 +606,14 @@ impl FrameEnc {
         let pic_w = (self.mb_width * 16) as i32;
         let pic_h = (self.mb_height * 16) as i32;
         let origin = BORDER * self.ystride + BORDER;
-        let refv = RefView { plane: &self.ref_y, stride: self.ystride, origin, pic_w, pic_h };
+        let refv = RefView { plane: self.ref_y, stride: self.ystride, origin, pic_w, pic_h };
         let px = (mb_x * 16) as i32;
         let py = (mb_y * 16) as i32;
         let soff = self.src_y_off(mb_x, mb_y);
         search_mv(
             &refv,
             Pos { x: px, y: py },
-            Blk { data: &self.src_y, off: soff, stride: self.src_ystride },
+            Blk { data: self.src_y, off: soff, stride: self.src_ystride },
             Dim { w: 16, h: 16 },
             mvp,
             me_lambda(self.qp),
@@ -573,7 +636,7 @@ impl FrameEnc {
 
         let dst = origin + (py as usize) * ls + px as usize;
         let src = (origin as i32 + (fx >> 2) + (fy >> 2) * ls as i32) as usize;
-        mc_luma(&mut self.rec_y[dst..], ls, &self.ref_y, src, ls, Mv { x: fx as i16, y: fy as i16 }, Dim { w: 16, h: 16 });
+        mc_luma(&mut self.rec_y[dst..], ls, self.ref_y, src, ls, Mv { x: fx as i16, y: fy as i16 }, Dim { w: 16, h: 16 });
 
         let cs = self.cstride;
         let corigin = BORDER * cs + BORDER;
@@ -581,8 +644,8 @@ impl FrameEnc {
         let csrc = (corigin as i32 + (fx >> 3) + (fy >> 3) * cs as i32) as usize;
         let cmv = Mv { x: fx as i16, y: fy as i16 };
         let cdim = Dim { w: 8, h: 8 };
-        mc_chroma(&mut self.rec_u[cdst..], cs, &self.ref_u, csrc, cs, cmv, cdim);
-        mc_chroma(&mut self.rec_v[cdst..], cs, &self.ref_v, csrc, cs, cmv, cdim);
+        mc_chroma(&mut self.rec_u[cdst..], cs, self.ref_u, csrc, cs, cmv, cdim);
+        mc_chroma(&mut self.rec_v[cdst..], cs, self.ref_v, csrc, cs, cmv, cdim);
     }
 
     /// Reconstruct an inter 16x16 MB: MC into rec, then forward-transform/quant
@@ -605,7 +668,7 @@ impl FrameEnc {
             let boff = off + BLOCK_BY[i] * 4 * stride + BLOCK_BX[i] * 4;
             let sboff = soff + BLOCK_BY[i] * 4 * self.src_ystride + BLOCK_BX[i] * 4;
             let mut dct = [0i16; 16];
-            dct_t4(&mut dct, &self.src_y, sboff, self.src_ystride, &self.rec_y, boff, stride);
+            dct_t4(&mut dct, self.src_y, sboff, self.src_ystride, &self.rec_y, boff, stride);
             quant4x4(&mut dct, ff, mf);
             let mut scanned = [0i16; 16];
             scan4x4_dcac(&mut scanned, &dct);
@@ -719,7 +782,7 @@ impl FrameEnc {
         let quad_off = [0usize, 8, 8 * stride, 8 * stride + 8];
         for (g, &qo) in quad_off.iter().enumerate() {
             let mut dct = [0i16; 64];
-            dct_four_t4(&mut dct, &self.src_y, soff + (g / 2) * 8 * self.src_ystride + (g % 2) * 8, self.src_ystride,
+            dct_four_t4(&mut dct, self.src_y, soff + (g / 2) * 8 * self.src_ystride + (g % 2) * 8, self.src_ystride,
                         &self.rec_y, off + qo, stride);
             res[g * 64..g * 64 + 64].copy_from_slice(&dct);
         }
@@ -849,7 +912,7 @@ impl FrameEnc {
             // Predict (final), transform + quant, scan, reconstruct.
             luma4_pred(best_final, &mut self.rec_y, boff, stride);
             let mut dct = [0i16; 16];
-            dct_t4(&mut dct, &self.src_y, sboff, self.src_ystride, &self.rec_y, boff, stride);
+            dct_t4(&mut dct, self.src_y, sboff, self.src_ystride, &self.rec_y, boff, stride);
             quant4x4(&mut dct, ff, mf);
             let mut scanned = [0i16; 16];
             scan4x4_dcac(&mut scanned, &dct);
@@ -921,9 +984,9 @@ impl FrameEnc {
         let mut ac_present = false;
         for c in 0..2 {
             let (src, srcs, rec) = if c == 0 {
-                (&self.src_u, self.src_cstride, &mut self.rec_u)
+                (self.src_u, self.src_cstride, &mut self.rec_u)
             } else {
-                (&self.src_v, self.src_cstride, &mut self.rec_v)
+                (self.src_v, self.src_cstride, &mut self.rec_v)
             };
 
             // Forward DCT of the four 4x4 chroma blocks (prediction already in rec).
