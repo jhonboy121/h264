@@ -125,8 +125,6 @@ const CACHE_NZC_SCAN_IDX: [usize; 27] = [
 struct Neigh {
     left_avail: bool,
     top_avail: bool,
-    left_top_avail: bool,
-    right_top_avail: bool,
     /// Availability for intra *prediction* with constrained_intra_pred_flag:
     /// inter-coded neighbours masked out (spec 8.3). Equal to the plain
     /// availability when the flag is off. Residual/entropy contexts keep the
@@ -197,8 +195,6 @@ impl Neigh {
         Neigh {
             left_avail: na.left,
             top_avail: na.top,
-            left_top_avail: na.top_left,
-            right_top_avail,
             left_avail_intra,
             top_avail_intra,
             left_top_avail_intra,
