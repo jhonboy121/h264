@@ -3,12 +3,13 @@
 //! See `docs/REFERENCE_MAP.md` for the C→Rust mapping. Built up across phases
 //! P2 (parsing) and P3 (reconstruction).
 
+pub mod cavlc;
+pub mod cavlc_tables;
 pub mod nal;
 pub mod params;
 pub mod slice_header;
 
 // Added per phase:
-// pub mod cavlc;         // CAVLC MB syntax
 // pub mod cabac;         // CABAC engine + MB syntax
 // pub mod mv_pred;
 // pub mod recon;
