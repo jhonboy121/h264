@@ -1271,7 +1271,7 @@ use super::bdirect::{b_direct_spatial, fill_direct_16x16, fill_direct_8x8, ColRe
 
 /// B macroblock partition shape (`g_ksInterBMbTypeInfo` geometry).
 #[derive(Clone, Copy, PartialEq)]
-enum BShape {
+pub(super) enum BShape {
     Direct,
     P16x16,
     P16x8,
@@ -1280,13 +1280,13 @@ enum BShape {
 }
 
 /// One B mb_type entry: partition shape + per-partition `(uses_l0, uses_l1)`.
-struct BMbInfo {
-    shape: BShape,
-    dir: [(bool, bool); 2],
+pub(super) struct BMbInfo {
+    pub(super) shape: BShape,
+    pub(super) dir: [(bool, bool); 2],
 }
 
 #[rustfmt::skip]
-const B_MB_INFO: [BMbInfo; 23] = [
+pub(super) const B_MB_INFO: [BMbInfo; 23] = [
     BMbInfo { shape: BShape::Direct, dir: [(false,false),(false,false)] }, // 0 B_Direct_16x16
     BMbInfo { shape: BShape::P16x16, dir: [(true,false),(false,false)] },  // 1 B_L0_16x16
     BMbInfo { shape: BShape::P16x16, dir: [(false,true),(false,false)] },  // 2 B_L1_16x16
@@ -1313,16 +1313,16 @@ const B_MB_INFO: [BMbInfo; 23] = [
 ];
 
 /// One B sub_mb_type entry (`g_ksInterBSubMbTypeInfo`).
-struct BSubInfo {
-    direct: bool,
-    sub: SubMbType,
-    dir: (bool, bool),
-    part_count: usize,
-    part_w: usize,
+pub(super) struct BSubInfo {
+    pub(super) direct: bool,
+    pub(super) sub: SubMbType,
+    pub(super) dir: (bool, bool),
+    pub(super) part_count: usize,
+    pub(super) part_w: usize,
 }
 
 #[rustfmt::skip]
-const B_SUB_INFO: [BSubInfo; 13] = [
+pub(super) const B_SUB_INFO: [BSubInfo; 13] = [
     BSubInfo { direct: true,  sub: SubMbType::P8x8, dir: (false,false), part_count: 1, part_w: 2 }, // 0 B_Direct_8x8
     BSubInfo { direct: false, sub: SubMbType::P8x8, dir: (true,false),  part_count: 1, part_w: 2 }, // 1 B_L0_8x8
     BSubInfo { direct: false, sub: SubMbType::P8x8, dir: (false,true),  part_count: 1, part_w: 2 }, // 2 B_L1_8x8
@@ -1495,7 +1495,7 @@ pub fn parse_b_mb_cavlc(
     if old != 0 {
         // B_Skip: direct prediction, cbp = 0.
         ctx.mb_type[mb_xy] = MbType::BSkip;
-        apply_b_direct(ctx, mb_xy, bref, true);
+        apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true);
         let luma_qp = *last_mb_qp;
         commit_inter_meta(MbCtx { ctx, mb_xy, pps }, MbType::BSkip, 0, luma_qp, &[0; 16], &[0; 8]);
         return Ok(());
@@ -1522,7 +1522,7 @@ pub fn parse_b_mb_cavlc(
     ctx.mb_type[mb_xy] = mb_type;
 
     if info.shape == BShape::Direct {
-        apply_b_direct(ctx, mb_xy, bref, true);
+        apply_b_direct(ctx, mb_xy, bref.ref_pic_ids, &bref.col, true);
     } else {
         let mut cache = BInterCache::build(ctx, mb_xy);
         parse_b_motion(bs, ctx, &mut cache, mb_xy, ui_mb_type, bref)?;
@@ -1581,30 +1581,32 @@ pub fn parse_b_mb_cavlc(
 /// Compute and store B direct prediction (spatial only; temporal direct is not
 /// used by the corpus B streams — see `bdirect.rs`). `whole_mb` true for
 /// skip / B_Direct_16x16.
-fn apply_b_direct(ctx: &mut DecoderContext, mb_xy: usize, bref: &BRefs, whole_mb: bool) {
+pub(super) fn apply_b_direct(
+    ctx: &mut DecoderContext,
+    mb_xy: usize,
+    ref_pic_ids: [&[i32]; 2],
+    col: &ColRef,
+    whole_mb: bool,
+) {
     let info: DirectInfo = b_direct_spatial(ctx, mb_xy, !whole_mb);
     let ref_pic = [
-        if info.iref[0] >= 0 && (info.iref[0] as usize) < bref.ref_pic_ids[0].len() {
-            bref.ref_pic_ids[0][info.iref[0] as usize]
+        if info.iref[0] >= 0 && (info.iref[0] as usize) < ref_pic_ids[0].len() {
+            ref_pic_ids[0][info.iref[0] as usize]
         } else {
             -1
         },
-        if info.iref[1] >= 0 && (info.iref[1] as usize) < bref.ref_pic_ids[1].len() {
-            bref.ref_pic_ids[1][info.iref[1] as usize]
+        if info.iref[1] >= 0 && (info.iref[1] as usize) < ref_pic_ids[1].len() {
+            ref_pic_ids[1][info.iref[1] as usize]
         } else {
             -1
         },
     ];
     if info.mb16x16 {
-        fill_direct_16x16(ctx, mb_xy, &info, &bref.col, ref_pic);
-        // Direct resolves a skip/B_Direct_16x16 MB to one 16x16 partition.
-        if ctx.mb_type[mb_xy] == MbType::BDirect16x16 || ctx.mb_type[mb_xy] == MbType::BSkip {
-            // keep the type; recon treats it as 16x16.
-        }
+        fill_direct_16x16(ctx, mb_xy, &info, col, ref_pic);
     } else {
         // B_8x8 with all sub-partitions direct: fill each 8x8.
         for i in 0..4 {
-            fill_direct_8x8(ctx, mb_xy, i, 1, 2, &info, &bref.col, ref_pic);
+            fill_direct_8x8(ctx, mb_xy, i, 1, 2, &info, col, ref_pic);
             ctx.sub_mb_type[mb_xy * 4 + i] = SubMbType::P8x8;
         }
     }
@@ -1693,7 +1695,7 @@ fn parse_b_motion(
 }
 
 #[inline]
-fn dir_uses(d: (bool, bool), list: usize) -> bool {
+pub(super) fn dir_uses(d: (bool, bool), list: usize) -> bool {
     if list == 0 { d.0 } else { d.1 }
 }
 
