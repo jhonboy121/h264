@@ -22,7 +22,7 @@ pub fn sad(s1: &[u8], st1: usize, s2: &[u8], st2: usize, w: usize, h: usize) -> 
 
 /// Scalar reference SAD (the conformance baseline / SIMD fallback).
 #[inline]
-pub(crate) fn sad_scalar(s1: &[u8], st1: usize, s2: &[u8], st2: usize, w: usize, h: usize) -> u32 {
+pub fn sad_scalar(s1: &[u8], st1: usize, s2: &[u8], st2: usize, w: usize, h: usize) -> u32 {
     let mut sum = 0u32;
     for y in 0..h {
         let r1 = y * st1;
