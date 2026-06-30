@@ -5,9 +5,9 @@
 
 pub mod nal;
 pub mod params;
+pub mod slice_header;
 
 // Added per phase:
-// pub mod slice_header;  // slice header parse
 // pub mod cavlc;         // CAVLC MB syntax
 // pub mod cabac;         // CABAC engine + MB syntax
 // pub mod mv_pred;

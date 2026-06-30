@@ -43,11 +43,15 @@ tables → dsp/tables.rs, and the luma/chroma DC dequant-IDCT (decode_slice.cpp:
 - src/dsp/copy.rs, src/dsp/sad.rs  → add `pub mod copy; pub mod sad;` to src/dsp/mod.rs
 - src/decoder/nal.rs (Annex-B framing, EBSP→RBSP, NAL types; 4 tests) → needs src/decoder/mod.rs + `pub mod decoder;` in lib.rs
 
-## P2 — Decoder parsing ⬜
-- [ ] `decoder/nal.rs` — Annex-B framing, NAL header, EPB strip
-- [ ] `decoder/params.rs` — SPS/PPS parse (port `au_parser.cpp`)
-- [ ] `decoder/slice_header.rs` — slice header parse
-- [ ] `decoder/cavlc_tables.rs` + `decoder/cavlc.rs` — CAVLC MB parse
+## P2 — Decoder parsing 🚧
+- [x] `decoder/nal.rs` — Annex-B framing, NAL header, EPB strip (4 tests)
+- [x] `decoder/params.rs` — SPS/PPS+VUI parse, validated on real fixtures (5 tests, fc0985f)
+      · BANM 176x144, BA1 352x288, SVA 176x144. HRD not stored (Unsupported). 
+- [x] `decoder/slice_header.rs` — slice header parse (7.3.3), AVC path; SliceType
+      enum + reorder/weight/marking sub-structs; validated on BANM/BA1 (2 tests)
+- [ ] `dsp/tables.rs` — dequant (g_kuiDequantCoeff[52][8]+8x8), scan (g_kuiScan8,
+      zigzag, luma/chroma DC scan) — pull from common_tables.cpp + decoder_data_tables.cpp
+- [ ] `decoder/cavlc_tables.rs` + `decoder/cavlc.rs` — CAVLC MB parse (parse_mb_syn_cavlc.cpp)
 - [ ] `decoder/cabac.rs` + `decoder/cabac_mb.rs` — CABAC engine + MB parse
 - [ ] anchor test: `DecUT_ParseSyntax.cpp`
 
