@@ -307,12 +307,18 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
         }
 
         let cp = cur.as_mut().ok_or(DecodeError::InvalidSyntax("slice before picture start"))?;
+        let sp = SliceParams {
+            sh: &sh,
+            pps: &pps,
+            slice_index: cp.slice_index,
+            dpb: dpb.as_ref().unwrap(),
+            cur_poc: cp.poc,
+            direct_8x8_inference: sps.direct_8x8_inference_flag,
+        };
         if pps.entropy_coding_mode_flag {
-            decode_one_slice_cabac(
-                &mut cp.ctx, &mut bs, &nal.rbsp, &sh, &pps, cp.slice_index, dpb.as_ref().unwrap(), cp.poc, sps.direct_8x8_inference_flag,
-            )?;
+            decode_one_slice_cabac(&mut cp.ctx, &mut bs, &nal.rbsp, sp)?;
         } else {
-            decode_one_slice(&mut cp.ctx, &mut bs, &sh, &pps, cp.slice_index, dpb.as_ref().unwrap(), cp.poc, sps.direct_8x8_inference_flag)?;
+            decode_one_slice(&mut cp.ctx, &mut bs, sp)?;
         }
         cp.slice_index += 1;
     }
@@ -371,23 +377,27 @@ fn finalize_into(mut c: CurPic, dpb: &mut Dpb, next_id: &mut i32) -> Frame {
 }
 
 /// Decode one slice's macroblocks (parse + reconstruct) into `ctx`.
-#[allow(clippy::too_many_arguments)]
-fn decode_one_slice(
-    ctx: &mut DecoderContext,
-    bs: &mut BitReader<'_>,
-    sh: &SliceHeader,
-    pps: &Pps,
+/// Immutable slice-level inputs shared by the per-slice decode functions:
+/// the parsed header, its PPS, decode-order slice index, reference buffer,
+/// current POC, and the SPS `direct_8x8_inference_flag`.
+#[derive(Clone, Copy)]
+struct SliceParams<'a> {
+    sh: &'a SliceHeader,
+    pps: &'a Pps,
     slice_index: i32,
-    dpb: &Dpb,
+    dpb: &'a Dpb,
     cur_poc: i32,
     direct_8x8_inference: bool,
-) -> Result<(), DecodeError> {
+}
+
+fn decode_one_slice(ctx: &mut DecoderContext, bs: &mut BitReader<'_>, sp: SliceParams<'_>) -> Result<(), DecodeError> {
+    let SliceParams { sh, pps, slice_index, dpb, .. } = sp;
     let total_mb = ctx.total_mb;
     let mut last_mb_qp = sh.slice_qp;
     let mut coeffs = [0i16; 384];
 
     if sh.slice_type == super::slice_header::SliceType::B {
-        return decode_b_slice_cavlc(ctx, bs, sh, pps, slice_index, dpb, cur_poc, direct_8x8_inference, &mut last_mb_qp, &mut coeffs);
+        return decode_b_slice_cavlc(ctx, bs, sp, &mut last_mb_qp, &mut coeffs);
     }
 
     if sh.slice_type.is_intra() {
@@ -449,19 +459,14 @@ fn decode_one_slice(
 
 /// Decode one B slice's macroblocks (CAVLC): build list-0/list-1, then
 /// parse + bi-predictive reconstruct each MB.
-#[allow(clippy::too_many_arguments)]
 fn decode_b_slice_cavlc(
     ctx: &mut DecoderContext,
     bs: &mut BitReader<'_>,
-    sh: &SliceHeader,
-    pps: &Pps,
-    slice_index: i32,
-    dpb: &Dpb,
-    cur_poc: i32,
-    direct_8x8_inference: bool,
+    sp: SliceParams<'_>,
     last_mb_qp: &mut i32,
     coeffs: &mut [i16; 384],
 ) -> Result<(), DecodeError> {
+    let SliceParams { sh, pps, slice_index, dpb, cur_poc, direct_8x8_inference } = sp;
     use super::mb_parse_cavlc::{parse_b_mb_cavlc, BRefs};
     use super::recon_inter::recon_b_mb;
 
@@ -613,23 +618,13 @@ fn temporal_mv_scale(dpb: &Dpb, cur_poc: i32, blist0: &[usize], blist1: &[usize]
 /// Decode one CABAC slice's macroblocks (parse + reconstruct) into `ctx`.
 /// `rbsp` is the full slice NAL RBSP; `bs` is positioned just past the slice
 /// header, used to find the `cabac_alignment_one_bit` boundary.
-#[allow(clippy::too_many_arguments)]
-fn decode_one_slice_cabac(
-    ctx: &mut DecoderContext,
-    bs: &mut BitReader<'_>,
-    rbsp: &[u8],
-    sh: &SliceHeader,
-    pps: &Pps,
-    slice_index: i32,
-    dpb: &Dpb,
-    cur_poc: i32,
-    direct_8x8_inference: bool,
-) -> Result<(), DecodeError> {
+fn decode_one_slice_cabac(ctx: &mut DecoderContext, bs: &mut BitReader<'_>, rbsp: &[u8], sp: SliceParams<'_>) -> Result<(), DecodeError> {
+    let SliceParams { sh, pps, slice_index, dpb, .. } = sp;
     use super::cabac::{CabacContexts, CabacDecoder};
     use super::mb_parse_cabac::{decode_mb_cabac_islice, decode_mb_cabac_pslice};
 
     if sh.slice_type == super::slice_header::SliceType::B {
-        return decode_b_slice_cabac(ctx, bs, rbsp, sh, pps, slice_index, dpb, cur_poc, direct_8x8_inference);
+        return decode_b_slice_cabac(ctx, bs, rbsp, sp);
     }
 
     // cabac_alignment_one_bit: consume 1-bits to the next byte boundary.
@@ -709,18 +704,8 @@ fn decode_one_slice_cabac(
 }
 
 /// Decode one B slice's macroblocks (CABAC).
-#[allow(clippy::too_many_arguments)]
-fn decode_b_slice_cabac(
-    ctx: &mut DecoderContext,
-    bs: &mut BitReader<'_>,
-    rbsp: &[u8],
-    sh: &SliceHeader,
-    pps: &Pps,
-    slice_index: i32,
-    dpb: &Dpb,
-    cur_poc: i32,
-    direct_8x8_inference: bool,
-) -> Result<(), DecodeError> {
+fn decode_b_slice_cabac(ctx: &mut DecoderContext, bs: &mut BitReader<'_>, rbsp: &[u8], sp: SliceParams<'_>) -> Result<(), DecodeError> {
+    let SliceParams { sh, pps, slice_index, dpb, cur_poc, direct_8x8_inference } = sp;
     use super::cabac::{CabacContexts, CabacDecoder};
     use super::mb_parse_cabac::{decode_mb_cabac_bslice, BRefsCabac};
     use super::recon_inter::recon_b_mb;
@@ -985,10 +970,18 @@ impl StreamDecoder {
             .cur
             .as_mut()
             .ok_or(DecodeError::InvalidSyntax("slice before picture start"))?;
+        let sp = SliceParams {
+            sh: &sh,
+            pps: &pps,
+            slice_index: cp.slice_index,
+            dpb,
+            cur_poc: cp.poc,
+            direct_8x8_inference: sps.direct_8x8_inference_flag,
+        };
         if pps.entropy_coding_mode_flag {
-            decode_one_slice_cabac(&mut cp.ctx, &mut bs, &nal.rbsp, &sh, &pps, cp.slice_index, dpb, cp.poc, sps.direct_8x8_inference_flag)?;
+            decode_one_slice_cabac(&mut cp.ctx, &mut bs, &nal.rbsp, sp)?;
         } else {
-            decode_one_slice(&mut cp.ctx, &mut bs, &sh, &pps, cp.slice_index, dpb, cp.poc, sps.direct_8x8_inference_flag)?;
+            decode_one_slice(&mut cp.ctx, &mut bs, sp)?;
         }
         cp.slice_index += 1;
         Ok(())
