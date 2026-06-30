@@ -8,6 +8,7 @@
 //! path keeps every read within this border, so replicating the full padding
 //! (matching or exceeding OpenH264's `PADDING_LENGTH`) is bit-exact.
 
+#[cfg(feature = "decoder")]
 use crate::decoder::picture::Picture;
 
 /// Replicate the edges of one plane into its `border`-wide padding on all four
@@ -47,6 +48,7 @@ pub fn expand_plane(
 }
 
 /// Expand all three planes of a decoded [`Picture`] into their borders.
+#[cfg(feature = "decoder")]
 pub fn expand_picture(pic: &mut Picture) {
     let lstride = pic.luma_stride;
     let cstride = pic.chroma_stride;
@@ -60,7 +62,7 @@ pub fn expand_picture(pic: &mut Picture) {
     expand_plane(&mut pic.v, cstride, border, cw, ch, co);
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "decoder"))]
 mod tests {
     use super::*;
     use crate::decoder::picture::{Picture, PADDING};
