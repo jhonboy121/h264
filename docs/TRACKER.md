@@ -10,9 +10,11 @@ Last updated: **PROJECT COMPLETE (P1-P11)**. Decoder (baseline CAVLC + Main CABA
 multi-ref, deblock, DPB — 28/54 BIT-EXACT vs C, 3875 frames) + encoder (baseline intra +
 IPPP CAVLC, round-trip PSNR, no drift) + **SIMD (P10: NEON + wasm simd128, bit-exact)** +
 **refreshed perf report (P11)**. 139 tests, 0 warnings, 8 targets + no_std + wasm + simd.
-See `STATUS.md` for the final summary. Deferred (explicit, not gaps): decoder B-slices,
-transform8x8/High, PCM, FMO, error-conceal; encoder sub-16x16, multi-ref, B, CABAC-encode,
-rate control; P8 processing; P9 threading; SIMD for deblock/mc_hor_ver22/x86.
+See `STATUS.md` for the final summary. Decoder now also does frame_cropping output +
+I_PCM (CAVLC+CABAC) → 40/54 BIT-EXACT. Deferred (explicit, not gaps): decoder B-slices,
+transform8x8/High, FMO, error-conceal, SVC scalable-extension (NAL type 20); encoder
+sub-16x16, multi-ref, B, CABAC-encode, rate control; P8 processing; P9 threading;
+SIMD for deblock/mc_hor_ver22/x86.
 
 ---
 
@@ -88,7 +90,8 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
       intra-mode/ref_idx/mvd/cbp/delta_qp/cbf). BIT-EXACT vs C on test_cif_I_CABAC (300/300),
       test_qcif_cabac I+P (30/30), test_cif_P_CABAC multi-ref (300/300). Fixed P_8x8 ref
       cache + multi-ref deblock bugs. fc8b402. **Main profile CAVLC+CABAC I+P conformant.**
-- [⏸] **P3f** B-slices, transform8x8/High, I_PCM, FMO, error-conceal — deferred (guarded
+- [x] **P3f I_PCM** ✅ — CAVLC + CABAC I_PCM macroblock decode (see P4 below).
+- [⏸] **P3f** B-slices, transform8x8/High, FMO, error-conceal — deferred (guarded
       Unsupported; not in baseline/Main-IP streams). Add when a target stream needs them.
 - [ ] **P3f FMO** (`fmo.rs`), **error concealment** (`error_conceal.rs`) — lower priority.
 - [ ] `dsp/expand.rs` border padding (deferred from P1) — needed by MC ref reads.
