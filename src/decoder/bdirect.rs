@@ -388,19 +388,25 @@ pub fn fill_direct_16x16(
     }
 }
 
-/// Fill one 8x8 partition of a spatial-direct B_8x8 sub-block. `idx8` is the
-/// 8x8 index (0..3); `part_w`/`part_count` come from the sub_mb_type.
-#[allow(clippy::too_many_arguments)]
+/// Geometry of one 8x8 sub-block partition: the 8x8 index (0..3) plus the
+/// sub-partition count and width from the `sub_mb_type`.
+#[derive(Clone, Copy)]
+pub struct Part8x8 {
+    pub idx8: usize,
+    pub part_count: usize,
+    pub part_w: usize,
+}
+
+/// Fill one 8x8 partition of a spatial-direct B_8x8 sub-block.
 pub fn fill_direct_8x8(
     ctx: &mut DecoderContext,
     mb_xy: usize,
-    idx8: usize,
-    part_count: usize,
-    part_w: usize,
+    part: Part8x8,
     info: &DirectInfo,
     cr: &ColRef,
     ref_pic: [i32; 2],
 ) {
+    let Part8x8 { idx8, part_count, part_w } = part;
     let base_part = idx8 << 2;
     for j in 0..part_count {
         let part_idx = base_part + j * part_w;

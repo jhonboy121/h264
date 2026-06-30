@@ -2266,7 +2266,7 @@ fn parse_b_8x8_cabac(
         if sinfo.direct {
             if bref.direct_spatial {
                 let d = direct.as_ref().unwrap();
-                super::bdirect::fill_direct_8x8(ctx, mb_xy, i, 1, 2, d, &bref.col, direct_refpic.unwrap());
+                super::bdirect::fill_direct_8x8(ctx, mb_xy, super::bdirect::Part8x8 { idx8: i, part_count: 1, part_w: 2 }, d, &bref.col, direct_refpic.unwrap());
             } else {
                 super::bdirect::b_direct_temporal_sub(ctx, mb_xy, i, &bref.col);
             }

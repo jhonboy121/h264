@@ -1483,7 +1483,7 @@ fn update_p8x16(
 // ===================== B-slice (bi-predictive) macroblock parse =============
 
 use super::bdirect::{
-    b_direct_spatial, b_direct_temporal_sub, fill_direct_16x16, fill_direct_8x8, ColRef, DirectInfo,
+    b_direct_spatial, b_direct_temporal_sub, fill_direct_16x16, fill_direct_8x8, ColRef, DirectInfo, Part8x8,
 };
 
 /// B macroblock partition shape (`g_ksInterBMbTypeInfo` geometry).
@@ -1844,7 +1844,7 @@ pub(super) fn apply_b_direct(
         // Fill each 8x8 with its own colZero (B_8x8 direct, or a 16x16 direct MB
         // resolved to 8x8 by its colocated MB).
         for i in 0..4 {
-            fill_direct_8x8(ctx, mb_xy, i, 1, 2, &info, col, ref_pic);
+            fill_direct_8x8(ctx, mb_xy, Part8x8 { idx8: i, part_count: 1, part_w: 2 }, &info, col, ref_pic);
             ctx.sub_mb_type[mb_xy * 4 + i] = SubMbType::P8x8;
         }
     }
@@ -1978,7 +1978,7 @@ fn parse_b_8x8(
         if sinfo.direct {
             if bref.direct_spatial {
                 let d = direct.as_ref().unwrap();
-                fill_direct_8x8(ctx, mb_xy, i, 1, 2, d, &bref.col, direct_refpic.unwrap());
+                fill_direct_8x8(ctx, mb_xy, Part8x8 { idx8: i, part_count: 1, part_w: 2 }, d, &bref.col, direct_refpic.unwrap());
             } else {
                 b_direct_temporal_sub(ctx, mb_xy, i, &bref.col);
             }
