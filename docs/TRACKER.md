@@ -95,7 +95,9 @@ Strategy: build the shared backbone types first, then layer decode paths. Order:
 - [x] **Corpus run: 28/54 streams BIT-EXACT** (3875 frames); 11 unsupported
       (8x8-transform/B/PCM), 11 mismatch (mostly crop/interlace len), 4 corrupted. d5011f7
 - [x] **Perf report v1** `docs/PERF_REPORT.md` — Rust scalar 1.07-1.65× of C NEON, byte-identical
-- [ ] `src/api.rs` Rusty Decoder facade + `src/formats/` (YUV + write_rgb8/rgba8) — NEXT
+- [x] `src/api.rs` Rusty `Decoder` facade (incremental `decode`/`flush`/`decode_all`,
+      `nal_units`) + `src/formats/` (`YUVSource`, `DecodedYuv`/`Frame`, BT.601
+      `write_rgb8`/`write_rgba8`) — mirrors `openh264` crate shape, no_std-clean
 
 ## P5 — Encoder DSP ⬜
 - [ ] fwd transform/quant (`encode_mb_aux.cpp`) · `EncUT_EncoderMbAux`, `EncUT_DecodeMbAux`

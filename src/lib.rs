@@ -16,7 +16,17 @@ pub mod decoder;
 pub mod dsp;
 pub mod error;
 
+#[cfg(feature = "decoder")]
+pub mod api;
+#[cfg(feature = "decoder")]
+pub mod formats;
+
 pub use error::{DecodeError, EncodeError};
+
+#[cfg(feature = "decoder")]
+pub use api::{nal_units, Decoder};
+#[cfg(feature = "decoder")]
+pub use formats::yuv::{DecodedYuv, Frame, VisibleRegion, YUVSource};
 
 /// Crate version of the upstream OpenH264 this port tracks.
 pub const UPSTREAM_OPENH264_VERSION: &str = "2.x (master @ e3f5b10)";

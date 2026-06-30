@@ -12,6 +12,7 @@ use alloc::vec::Vec;
 
 use crate::bits::BitReader;
 use crate::error::DecodeError;
+use crate::formats::yuv::{Frame, VisibleRegion};
 
 use super::context::DecoderContext;
 use super::dpb::Dpb;
@@ -94,6 +95,22 @@ struct CurPic {
     frame_num: i32,
     is_ref: bool,
     slice_index: i32,
+    region: VisibleRegion,
+}
+
+/// Visible (post-crop) rectangle of a picture coded by `sps`. 4:2:0 only:
+/// CropUnitX = CropUnitY = 2 for frame-only streams (the only case decoded).
+fn region_from_sps(sps: &Sps) -> VisibleRegion {
+    let luma_x = 2 * sps.crop_left as usize;
+    let luma_y = 2 * sps.crop_top as usize;
+    VisibleRegion {
+        width: sps.width as usize,
+        height: sps.height as usize,
+        luma_x,
+        luma_y,
+        chroma_x: luma_x / 2,
+        chroma_y: luma_y / 2,
+    }
 }
 
 /// Decode an entire baseline Annex-B stream (I + P, CAVLC 4:2:0 8-bit),
@@ -161,6 +178,7 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
                 frame_num: sh.frame_num as i32,
                 is_ref: nal.ref_idc != 0,
                 slice_index: 0,
+                region: region_from_sps(&sps),
             });
         }
 
@@ -182,16 +200,24 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
 }
 
 /// Deblock, optionally border-extend + insert into the DPB, and emit.
-fn finalize_picture(mut c: CurPic, dpb: &mut Dpb, output: &mut Vec<Picture>, next_id: &mut i32) {
+fn finalize_picture(c: CurPic, dpb: &mut Dpb, output: &mut Vec<Picture>, next_id: &mut i32) {
+    output.push(finalize_into(c, dpb, next_id).into_picture());
+}
+
+/// Deblock, optionally border-extend + insert into the DPB, and return the
+/// visible-tagged [`Frame`]. Shared by [`decode_stream`] and [`StreamDecoder`].
+fn finalize_into(mut c: CurPic, dpb: &mut Dpb, next_id: &mut i32) -> Frame {
     super::deblock::deblock_frame(&mut c.ctx);
+    let region = c.region;
     if c.is_ref {
         crate::dsp::expand::expand_picture(&mut c.ctx.picture);
-        output.push(c.ctx.picture.clone());
+        let pic = c.ctx.picture;
         let id = *next_id;
         *next_id += 1;
-        dpb.add_short_term(c.ctx.picture, c.frame_num, id);
+        dpb.add_short_term(pic.clone(), c.frame_num, id);
+        Frame::new(pic, region)
     } else {
-        output.push(c.ctx.picture);
+        Frame::new(c.ctx.picture, region)
     }
 }
 
@@ -402,6 +428,123 @@ fn decode_idr_slice(
         }
     }
     Ok(())
+}
+
+/// Incremental, stateful baseline/Main-profile decoder core (I + P, CAVLC or
+/// CABAC, 4:2:0 8-bit). Owns its parameter-set tables and DPB; fed Annex-B
+/// bytes a packet at a time, it emits each picture once the next picture begins
+/// (or on [`finish`](StreamDecoder::finish)). This is the engine behind the
+/// public [`crate::Decoder`]; it reuses the exact slice-decode path of
+/// [`decode_stream`].
+pub(crate) struct StreamDecoder {
+    sps_map: Vec<Option<Sps>>,
+    pps_map: Vec<Option<Pps>>,
+    dpb: Option<Dpb>,
+    next_id: i32,
+    cur: Option<CurPic>,
+}
+
+impl StreamDecoder {
+    pub(crate) fn new() -> Self {
+        StreamDecoder {
+            sps_map: (0..32).map(|_| None).collect(),
+            pps_map: (0..256).map(|_| None).collect(),
+            dpb: None,
+            next_id: 0,
+            cur: None,
+        }
+    }
+
+    /// Parse all NAL units in `annexb` (parameter sets and slices), appending
+    /// every picture that completes to `out`. A picture completes when the next
+    /// picture's first slice arrives; the trailing picture is emitted by
+    /// [`finish`](Self::finish).
+    pub(crate) fn feed(&mut self, annexb: &[u8], out: &mut Vec<Frame>) -> Result<(), DecodeError> {
+        for ebsp in annexb_nal_units(annexb) {
+            let nal = match parse_nal(ebsp) {
+                Some(n) => n,
+                None => continue,
+            };
+            match nal.unit_type {
+                NalUnitType::Sps => {
+                    let sps = parse_sps(&nal.rbsp)?;
+                    let id = sps.sps_id as usize;
+                    self.sps_map[id] = Some(sps);
+                }
+                NalUnitType::Pps => {
+                    let sps_ref = parse_pps(&nal.rbsp, None)
+                        .ok()
+                        .and_then(|p| self.sps_map[p.sps_id as usize].as_ref());
+                    let pps = parse_pps(&nal.rbsp, sps_ref)?;
+                    let id = pps.pps_id as usize;
+                    self.pps_map[id] = Some(pps);
+                }
+                t if t.is_vcl() => self.feed_vcl(&nal, out)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn feed_vcl(&mut self, nal: &NalUnit, out: &mut Vec<Frame>) -> Result<(), DecodeError> {
+        let (sps, pps) = {
+            let (s, p) = resolve_param_sets(nal, &self.sps_map, &self.pps_map)?;
+            if s.chroma_format_idc != 1 || s.bit_depth_luma != 8 || s.bit_depth_chroma != 8 {
+                return Err(DecodeError::Unsupported("non-4:2:0 / non-8-bit"));
+            }
+            (s.clone(), p.clone())
+        };
+        let is_idr = nal.unit_type.is_idr();
+
+        let mut bs = BitReader::new(&nal.rbsp);
+        let sh = parse_slice_header_in_place(&mut bs, nal.ref_idc, is_idr, &sps, &pps)?;
+
+        if sh.first_mb_in_slice == 0 {
+            if let Some(c) = self.cur.take() {
+                let f = finalize_into(c, self.dpb.as_mut().unwrap(), &mut self.next_id);
+                out.push(f);
+            }
+            if self.dpb.is_none() {
+                self.dpb = Some(Dpb::new(sps.max_num_ref_frames, sps.log2_max_frame_num));
+            }
+            if is_idr {
+                self.dpb.as_mut().unwrap().clear();
+            }
+            self.cur = Some(CurPic {
+                ctx: DecoderContext::new(
+                    Vec::new(),
+                    Vec::new(),
+                    sps.mb_width as usize,
+                    sps.mb_height as usize,
+                ),
+                frame_num: sh.frame_num as i32,
+                is_ref: nal.ref_idc != 0,
+                slice_index: 0,
+                region: region_from_sps(&sps),
+            });
+        }
+
+        let dpb = self.dpb.as_ref().unwrap();
+        let cp = self
+            .cur
+            .as_mut()
+            .ok_or(DecodeError::InvalidSyntax("slice before picture start"))?;
+        if pps.entropy_coding_mode_flag {
+            decode_one_slice_cabac(&mut cp.ctx, &mut bs, &nal.rbsp, &sh, &pps, cp.slice_index, dpb)?;
+        } else {
+            decode_one_slice(&mut cp.ctx, &mut bs, &sh, &pps, cp.slice_index, dpb)?;
+        }
+        cp.slice_index += 1;
+        Ok(())
+    }
+
+    /// Flush the trailing in-flight picture (the last frame of a stream), if any.
+    pub(crate) fn finish(&mut self, out: &mut Vec<Frame>) {
+        if let Some(c) = self.cur.take() {
+            let dpb = self.dpb.as_mut().expect("dpb exists when a picture is in flight");
+            out.push(finalize_into(c, dpb, &mut self.next_id));
+        }
+    }
 }
 
 #[cfg(test)]
