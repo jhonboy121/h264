@@ -11,8 +11,13 @@ decoder = []
 encoder = []
 simd = []
 threads = ["std"]
+# Opt-in: route YUV->RGB(A) conversion through the SIMD `yuv` crate, which
+# honors BT.601/709/2020 + full/limited range. Pulls in `yuv` and forces `std`
+# (the `yuv` crate is not `no_std`). The default build stays zero-dep + no_std.
+yuv-convert = ["dep:yuv", "std"]
 
 [dependencies]
+yuv = { version = "0.8", optional = true }
 
 [dev-dependencies]
 
