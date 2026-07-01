@@ -40,6 +40,9 @@ pub struct Picture {
     pub visible_width: usize,
     /// Visible (post-crop) luma height in pixels. Defaults to the coded height.
     pub visible_height: usize,
+    /// YUV→RGB colorimetry derived from the SPS VUI (matrix + range). Defaults
+    /// to BT.601 full-range; stamped from the SPS when the picture is emitted.
+    pub color: crate::formats::yuv::ColorInfo,
 }
 
 impl Picture {
@@ -69,6 +72,7 @@ impl Picture {
             visible_y: 0,
             visible_width: width,
             visible_height: height,
+            color: crate::formats::yuv::ColorInfo::default(),
         }
     }
 

@@ -105,6 +105,9 @@ struct CurPic {
     marking: Option<super::slice_header::RefPicMarking>,
     slice_index: i32,
     region: VisibleRegion,
+    /// Colorimetry (matrix + range) derived from the SPS VUI, stamped onto the
+    /// emitted picture for the color-conversion path.
+    color: crate::formats::yuv::ColorInfo,
 }
 
 /// Picture-order-count derivation state carried across pictures (spec 8.2.1).
@@ -310,6 +313,7 @@ pub fn decode_stream(annexb: &[u8]) -> Result<Vec<Picture>, DecodeError> {
                 marking: sh.dec_ref_pic_marking.clone(),
                 slice_index: 0,
                 region: region_from_sps(&sps),
+                color: crate::formats::yuv::ColorInfo::from_sps(&sps),
             });
         }
 
@@ -356,6 +360,7 @@ fn finalize_picture(
 /// visible-tagged [`Frame`]. Shared by [`decode_stream`] and [`StreamDecoder`].
 fn finalize_into(mut c: CurPic, dpb: &mut Dpb, next_id: &mut i32) -> Frame {
     super::deblock::deblock_frame(&mut c.ctx);
+    c.ctx.picture.color = c.color;
     let region = c.region;
     if c.is_ref {
         crate::dsp::expand::expand_picture(&mut c.ctx.picture);
@@ -1053,6 +1058,7 @@ impl StreamDecoder {
                 marking: sh.dec_ref_pic_marking.clone(),
                 slice_index: 0,
                 region: region_from_sps(&sps),
+                color: crate::formats::yuv::ColorInfo::from_sps(&sps),
             });
         }
 

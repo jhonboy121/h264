@@ -6,9 +6,75 @@
 //! Any implementor gains BT.601 YUV→RGB conversion for free via the default
 //! methods, which write into caller-provided buffers (no allocation).
 
+use crate::decoder::params::Sps;
 use crate::decoder::picture::Picture;
 
 use super::rgb;
+
+/// YUV→RGB matrix coefficients, as carried by the SPS VUI `matrix_coeffs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorMatrix {
+    /// BT.601 / SMPTE-170M (the default; also JFIF when paired with full range).
+    #[default]
+    Bt601,
+    /// BT.709 (HD).
+    Bt709,
+    /// BT.2020 non-constant-luminance (UHD).
+    Bt2020,
+}
+
+/// Quantization range of the YUV samples (VUI `video_full_range_flag`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorRange {
+    /// Studio-swing / limited range (Y ∈ [16, 235]).
+    Limited,
+    /// Full range (Y ∈ [0, 255]); the default, matching the scalar converter.
+    #[default]
+    Full,
+}
+
+/// Colorimetry a converter should honor: matrix coefficients plus range.
+///
+/// Derived from the SPS VUI ([`from_sps`](ColorInfo::from_sps)). When the VUI is
+/// absent or leaves a field unspecified, the default is **BT.601 full-range** —
+/// exactly what the scalar fallback produces. The scalar path always uses
+/// BT.601-full regardless of this value; only the `yuv-convert` crate path
+/// honors BT.709/BT.2020 and limited range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ColorInfo {
+    pub matrix: ColorMatrix,
+    pub range: ColorRange,
+}
+
+impl ColorInfo {
+    /// Derive colorimetry from an SPS. Unspecified fields fall back to the
+    /// default (BT.601 full-range), matching the scalar converter's output.
+    pub(crate) fn from_sps(sps: &Sps) -> Self {
+        if !sps.vui_parameters_present_flag {
+            return Self::default();
+        }
+        let vui = &sps.vui;
+        let range = match (
+            vui.video_signal_type_present_flag,
+            vui.video_full_range_flag,
+        ) {
+            (true, false) => ColorRange::Limited,
+            _ => ColorRange::Full,
+        };
+        let matrix = if vui.colour_description_present_flag {
+            match vui.matrix_coeffs {
+                // Table E-5: 1 = BT.709, 9 = BT.2020 NCL, 5/6 = BT.601;
+                // everything else (incl. unspecified/reserved) → BT.601.
+                1 => ColorMatrix::Bt709,
+                9 => ColorMatrix::Bt2020,
+                _ => ColorMatrix::Bt601,
+            }
+        } else {
+            ColorMatrix::Bt601
+        };
+        ColorInfo { matrix, range }
+    }
+}
 
 /// The visible (post-crop) rectangle of a decoded picture, expressed as sample
 /// offsets into the coded planes plus visible dimensions. 4:2:0 only.
@@ -47,6 +113,13 @@ pub trait YUVSource {
 
     /// Cr (V) plane; `[0]` is the visible top-left chroma sample.
     fn v(&self) -> &[u8];
+
+    /// Colorimetry to convert with. Defaults to BT.601 full-range (what the
+    /// scalar converter always produces); decoder outputs override this from the
+    /// SPS VUI so the `yuv-convert` path can honor BT.709/BT.2020 + limited range.
+    fn color_info(&self) -> ColorInfo {
+        ColorInfo::default()
+    }
 
     /// Bytes required by [`write_rgb8`](Self::write_rgb8): `width * height * 3`.
     fn rgb8_len(&self) -> usize {
@@ -150,6 +223,9 @@ impl YUVSource for DecodedYuv<'_> {
     fn v(&self) -> &[u8] {
         chroma_slice(&self.pic.v, self.pic, &self.region)
     }
+    fn color_info(&self) -> ColorInfo {
+        self.pic.color
+    }
 }
 
 impl YUVSource for Frame {
@@ -171,5 +247,8 @@ impl YUVSource for Frame {
     }
     fn v(&self) -> &[u8] {
         chroma_slice(&self.pic.v, &self.pic, &self.region)
+    }
+    fn color_info(&self) -> ColorInfo {
+        self.pic.color
     }
 }

@@ -27,7 +27,9 @@ pub use error::{DecodeError, EncodeError};
 #[cfg(feature = "decoder")]
 pub use api::{Decoder, nal_units};
 #[cfg(feature = "decoder")]
-pub use formats::yuv::{DecodedYuv, Frame, VisibleRegion, YUVSource};
+pub use formats::yuv::{
+    ColorInfo, ColorMatrix, ColorRange, DecodedYuv, Frame, VisibleRegion, YUVSource,
+};
 
 /// Crate version of the upstream OpenH264 this port tracks.
 pub const UPSTREAM_OPENH264_VERSION: &str = "2.x (master @ e3f5b10)";
