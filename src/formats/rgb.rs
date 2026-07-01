@@ -1,9 +1,15 @@
-//! Scalar YUV→RGB conversion (BT.601, full-range / JFIF integer form).
+//! YUV→RGB conversion.
 //!
-//! Mirrors the integer color-conversion helpers shipped with OpenH264's
-//! utilities: a fixed-point BT.601 transform with rounding and `[0, 255]`
-//! clamping. Full-range is used so that neutral chroma reproduces luma exactly
-//! (`Y, 128, 128 -> (Y, Y, Y)`).
+//! Two paths share the [`write`] entry point, selected at compile time:
+//!
+//! * **Default (scalar).** A fixed-point BT.601 **full-range** transform with
+//!   rounding and `[0, 255]` clamping, mirroring OpenH264's integer color
+//!   helpers. `no_std`, zero-dependency, and BT.601-full-*only* — it ignores the
+//!   picture's [`ColorInfo`](super::yuv::ColorInfo). Full range is used so that
+//!   neutral chroma reproduces luma exactly (`Y, 128, 128 -> (Y, Y, Y)`).
+//! * **`yuv-convert` feature.** Routes through the SIMD `yuv` crate, honoring the
+//!   picture's matrix (BT.601/709/2020) and range (full/limited) from the SPS
+//!   VUI. Requires `std`.
 
 use super::yuv::YUVSource;
 
@@ -35,7 +41,25 @@ pub fn yuv_to_rgb(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
 
 /// Pack `src`'s visible region into `out` as RGB8 (`alpha = false`) or RGBA8
 /// (`alpha = true`). Panics if `out` is shorter than the required length.
+///
+/// With the `yuv-convert` feature this routes through the SIMD `yuv` crate and
+/// honors the source's [`ColorInfo`](super::yuv::ColorInfo); otherwise it uses
+/// the scalar BT.601-full-range kernel below.
 pub fn write<S: YUVSource + ?Sized>(src: &S, out: &mut [u8], alpha: bool) {
+    #[cfg(feature = "yuv-convert")]
+    {
+        write_yuv_crate(src, out, alpha);
+    }
+    #[cfg(not(feature = "yuv-convert"))]
+    {
+        write_scalar(src, out, alpha);
+    }
+}
+
+/// Scalar BT.601 full-range conversion. Always used on the default (no_std,
+/// zero-dep) build; ignores the source's [`ColorInfo`](super::yuv::ColorInfo).
+#[cfg(not(feature = "yuv-convert"))]
+fn write_scalar<S: YUVSource + ?Sized>(src: &S, out: &mut [u8], alpha: bool) {
     let (w, h) = src.dimensions();
     let (ys, us, vs) = src.strides();
     let bpp = if alpha { 4 } else { 3 };
@@ -66,6 +90,55 @@ pub fn write<S: YUVSource + ?Sized>(src: &S, out: &mut [u8], alpha: bool) {
             }
         }
     }
+}
+
+/// SIMD conversion via the `yuv` crate, honoring the source's matrix + range.
+#[cfg(feature = "yuv-convert")]
+fn write_yuv_crate<S: YUVSource + ?Sized>(src: &S, out: &mut [u8], alpha: bool) {
+    use super::yuv::{ColorMatrix, ColorRange};
+    use yuv::{YuvPlanarImage, YuvRange, YuvStandardMatrix};
+
+    let (w, h) = src.dimensions();
+    let (ys, us, vs) = src.strides();
+    let bpp = if alpha { 4 } else { 3 };
+    let need = w * h * bpp;
+    assert!(
+        out.len() >= need,
+        "output buffer too small: {} < {}",
+        out.len(),
+        need
+    );
+
+    let info = src.color_info();
+    let range = match info.range {
+        ColorRange::Limited => YuvRange::Limited,
+        ColorRange::Full => YuvRange::Full,
+    };
+    let matrix = match info.matrix {
+        ColorMatrix::Bt601 => YuvStandardMatrix::Bt601,
+        ColorMatrix::Bt709 => YuvStandardMatrix::Bt709,
+        ColorMatrix::Bt2020 => YuvStandardMatrix::Bt2020,
+    };
+
+    // 4:2:0 chroma dimensions round up, so odd visible sizes are covered.
+    let image = YuvPlanarImage {
+        y_plane: src.y(),
+        y_stride: ys as u32,
+        u_plane: src.u(),
+        u_stride: us as u32,
+        v_plane: src.v(),
+        v_stride: vs as u32,
+        width: w as u32,
+        height: h as u32,
+    };
+    let dst_stride = (w * bpp) as u32;
+    let dst = &mut out[..need];
+    let result = if alpha {
+        yuv::yuv420_to_rgba(&image, dst, dst_stride, range, matrix)
+    } else {
+        yuv::yuv420_to_rgb(&image, dst, dst_stride, range, matrix)
+    };
+    result.expect("yuv420_to_rgb(a) conversion failed");
 }
 
 #[cfg(test)]
@@ -140,6 +213,9 @@ mod tests {
         );
     }
 
+    // Scalar path: neutral gray reproduces luma exactly. Feature-off only, so
+    // the byte-exact expectation is preserved unchanged.
+    #[cfg(not(feature = "yuv-convert"))]
     #[test]
     fn write_rgb8_fills_buffer() {
         let src = Solid::new(128, 128, 128);
@@ -156,5 +232,49 @@ mod tests {
                 128, 128, 128, 255, 128, 128, 128, 255, 128, 128, 128, 255, 128, 128, 128, 255
             ]
         );
+    }
+
+    // `yuv-convert` path: the SIMD crate rounds slightly differently, so the same
+    // conversions are checked within a small tolerance. Buffer lengths and the
+    // full-range neutral-gray / primary reproductions still hold.
+    #[cfg(feature = "yuv-convert")]
+    #[test]
+    fn write_rgb8_via_crate() {
+        // rgb8_len / rgba8_len are the packed sizes.
+        let src = Solid::new(128, 128, 128);
+        assert_eq!(src.rgb8_len(), 12);
+        assert_eq!(src.rgba8_len(), 16);
+
+        // Neutral gray (full range) -> ~(128,128,128).
+        let mut out = vec![0u8; src.rgb8_len()];
+        src.write_rgb8(&mut out);
+        assert_eq!(out.len(), 12);
+        assert!(out.iter().all(|&b| near(b, 128, 2)), "{out:?}");
+
+        // RGBA alpha is opaque; color channels track the RGB result.
+        let mut rgba = vec![0u8; src.rgba8_len()];
+        src.write_rgba8(&mut rgba);
+        assert_eq!(rgba.len(), 16);
+        for px in rgba.chunks_exact(4) {
+            assert!(near(px[0], 128, 2) && near(px[1], 128, 2) && near(px[2], 128, 2));
+            assert_eq!(px[3], 255);
+        }
+
+        // Full-range primaries reproduce within tolerance.
+        let expect = [
+            (76u8, 84u8, 255u8, (255u8, 0u8, 0u8)), // red
+            (150, 44, 21, (0, 255, 0)),             // green
+            (29, 255, 107, (0, 0, 255)),            // blue
+        ];
+        for (y, u, v, (er, eg, eb)) in expect {
+            let s = Solid::new(y, u, v);
+            let mut o = vec![0u8; s.rgb8_len()];
+            s.write_rgb8(&mut o);
+            assert!(
+                near(o[0], er, 6) && near(o[1], eg, 6) && near(o[2], eb, 6),
+                "yuv({y},{u},{v}) -> {:?}, want ~({er},{eg},{eb})",
+                &o[0..3]
+            );
+        }
     }
 }
