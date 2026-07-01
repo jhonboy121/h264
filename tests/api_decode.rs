@@ -113,3 +113,30 @@ fn write_rgb_lengths_and_alpha() {
         assert_eq!(&px[..3], &rgb[i * 3..i * 3 + 3]);
     }
 }
+
+/// The BANM decode -> `DecodedYuv` -> `write_rgb8` path must run and yield a
+/// plausible (non-degenerate, full-range) image. Runs identically with and
+/// without the `yuv-convert` feature; only the internal conversion path differs.
+#[test]
+fn write_rgb_plausible_image() {
+    let frames = Decoder::new().decode_all(BANM).unwrap();
+    let f = &frames[0];
+
+    let mut rgb = vec![0u8; f.rgb8_len()];
+    f.write_rgb8(&mut rgb);
+    assert_eq!(rgb.len(), 176 * 144 * 3);
+
+    // A real frame is not a flat color: it spans a wide range of intensities.
+    let min = *rgb.iter().min().unwrap();
+    let max = *rgb.iter().max().unwrap();
+    assert!(
+        max as i32 - min as i32 > 64,
+        "image looks degenerate: min={min} max={max}"
+    );
+    // Mean brightness sits in a sane mid-range, not stuck at 0 or 255.
+    let mean = rgb.iter().map(|&b| b as u64).sum::<u64>() / rgb.len() as u64;
+    assert!(
+        (16..=240).contains(&mean),
+        "implausible mean brightness {mean}"
+    );
+}
