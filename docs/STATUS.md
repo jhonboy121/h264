@@ -51,6 +51,15 @@ See `TRACKER.md` for the phase-by-phase detail and `PERF_REPORT.md` for numbers.
   (slice-parallel IPPP), **byte-identical to serial**. **Real-time 30 fps 1080p
   reached:** threaded IPPP **127 fps** (4.2× realtime-30), all-intra **300+ fps**
   (10×), vs 13.7 / 25 fps single-threaded.
+- **Rate control (P16):** frame-level port of OpenH264's `RC_BITRATE_MODE`
+  (virtual-GOP bit budget, linear R-Q model, `-3/+5` QP step, QP 12..=45, no frame
+  skipping). Every 2 s window after the first second lands within ±5 % of target
+  at 640×360@15/350k … 1920×1080@60/6000k; `set_bitrate` settles within ±2 % by
+  the second second, with no IDR. Level, Constrained Baseline flags and
+  alternating `idr_pic_id` are signalled. P-slice intra is only tried in full when
+  the I16×16 estimate beats inter (`WelsMdFirstIntraMode`), ~1.4× faster.
+  Rate-controlled 1920×1080@60 encodes at **~107 fps** (16 slices, 16 cores),
+  1280×720@30 at **~260 fps**.
 
 ### SIMD (P10)
 
@@ -75,6 +84,14 @@ See `TRACKER.md` for the phase-by-phase detail and `PERF_REPORT.md` for numbers.
   iterator; `decoder::decode_stream` convenience.
 - `h264::Frame` / `DecodedYuv` / `YUVSource` / `VisibleRegion` — planar I420
   output with visible-region accessors and BT.601 `write_rgb8` / `write_rgba8`.
+- **Live re-encode API (P16):** `h264::{Encoder, EncoderConfig, EncodedFrame}` —
+  `Encoder::with_config(EncoderConfig { width, height, fps, bitrate_kbps,
+  keyframe_interval, slices })`, `encode(&YuvRef) -> EncodedFrame { data, keyframe,
+  qp }` (rate-controlled, slice-parallel with `threads`), `set_bitrate(kbps)` (no
+  IDR), `set_frame_rate`, `force_idr`, `reconstruction()`. `h264::{YuvRef, I420}`
+  picture buffers (`DecodedYuv::yuv()` / `Frame::yuv()` give the cropped decoded
+  picture), `h264::scale_i420` (OpenH264 downsampler), `h264::nal::{nal_type, SPS,
+  PPS, AUD, IDR}`, `h264::sps_dimensions`. See `TRACKER.md` P16.
 - `h264::encoder::Encoder` — `new(w, h, qp)`, `new_with_slices(w, h, qp, slices)`,
   `set_slices`, `encode_frame`, `force_idr`, `set_frame_rate`; with `--features
   threads`: `encode_frame_parallel` (slice-parallel) and `encode_frames_parallel`
@@ -95,8 +112,12 @@ always available.)
 - **wasm** builds (default and `RUSTFLAGS="-C target-feature=+simd128" --features simd`).
 - **`--features simd`** builds on every arch (NEON on aarch64, simd128 on wasm,
   scalar fallback elsewhere).
-- **Tests: 139 passing** (126 unit + 13 integration), **identical** with and
-  without `--features simd`. Warning-free on default and simd builds.
+- **Tests: 166 passing** (134 unit + 31 integration + 1 doc), **identical** with
+  and without `--features simd`. Clippy-clean on default and `threads,simd` builds
+  (all targets) and on the `no_std` lib builds.
+- `tests/fixtures/banm_frame{0,1}.yuv` were missing from the vendored tree (`*.yuv`
+  is git-ignored upstream); they were regenerated from this crate's decoder
+  (`examples/dump_frames`), which the corpus run had shown bit-exact on BANM.
 
 ---
 
@@ -120,10 +141,12 @@ sub-partition's `PredMv` single-match neighbour rule fires correctly.
 where they would change the bit parse.)
 
 **Encoder:** sub-16×16 inter partitions, multiple reference frames, B-frames,
-CABAC encoding, rate control. (Fixed-QP baseline IPPP works and round-trips
-without drift — these are encoder-freedom features, not correctness gaps.)
+CABAC encoding, in-loop deblocking, MB-level (GOM) rate control, adaptive
+quantisation, frame skipping. (Baseline IPPP works and round-trips without drift
+— these are encoder-freedom features, not correctness gaps.)
 
-**Pipeline (whole phases):** P8 processing (downsample/denoise/scene-change/VAA).
+**Pipeline (whole phases):** P8 processing — the downsampler is ported (P16);
+denoise / scene-change / VAA are not.
 **P9 threading is done** — encoder slice/frame parallelism (std-only); a decoder
 thread pool is not implemented (decode already meets target).
 

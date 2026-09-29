@@ -16,7 +16,8 @@ then **High-profile CAVLC temporal-direct (P14) → 46/54 BIT-EXACT**, then **CA
 temporal-direct (P15) → 49/54 BIT-EXACT**. Deferred (explicit, not gaps):
 transform8x8/High, FMO, error-conceal, SVC scalable-extension (NAL type 20); encoder
 sub-16x16, multi-ref, B, CABAC-encode, rate control; P8 processing; P9 threading;
-SIMD for deblock/mc_hor_ver22/x86.
+SIMD for deblock/mc_hor_ver22/x86. **P16** since added encoder rate control, the
+downsampler and a live re-encode API (see the end of this file).
 
 ## P12 — Decoder B-slices (bi-predictive) ✅ → 43/54 BIT-EXACT
 - [x] **POC derivation** (`PocState`, spec 8.2.1 type 0 + type 2; type 1 monotonic
@@ -308,3 +309,52 @@ OpenH264 oracle (per-MB mb_type / ref_idx ctxInc / dequantised-coeff / MV traces
       already stored. Isolated by a systematic per-MB field diff (mb_type / cbp / qp / t8 /
       ref0 / ref1 / mv0 / mv1 / mvd / nzc) of the first intrinsically-diverging decode-order
       picture (POC 4, a B-reference slice whose own references were all bit-exact).
+
+## P16 — Live re-encode: rate control, downsampler, picture/NAL API ✅
+For a host CLI that decodes a looping clip, downscales it and re-encodes it the way
+a phone's MediaCodec encoder would (bitrate changed mid-stream without an IDR,
+size / rate steps as a new encoder, IDRs on request).
+- [x] **Rate control** (`encoder/ratectl.rs`): frame-level port of `RC_BITRATE_MODE`
+      (`WelsRcPictureInitGom` / `WelsRcPictureInfoUpdateGom`, `bFixRCOverShoot`):
+      8-frame virtual GOP, IDR budget 4 frames, P budget clamped to 0.55..1.5 of
+      `bitrate / fps`, overshoot carried into the next VGOP, bitrate/fps changes
+      rescale the remaining bits (`RcUpdateBitrateFps`). QP from the linear model
+      `bits * qstep` scaled by frame complexity / its running mean (±20 %), step
+      limited to −3/+5 per frame, range 12..=45; the first IDR QP from the bpp
+      table (`RcCalculateIdrQp`). Simplified: no GOM/MB-level QP (the C turns it
+      off for IDRs and multi-slice anyway), no adaptive quant, no frame skipping
+      (an exhausted budget raises the QP by 3 instead), and complexity comes from
+      the encoder (16×16 SAD vs the previous source for P; min of vertical /
+      horizontal source-prediction SAD per MB for IDR) instead of VAA.
+      `RcConvertQStep2Qp`'s `log` is replaced by an exact integer threshold table.
+- [x] **Frame QP in the slice header** (`slice_qp_delta` against `pic_init_qp` 26);
+      the fixed-QP API is unchanged (delta 0).
+- [x] **SPS:** level from `WelsGetLevelIdc` (size, MB rate, DPB, bitrate) for
+      `with_config` encoders; `constraint_set0/1` (Constrained Baseline) always.
+      Back-to-back IDRs alternate `idr_pic_id` (rate-controlled encoders).
+- [x] **P-slice intra early-out** (`WelsMdFirstIntraMode`): the full intra decision
+      (I4x4 + chroma) only runs when the I16×16 SATD estimate beats inter.
+      1080p rate-controlled encode 76 → 107 fps.
+- [x] **API:** `EncoderConfig` / `EncodedFrame`, `Encoder::with_config`, `encode`
+      (slice-parallel with `threads` when `slices > 1`), `set_bitrate`,
+      `set_frame_rate` (feeds RC), `reconstruction()`; `EncodeError::InvalidFrame`.
+      `YuvRef` / `I420` (`image.rs`), `DecodedYuv::yuv` / `Frame::yuv`,
+      `nal::{nal_type, SPS, PPS, AUD, IDR}`, `sps_dimensions` (decoder's parser).
+- [x] **Downsampler** (`processing/downsample.rs`, `scale_i420`): `CDownsampling::
+      Process` — dyadic halving while the half is still larger, then an exact
+      dyadic pass or the general bilinear kernels (fast for luma, accurate for
+      chroma, as the `_c` table). PORT: other sizes (upscale / mixed) use the same
+      general kernel with clamped neighbour reads; the halving chain is decided per
+      plane.
+- [x] **Tests:** `tests/encode_ratecontrol.rs` (2 s windows within ±15 % on the
+      five target configs and on a re-encoded conformance clip; `set_bitrate` down
+      and up within ±20 % in the second second, no IDR; RC streams incl. 1080 /
+      540 / 360 cropping, keyframe interval, forced and back-to-back IDRs decode to
+      exactly the encoder's reconstruction), `tests/scale_and_nal.rs` (dyadic
+      paths vs an independent reference, gradients stay gradients, High-profile
+      SPS with scaling lists + cropping + VUI), RC / level / slice-header unit tests.
+- [x] **Bench:** `examples/bench_realtime.rs` (`--release --features threads,simd`,
+      16-core aarch64): 1920×1080@60/6000k 16 slices **~107 fps**, 1080p30/4000k
+      ~109 fps, 1280×720@30/2000k 16 slices **~263 fps** (8 slices ~149 fps),
+      640×360@15/350k ~293 fps; `scale_i420` 1080p → 720p 3.9 ms, → 540p 1.1 ms,
+      → 360p 2.1 ms (single thread).
