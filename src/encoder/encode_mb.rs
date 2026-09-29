@@ -548,14 +548,21 @@ impl<'a> FrameEnc<'a> {
         let me = self.search_inter(mb_x, mb_y, mvp);
         let skip_mv = self.pred_p_skip(mb_x, mb_y);
 
-        // ---- Intra candidate (reconstructs rec; overwritten if inter wins). ----
-        let mut intra_enc = MbEnc::default();
-        let intra_cost = self.intra_encode(mb_x, mb_y, &mut intra_enc);
-
         // Bias toward inter when comparable (it codes fewer header bits and keeps
         // the stream small); intra is only chosen when clearly cheaper.
         let bias = me_lambda(self.qp) * 24;
-        if me.cost <= intra_cost + bias {
+
+        // ---- Intra candidate (reconstructs rec; overwritten if inter wins). ----
+        // As `WelsMdFirstIntraMode`: the full intra decision (I4x4 + chroma) runs
+        // only when the I16x16 estimate already beats inter.
+        let mut intra_enc = MbEnc::default();
+        let cost16 = self.decide_i16(mb_x, mb_y, left, top, left && top, &mut intra_enc);
+        let intra_cost = if me.cost <= cost16.saturating_add(bias) {
+            i32::MAX
+        } else {
+            self.intra_encode(mb_x, mb_y, &mut intra_enc)
+        };
+        if me.cost <= intra_cost.saturating_add(bias) {
             let mut enc = MbEnc::default();
             self.reconstruct_inter(mb_x, mb_y, me.mv, &mut enc);
             let cbp = (enc.cbp_c << 4) | enc.cbp_l;
