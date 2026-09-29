@@ -18,6 +18,7 @@ pub mod encoder;
 pub mod error;
 pub mod image;
 pub mod nal;
+pub mod processing;
 
 #[cfg(feature = "decoder")]
 pub mod api;
@@ -26,6 +27,7 @@ pub mod formats;
 
 pub use error::{DecodeError, EncodeError};
 pub use image::{I420, YuvRef};
+pub use processing::downsample::scale_i420;
 
 #[cfg(feature = "decoder")]
 pub use api::{Decoder, nal_units, sps_dimensions};
