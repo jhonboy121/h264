@@ -3,6 +3,7 @@ name = "h264"
 version = "0.0.1"
 edition = "2024"
 description = "Pure-Rust port of Cisco OpenH264"
+license = "BSD-2-Clause"
 
 [features]
 default = ["std", "decoder", "encoder"]
