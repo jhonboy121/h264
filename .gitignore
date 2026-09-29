@@ -4,3 +4,5 @@ Cargo.lock
 # large conformance corpus / oracle artifacts
 /tests/conformance-corpus
 *.yuv
+# ...except the small golden frames the tests read
+!/tests/fixtures/*.yuv
