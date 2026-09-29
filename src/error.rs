@@ -38,6 +38,8 @@ pub enum EncodeError {
     InvalidConfig(&'static str),
     /// Output buffer too small.
     OutputTooSmall,
+    /// An input frame does not match the encoder (size, plane lengths).
+    InvalidFrame(&'static str),
 }
 
 impl fmt::Display for EncodeError {
@@ -45,6 +47,7 @@ impl fmt::Display for EncodeError {
         match self {
             EncodeError::InvalidConfig(s) => write!(f, "invalid config: {s}"),
             EncodeError::OutputTooSmall => write!(f, "output buffer too small"),
+            EncodeError::InvalidFrame(s) => write!(f, "invalid frame: {s}"),
         }
     }
 }

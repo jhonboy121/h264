@@ -150,7 +150,7 @@ static QUANT_INTRA_FF: [[i16; 8]; 52] = [
 /// Reconstruction-plane border. Matches the decoder's `picture::PADDING` (32)
 /// so the inter motion-compensation clamp + border-extension read exactly the
 /// same samples the decoder will, guaranteeing bit-identical reconstruction.
-const BORDER: usize = 32;
+pub(crate) const BORDER: usize = 32;
 
 /// A YUV triple of borrowed plane buffers (source or reference). The frame
 /// encoder reads these but never mutates them, so several per-slice encoders can

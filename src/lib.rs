@@ -29,6 +29,9 @@ pub use error::{DecodeError, EncodeError};
 pub use image::{I420, YuvRef};
 pub use processing::downsample::scale_i420;
 
+#[cfg(feature = "encoder")]
+pub use encoder::{EncodedFrame, Encoder, EncoderConfig};
+
 #[cfg(feature = "decoder")]
 pub use api::{Decoder, nal_units, sps_dimensions};
 #[cfg(feature = "decoder")]
