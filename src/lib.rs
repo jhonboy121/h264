@@ -28,7 +28,7 @@ pub use error::{DecodeError, EncodeError};
 pub use image::{I420, YuvRef};
 
 #[cfg(feature = "decoder")]
-pub use api::{Decoder, nal_units};
+pub use api::{Decoder, nal_units, sps_dimensions};
 #[cfg(feature = "decoder")]
 pub use formats::yuv::{
     ColorInfo, ColorMatrix, ColorRange, DecodedYuv, Frame, VisibleRegion, YUVSource,

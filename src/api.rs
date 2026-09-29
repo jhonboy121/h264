@@ -9,7 +9,8 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use crate::decoder::frame::StreamDecoder;
-use crate::decoder::nal::annexb_nal_units;
+use crate::decoder::nal::{annexb_nal_units, ebsp_to_rbsp};
+use crate::decoder::params::parse_sps;
 use crate::error::DecodeError;
 use crate::formats::yuv::{DecodedYuv, Frame};
 
@@ -94,4 +95,16 @@ impl Default for Decoder {
 /// byte first, start code excluded). Mirrors `openh264`'s `nal_units` helper.
 pub fn nal_units(data: &[u8]) -> impl Iterator<Item = &[u8]> {
     annexb_nal_units(data)
+}
+
+/// Display (cropped) `(width, height)` from an SPS NAL (header byte first, no
+/// start code). Handles the High-profile fields and frame cropping via the
+/// decoder's own SPS parser. `None` if `sps` is not a well-formed SPS NAL.
+pub fn sps_dimensions(sps: &[u8]) -> Option<(u32, u32)> {
+    if crate::nal::nal_type(sps)? != crate::nal::SPS {
+        return None;
+    }
+    let rbsp = ebsp_to_rbsp(&sps[1..]);
+    let parsed = parse_sps(&rbsp).ok()?;
+    Some((parsed.width, parsed.height))
 }
