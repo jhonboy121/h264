@@ -8,6 +8,7 @@
 
 use crate::decoder::params::Sps;
 use crate::decoder::picture::Picture;
+use crate::image::YuvRef;
 
 use super::rgb;
 
@@ -250,5 +251,31 @@ impl YUVSource for Frame {
     }
     fn color_info(&self) -> ColorInfo {
         self.pic.color
+    }
+}
+
+fn yuv_ref<'a>(pic: &'a Picture, r: &VisibleRegion) -> YuvRef<'a> {
+    YuvRef {
+        y: luma_slice(pic, r),
+        u: chroma_slice(&pic.u, pic, r),
+        v: chroma_slice(&pic.v, pic, r),
+        y_stride: pic.luma_stride,
+        c_stride: pic.chroma_stride,
+        width: r.width as u32,
+        height: r.height as u32,
+    }
+}
+
+impl DecodedYuv<'_> {
+    /// The visible (cropped) picture as borrowed I420 planes.
+    pub fn yuv(&self) -> YuvRef<'_> {
+        yuv_ref(self.pic, &self.region)
+    }
+}
+
+impl Frame {
+    /// The visible (cropped) picture as borrowed I420 planes.
+    pub fn yuv(&self) -> YuvRef<'_> {
+        yuv_ref(&self.pic, &self.region)
     }
 }

@@ -16,6 +16,8 @@ pub mod dsp;
 #[cfg(feature = "encoder")]
 pub mod encoder;
 pub mod error;
+pub mod image;
+pub mod nal;
 
 #[cfg(feature = "decoder")]
 pub mod api;
@@ -23,6 +25,7 @@ pub mod api;
 pub mod formats;
 
 pub use error::{DecodeError, EncodeError};
+pub use image::{I420, YuvRef};
 
 #[cfg(feature = "decoder")]
 pub use api::{Decoder, nal_units};
