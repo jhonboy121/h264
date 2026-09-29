@@ -108,8 +108,9 @@ fn write_rgb_lengths_and_alpha() {
     let mut rgba = vec![0u8; f.rgba8_len()];
     f.write_rgba8(&mut rgba);
     // RGB triples agree with the first three RGBA bytes, alpha is opaque.
-    assert!(rgba.chunks_exact(4).all(|p| p[3] == 255));
-    for (i, px) in rgba.chunks_exact(4).enumerate() {
+    let (pixels, _) = rgba.as_chunks::<4>();
+    assert!(pixels.iter().all(|p| p[3] == 255));
+    for (i, px) in pixels.iter().enumerate() {
         assert_eq!(&px[..3], &rgb[i * 3..i * 3 + 3]);
     }
 }
